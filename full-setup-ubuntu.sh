@@ -17,7 +17,7 @@ NC='\033[0m' # No Color
 # Configuration
 DOMAIN="permatrax.tech"
 WWW_DOMAIN="www.permatrax.tech"
-APP_DIR="/var/www/permatrax"
+APP_DIR="/var/www/Permatrax"
 GITHUB_REPO="https://github.com/HackshieldHB/AI-Tech-Permatrax.git"
 DB_NAME="permatrax"
 DB_USER="permatrax_user"
@@ -476,16 +476,15 @@ module.exports = {
   apps: [
     {
       name: 'permatrax-api',
-      script: 'apps/api/dist/main.js',
-      cwd: '/var/www/permatrax',
+      cwd: './apps/api',
+      script: 'dist/apps/api/src/main.js',
       instances: 1,
       exec_mode: 'fork',
       env: {
         NODE_ENV: 'production',
       },
-      log_file: '/var/www/permatrax/logs/api-out.log',
-      error_file: '/var/www/permatrax/logs/api-error.log',
-      out_file: '/var/www/permatrax/logs/api-out.log',
+      error_file: '../../logs/api-error.log',
+      out_file: '../../logs/api-out.log',
       log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
       merge_logs: true,
       max_memory_restart: '1G',
@@ -498,18 +497,17 @@ module.exports = {
     },
     {
       name: 'permatrax-web',
+      cwd: './apps/web',
       script: 'node_modules/.bin/next',
       args: 'start',
-      cwd: '/var/www/permatrax/apps/web',
       instances: 1,
       exec_mode: 'fork',
       env: {
         NODE_ENV: 'production',
         PORT: 3000,
       },
-      log_file: '/var/www/permatrax/logs/web-out.log',
-      error_file: '/var/www/permatrax/logs/web-error.log',
-      out_file: '/var/www/permatrax/logs/web-out.log',
+      error_file: '../../logs/web-error.log',
+      out_file: '../../logs/web-out.log',
       log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
       merge_logs: true,
       max_memory_restart: '1G',

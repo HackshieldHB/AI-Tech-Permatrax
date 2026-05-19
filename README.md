@@ -29,10 +29,11 @@ PermaTrack/
 │   └── db/           # Prisma schema, migrasi, seed
 ├── docs/             # Panduan deploy, finance, procurement, dll.
 ├── docker-compose.yml
-├── ecosystem.config.js   # PM2 (produksi)
-├── start.sh / stop.sh    # Produksi VPS (Docker + PM2 + Nginx)
-├── full-setup.sh         # Setup awal AlmaLinux/RHEL
-└── full-setup-ubuntu.sh  # Setup awal Ubuntu/Debian
+├── ecosystem.config.js   # PM2 cluster (API) + fork (Web)
+├── nginx/permatrax.conf  # Nginx reverse proxy + SSL
+├── start.sh / stop.sh    # PM2 start/stop
+├── full-setup.sh         # Setup produksi AlmaLinux (build + DB + Nginx + SSL + PM2)
+└── full-setup-ubuntu.sh  # Setup OS Ubuntu/Debian (legacy)
 ```
 
 ---
@@ -184,31 +185,68 @@ curl -X POST http://localhost:3001/api/auth/login \
 
 ## Deployment produksi
 
-### VPS (PM2 + Nginx)
+### VPS AlmaLinux (hybrid — disarankan)
+
+| Layer | Teknologi |
+|-------|-----------|
+| Data | Docker Compose → PostgreSQL + Redis (`127.0.0.1` only) |
+| Apps | PM2 → API (:3001) + Web (:3000) |
+| Edge | Nginx native + Let's Encrypt |
+
+**Repo:** `https://github.com/HackshieldHB/AI-Tech-Permatrax.git`  
+**Path server:** `/var/www/Permatrax`
 
 ```bash
-./full-setup.sh          # AlmaLinux/RHEL — sekali
-# atau ./full-setup-ubuntu.sh
+# On production server (AlmaLinux)
 
-chmod +x start.sh stop.sh
-./start.sh
-./stop.sh
+# 1. Clone repo
+git clone https://github.com/HackshieldHB/AI-Tech-Permatrax.git /var/www/Permatrax
+cd /var/www/Permatrax
+
+# 2. Copy .env from local machine
+# Run this on LOCAL machine:
+scp .env.production user@YOUR_SERVER_IP:/var/www/Permatrax/.env
+
+# 3. Back on server — set permissions and run setup
+chmod 600 .env
+chmod +x full-setup.sh start.sh stop.sh restart.sh
+./full-setup.sh
 ```
+
+**Setelah update kode:**
+
+```bash
+cd /var/www/Permatrax
+git pull origin main
+./restart.sh
+```
+
+**Operasi harian:**
+
+```bash
+./start.sh              # start all
+./stop.sh               # stop all
+./restart.sh            # rebuild + reload
+pm2 status              # check status
+pm2 logs                # live logs
+docker compose -f docker-compose.prod.yml ps   # check DB
+```
+
+| URL | Backend |
+|-----|---------|
+| https://permatrax.tech | Next.js :3000 |
+| https://api.permatrax.tech | NestJS :3001 |
+
+Setelah setup, jalankan perintah `sudo` dari `pm2 startup` agar app hidup lagi setelah reboot.
+
+**File uploads (local disk, not S3):** Documents are stored under `apps/api/uploads/` and served at `https://api.permatrax.tech/api/files/…`. Include `apps/api/uploads/` in your server backup strategy. Do not delete this folder — it contains all user-uploaded documents (signatures, HLD/LLD, BAKP, evidence photos, etc.).
 
 Detail: [`docs/production-deployment.md`](docs/production-deployment.md)
 
-### Docker Compose produksi
+### Docker Compose (dev lokal)
 
 ```bash
-cp .env.production.example .env.production
-docker compose -f docker-compose.prod.yml --env-file .env.production up -d
-```
-
-### Manual (nohup)
-
-```bash
-chmod +x start-previous.sh stop-previous.sh
-./start-previous.sh
+docker compose up -d          # Postgres + Redis (port publik untuk dev)
 ```
 
 ### Checklist database di server

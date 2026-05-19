@@ -68,7 +68,9 @@ export class StorageController {
   @UseInterceptors(
     FileInterceptor('file', {
       storage: memoryStorage(),
-      limits: { fileSize: 50 * 1024 * 1024 }, // 50MB
+      limits: {
+        fileSize: Number(process.env.MAX_FILE_SIZE) || 50 * 1024 * 1024,
+      },
     }),
   )
   async uploadFile(

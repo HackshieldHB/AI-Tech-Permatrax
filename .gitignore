@@ -11,6 +11,7 @@ out/
 
 # Environment files (contain secrets)
 .env
+.env.production
 .env.local
 .env.*.local
 apps/api/.env
@@ -25,6 +26,10 @@ ngrok-stderr.log
 .claude
 .md
 .docx
+
+# PM2 / runtime logs (ecosystem.config.js writes here)
+logs/
+.pids/
 
 # Logs
 *.log
@@ -44,5 +49,7 @@ pnpm-debug.log*
 Thumbs.db
 desktop.ini
 
-# Uploads / runtime data
-apps/api/uploads/
+# Uploads / runtime data (keep .gitkeep in repo)
+apps/api/uploads/*
+!apps/api/uploads/.gitkeep
+uploads/
