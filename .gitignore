@@ -23,6 +23,8 @@ ngrok.log
 ngrok-stdout.log
 ngrok-stderr.log
 .claude
+.md
+.docx
 
 # Logs
 *.log
