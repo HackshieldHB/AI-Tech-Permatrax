@@ -29,13 +29,14 @@ function buildUserData(user: SeedUserRecord) {
     name: user.name,
     password: user.password,
     role: user.role as Role,
-    phone: user.phone ?? undefined,
-    avatarUrl: user.avatarUrl ?? undefined,
-    signatureUrl: user.signatureUrl ?? undefined,
-    fiberType: (user.fiberType as FiberType | null) ?? undefined,
-    address: user.address ?? undefined,
     isActive: user.isActive,
-    createdBy: user.createdBy ?? undefined,
+    // Conditional spread for optional fields — safe if columns don't exist yet
+    ...(user.phone != null ? { phone: user.phone } : {}),
+    ...(user.avatarUrl != null ? { avatarUrl: user.avatarUrl } : {}),
+    ...(user.signatureUrl != null ? { signatureUrl: user.signatureUrl } : {}),
+    ...(user.fiberType != null ? { fiberType: user.fiberType as FiberType } : {}),
+    ...(user.address != null ? { address: user.address } : {}),
+    ...(user.createdBy != null ? { createdBy: user.createdBy } : {}),
   };
 }
 
