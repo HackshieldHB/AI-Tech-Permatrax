@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # =============================================================================
-# PermaTrack Production VPS Setup Script (AlmaLinux/RHEL Version)
+# PermaTrack Production VPS Setup Script (Ubuntu/Debian Version)
 # Domain: permatrax.tech
 # =============================================================================
 
@@ -45,56 +45,31 @@ log_error() {
 }
 
 # =============================================================================
-# OS VALIDATION
-# =============================================================================
-log_info "Validating operating system..."
-
-if [ ! -f /etc/os-release ]; then
-    log_error "Cannot detect OS. /etc/os-release not found."
-    exit 1
-fi
-
-source /etc/os-release
-
-SUPPORTED_OS="AlmaLinux|Red Hat|CentOS|Rocky Linux|Fedora|RHEL"
-if [[ ! "$NAME" =~ $SUPPORTED_OS ]]; then
-    log_error "Unsupported OS: $NAME"
-    log_error "This script supports: AlmaLinux, Red Hat, CentOS, Rocky Linux, Fedora, RHEL"
-    log_warn "For Ubuntu/Debian, use: ./full-setup-ubuntu.sh"
-    exit 1
-fi
-
-log_success "OS validated: $NAME $VERSION_ID"
-
-# =============================================================================
 # STEP 1: System Updates & Dependencies
 # =============================================================================
 log_info "Step 1: Updating system and installing dependencies..."
 
-# Update system
-dnf update -y
+apt-get update -y
+apt-get upgrade -y
 
-# Install EPEL repository
-dnf install -y epel-release
-
-# Install essential packages using dnf
-dnf install -y \
+# Install essential packages
+apt-get install -y \
     curl \
     git \
+    build-essential \
     nginx \
-    gcc \
-    gcc-c++ \
-    make \
-    openssl-devel \
-    firewalld \
-    policycoreutils-python-utils \
-    yum-utils \
+    ufw \
+    certbot \
+    python3-certbot-nginx \
+    software-properties-common \
+    apt-transport-https \
+    ca-certificates \
+    gnupg \
+    lsb-release \
     htop \
     vim \
     unzip \
-    tree \
-    nc \
-    bind-utils
+    tree
 
 log_success "System dependencies installed"
 
@@ -104,9 +79,8 @@ log_success "System dependencies installed"
 log_info "Step 2: Installing Node.js 20..."
 
 if ! command -v node &> /dev/null || [[ "$(node -v | cut -d'v' -f2 | cut -d'.' -f1)" != "20" ]]; then
-    # Use NodeSource for RHEL-based systems
-    curl -fsSL https://rpm.nodesource.com/setup_20.x | bash -
-    dnf install -y nodejs
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+    apt-get install -y nodejs
 fi
 
 log_success "Node.js $(node -v) installed"
@@ -143,11 +117,16 @@ log_success "PM2 installed"
 log_info "Step 5: Installing Docker and Docker Compose..."
 
 if ! command -v docker &> /dev/null; then
-    # Add Docker's official repository for RHEL-based systems
-    dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
-    
-    # Install Docker CE
-    dnf install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+    # Add Docker's official GPG key
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+    chmod a+r /etc/apt/keyrings/docker.gpg
+
+    # Add Docker repository
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+    apt-get update
+    apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
     # Start and enable Docker
     systemctl start docker
@@ -163,32 +142,34 @@ fi
 log_success "Docker $(docker --version) and Docker Compose installed"
 
 # =============================================================================
-# STEP 6: Configure Firewall (firewalld)
+# STEP 6: Configure Firewall
 # =============================================================================
-log_info "Step 6: Configuring firewalld..."
+log_info "Step 6: Configuring UFW firewall..."
 
-# Enable and start firewalld
-systemctl enable firewalld
-systemctl start firewalld
+ufw default deny incoming
+ufw default allow outgoing
 
 # Allow SSH
-firewall-cmd --permanent --add-service=ssh
+ufw allow OpenSSH
 
 # Allow HTTP and HTTPS
-firewall-cmd --permanent --add-service=http
-firewall-cmd --permanent --add-service=https
+ufw allow 80/tcp
+ufw allow 443/tcp
 
-# Explicitly block database and app ports from external access (drop zone)
-# Note: firewalld blocks by default, but we explicitly add to drop zone for safety
-firewall-cmd --permanent --add-port=5432/tcp  # Will be blocked by default zone rules
-firewall-cmd --permanent --add-port=6379/tcp
-firewall-cmd --permanent --add-port=3000/tcp
-firewall-cmd --permanent --add-port=3001/tcp
+# Explicitly deny database and app ports from external access
+ufw deny 5432/tcp    # PostgreSQL
+ufw deny 6379/tcp    # Redis
+ufw deny 3000/tcp    # Next.js dev (not used in prod but safety)
+ufw deny 3001/tcp    # API (internal only, proxied by Nginx)
 
-# Reload firewall
-firewall-cmd --reload
+# Enable UFW if not already enabled
+if ! ufw status | grep -q "Status: active"; then
+    echo "y" | ufw enable
+fi
 
-log_success "firewalld configured - Ports 22, 80, 443 open. DB/Redis/Apps blocked externally."
+ufw reload
+
+log_success "UFW configured - Ports 22, 80, 443 open. DB/Redis/Apps blocked externally."
 
 # =============================================================================
 # STEP 7: Create Application Directory Structure
@@ -200,47 +181,11 @@ mkdir -p "$APP_DIR/uploads"
 mkdir -p "$APP_DIR/logs"
 mkdir -p "$APP_DIR/nginx"
 
-# Set proper permissions (use nginx user for RHEL-based systems)
-chown -R nginx:nginx "$APP_DIR/uploads"
+# Set proper permissions
+chown -R www-data:www-data "$APP_DIR/uploads"
 chmod -R 755 "$APP_DIR/uploads"
-chown -R nginx:nginx "$APP_DIR/logs"
-chmod -R 755 "$APP_DIR/logs"
 
 log_success "Directory structure created at $APP_DIR"
-
-# =============================================================================
-# STEP 7b: Configure SELinux
-# =============================================================================
-log_info "Step 7b: Configuring SELinux..."
-
-# Check if SELinux is enforcing
-if command -v getenforce &> /dev/null && [ "$(getenforce)" != "Disabled" ]; then
-    log_info "SELinux is $(getenforce) - configuring policies..."
-    
-    # Allow Nginx to connect to network (for proxying to Node.js apps)
-    setsebool -P httpd_can_network_connect 1
-    
-    # Allow Nginx to connect to database (if needed directly)
-    setsebool -P httpd_can_network_connect_db 1
-    
-    # Set proper SELinux context for uploads directory
-    semanage fcontext -a -t httpd_sys_rw_content_t "$APP_DIR/uploads(/.*)?" 2>/dev/null || \
-        semanage fcontext -m -t httpd_sys_rw_content_t "$APP_DIR/uploads(/.*)?" 2>/dev/null || true
-    restorecon -R "$APP_DIR/uploads" || true
-    
-    # Set proper SELinux context for logs directory
-    semanage fcontext -a -t httpd_log_t "$APP_DIR/logs(/.*)?" 2>/dev/null || \
-        semanage fcontext -m -t httpd_log_t "$APP_DIR/logs(/.*)?" 2>/dev/null || true
-    restorecon -R "$APP_DIR/logs" || true
-    
-    # Set proper context for nginx configuration
-    semanage fcontext -a -t httpd_config_t "$APP_DIR/nginx(/.*)?" 2>/dev/null || true
-    restorecon -R "$APP_DIR/nginx" 2>/dev/null || true
-    
-    log_success "SELinux configured (httpd_can_network_connect enabled)"
-else
-    log_info "SELinux is disabled or not available - skipping SELinux configuration"
-fi
 
 # =============================================================================
 # STEP 8: Setup Docker Compose for Database and Redis
@@ -600,11 +545,10 @@ log_success "PM2 configured and applications started"
 # =============================================================================
 log_info "Step 13: Configuring Nginx..."
 
-NGINX_CONFIG="/etc/nginx/conf.d/permatrax.conf"
+NGINX_CONFIG="/etc/nginx/sites-available/permatrax"
 
-# Remove default server block if exists (RHEL uses default.conf)
-rm -f /etc/nginx/conf.d/default.conf
-rm -f /etc/nginx/conf.d/example_ssl.conf
+# Remove default site if exists
+rm -f /etc/nginx/sites-enabled/default
 
 cat > "$NGINX_CONFIG" << 'EOF'
 # Rate limiting zones
@@ -761,6 +705,9 @@ server {
 }
 EOF
 
+# Enable site
+ln -sf "$NGINX_CONFIG" /etc/nginx/sites-enabled/permatrax
+
 # Test Nginx configuration
 log_info "Testing Nginx configuration..."
 nginx -t
@@ -772,14 +719,9 @@ systemctl enable nginx
 log_success "Nginx configured"
 
 # =============================================================================
-# STEP 14: Setup SSL with Certbot (for AlmaLinux/RHEL)
+# STEP 14: Setup SSL with Certbot
 # =============================================================================
 log_info "Step 14: Setting up SSL certificates..."
-
-# Install Certbot for RHEL-based systems if not already installed
-if ! command -v certbot &> /dev/null; then
-    dnf install -y certbot python3-certbot-nginx
-fi
 
 # Create directory for Certbot webroot
 mkdir -p /var/www/certbot
@@ -880,7 +822,7 @@ echo "   - Database console:   cd $APP_DIR && docker compose -f docker-compose.p
 echo "   - Redis CLI:          cd $APP_DIR && docker compose -f docker-compose.prod.yml exec redis redis-cli -a '$REDIS_PASSWORD'"
 echo ""
 echo "5. Firewall status:"
-firewall-cmd --list-all
+ufw status numbered
 echo ""
 echo "6. Backup your .env files and database regularly!"
 echo ""
