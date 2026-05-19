@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { Suspense, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
@@ -25,7 +25,10 @@ import { SearchBar } from './components/SearchBar';
 import { useCommandStore } from '../../store/useCommandStore';
 import { useDesignStore } from '../../store/useDesignStore';
 
-export default function GisMapPage() {
+export const dynamic = 'force-dynamic';
+export const runtime = 'nodejs';
+
+function GisMapPage() {
   const mapRef = useRef<maplibregl.Map | null>(null);
   const searchParams = useSearchParams();
 
@@ -352,5 +355,13 @@ export default function GisMapPage() {
         }}
       />
     </div>
+  );
+}
+
+export default function MapPage() {
+  return (
+    <Suspense fallback={null}>
+      <GisMapPage />
+    </Suspense>
   );
 }
