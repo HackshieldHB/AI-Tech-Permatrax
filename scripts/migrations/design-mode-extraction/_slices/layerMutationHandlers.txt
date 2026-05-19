@@ -1,0 +1,40 @@
+  // FIX: update layer color (API may reject extra fields — then update locally only)
+  const handleColorChange = useCallback(async (layerId: string, newColor: string, isVisible: boolean) => {
+    try {
+      await apiPatch(`/map/layers/${layerId}/visibility`, {
+        isVisible, // FIX
+        color: newColor, // FIX: backend may ignore — ValidationPipe may error
+      }); // FIX
+    } catch {
+      // FIX: expected if backend only allows isVisible
+    }
+    setLayers((prev) => prev.map((l) => (l.id === layerId ? { ...l, color: newColor } : l))); // FIX: always refresh map paint
+  }, []);
+
+  // FIX: delete KMZ layer via API + remove map layers/sources
+  const handleDeleteLayer = useCallback(async (layerId: string, layerName: string) => {
+    if (!confirm(`Hapus layer "${layerName}"?`)) return; // FIX
+    try {
+      await apiDelete(`/map/layers/${layerId}`); // FIX
+      const map = mapRef.current; // FIX
+      if (map) {
+        const ids = [
+          `kmz-line-${layerId}`, // FIX
+          `kmz-fill-${layerId}`, // FIX
+          `kmz-fill-${layerId}-outline`, // FIX
+          `kmz-circle-${layerId}`, // FIX
+          `kmz-symbol-${layerId}`, // FIX
+        ]; // FIX
+        ids.forEach((id) => {
+          if (map.getLayer(id)) map.removeLayer(id); // FIX
+        }); // FIX
+        const src = `kmz-${layerId}`; // FIX
+        if (map.getSource(src)) map.removeSource(src); // FIX
+      }
+      setLayers((prev) => prev.filter((l) => l.id !== layerId)); // FIX
+      toast.success(`Layer "${layerName}" dihapus`); // FIX
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Error'; // FIX
+      toast.error(`Gagal hapus: ${msg}`); // FIX
+    }
+  }, []);

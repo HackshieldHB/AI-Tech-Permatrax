@@ -1,0 +1,43 @@
+// FIX: calculate polygon area using Shoelace formula
+function polygonAreaFromCoords(coords: [number, number][]): number {
+  // FIX: use turf if available, else Shoelace
+  try {
+    const poly = turf.polygon([[...coords, coords[0]]]); // FIX
+    return turf.area(poly); // FIX: returns m²
+  } catch {
+    // FIX: fallback Shoelace formula (approximate)
+    const R = 6371000; // FIX
+    let area = 0; // FIX
+    const n = coords.length; // FIX
+    for (let i = 0; i < n; i++) {
+      const [lng1, lat1] = coords[i]; // FIX
+      const [lng2, lat2] = coords[(i + 1) % n]; // FIX
+      area +=
+        ((lng2 - lng1) * Math.PI) / 180 * (2 + Math.sin((lat1 * Math.PI) / 180) + Math.sin((lat2 * Math.PI) / 180)); // FIX
+    } // FIX
+    return Math.abs((area * R * R) / 2); // FIX
+  } // FIX
+} // FIX
+
+// FIX: polygon centroid
+function polygonCentroidFromCoords(coords: [number, number][]): [number, number] {
+  try {
+    const poly = turf.polygon([[...coords, coords[0]]]); // FIX
+    const c = turf.centroid(poly); // FIX
+    return c.geometry.coordinates as [number, number]; // FIX
+  } catch {
+    const lng = coords.reduce((s, c) => s + c[0], 0) / coords.length; // FIX
+    const lat = coords.reduce((s, c) => s + c[1], 0) / coords.length; // FIX
+    return [lng, lat]; // FIX
+  } // FIX
+} // FIX
+
+// FIX: clear polygon from map
+function clearPolygonFromMap(map: maplibregl.Map) {
+  ['poly-line', 'poly-fill', 'poly-points'].forEach((id) => {
+    if (map.getLayer(id)) map.removeLayer(id); // FIX: layers before sources
+  }); // FIX
+  ['poly-fill', 'poly-points'].forEach((id) => {
+    if (map.getSource(id)) map.removeSource(id); // FIX
+  }); // FIX
+} // FIX

@@ -1,0 +1,91 @@
+// ── TILE LAYERS ─────────────────────────────────────────
+const TILE_LAYERS = {
+  osm: {
+    label: 'OpenStreetMap', // FIX
+    icon: '🗺️', // FIX
+    style: {
+      version: 8 as const, // FIX
+      sources: {
+        osm: {
+          type: 'raster' as const, // FIX
+          tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'], // FIX
+          tileSize: 256, // FIX
+          attribution: '© OpenStreetMap contributors', // FIX
+          maxzoom: 19, // FIX
+        },
+      },
+      layers: [
+        {
+          id: 'osm', // FIX
+          type: 'raster' as const, // FIX
+          source: 'osm', // FIX
+        },
+      ],
+    },
+  },
+  satellite: {
+    label: 'Satelit', // FIX
+    icon: '🛰️', // FIX
+    style: {
+      version: 8 as const, // FIX
+      sources: {
+        satellite: {
+          type: 'raster' as const, // FIX
+          tiles: [
+            'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+          ], // FIX
+          tileSize: 256, // FIX
+          attribution: '© Esri World Imagery', // FIX
+          maxzoom: 18, // FIX
+        },
+      },
+      layers: [
+        {
+          id: 'satellite', // FIX
+          type: 'raster' as const, // FIX
+          source: 'satellite', // FIX
+        },
+      ],
+    },
+  },
+};
+
+// ── CATEGORY CONFIG ─────────────────────────────────────
+const CATEGORY_CONFIG = {
+  A: {
+    label: 'Kategori A', // FIX
+    color: '#EF4444', // FIX
+    bg: '#EF444420', // FIX
+    desc: 'High Priority (>200 homepass, backbone <500m)', // FIX
+  },
+  B: {
+    label: 'Kategori B', // FIX
+    color: '#F59E0B', // FIX
+    bg: '#F59E0B20', // FIX
+    desc: 'Medium Priority (80-200 homepass)', // FIX
+  },
+  C: {
+    label: 'Kategori C', // FIX
+    color: '#22C55E', // FIX
+    bg: '#22C55E20', // FIX
+    desc: 'Low Priority (<80 homepass)', // FIX
+  },
+};
+
+// ── PHASE COLOR MAP ─────────────────────────────────────
+const getPhaseColor = (phase: string, isDone: boolean): string => {
+  if (isDone) return '#22C55E'; // FIX: hijau untuk DONE
+  const colors: Record<string, string> = {
+    SITE_VISIT: '#3B82F6', // FIX
+    SURVEY_INPUT: '#3B82F6', // FIX
+    SIP_REQUEST: '#8B5CF6', // FIX
+    HLD_SUBMISSION: '#F59E0B', // FIX
+    LLD_SUBMISSION: '#F59E0B', // FIX
+    PR_BR_ISSUANCE: '#EF4444', // FIX
+    SKOM_BUDGET: '#EF4444', // FIX
+    PERMIT_DONE: '#22C55E', // FIX
+  };
+  return colors[phase] || '#6B7280'; // FIX
+};
+
+type OsmElement = { tags?: Record<string, string> }; // FIX: Overpass element shape

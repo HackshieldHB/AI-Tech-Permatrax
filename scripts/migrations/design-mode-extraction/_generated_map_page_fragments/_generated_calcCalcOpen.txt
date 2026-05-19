@@ -1,0 +1,396 @@
+            {activePanel === 'calc' && (
+              <div style={{ padding: 16 }}>
+                {calcMode === 'idle' && !calcResult && (
+                  <>
+                    <p
+                      style={{
+                        fontSize: 13,
+                        color: '#6B7280',
+                        marginBottom: 14,
+                        lineHeight: 1.5,
+                      }}
+                    >
+                      Gunakan kalkulasi untuk menghitung kebutuhan jaringan FTTH
+                      pada area yang dipilih.
+                    </p>
+
+                    {/* FIX: Input mode toggle */}
+                    <div style={{ marginBottom: 14 }}>
+                      <label
+                        style={{
+                          fontSize: 11,
+                          fontWeight: 700,
+                          color: 'var(--color-text-secondary)',
+                          display: 'block',
+                          marginBottom: 6,
+                          textTransform: 'uppercase',
+                          letterSpacing: '0.05em',
+                        }}
+                      >
+                        Mode Input Area
+                      </label>
+                      <div
+                        style={{
+                          display: 'flex',
+                          gap: 4,
+                          background: 'var(--color-background-secondary)',
+                          padding: 4,
+                          borderRadius: 10,
+                        }}
+                      >
+                        {(
+                          [
+                            { key: 'radius' as const, label: '⭕ Radius' },
+                            { key: 'polygon' as const, label: '🔷 Polygon' },
+                          ] as const
+                        ).map((m) => (
+                          <button
+                            key={m.key}
+                            type="button"
+                            onClick={() => {
+                              setInputMode(m.key); // FIX
+                              setPolygonPoints([]); // FIX
+                              setPolygonAreaSqM(null); // FIX
+                              setPolygonCentroid(null); // FIX
+                              const mmap = mapRef.current; // FIX
+                              if (mmap) clearPolygonFromMap(mmap); // FIX
+                              polygonMarkersRef.current.forEach((mk) => mk.remove()); // FIX
+                              polygonMarkersRef.current = []; // FIX
+                            }}
+                            style={{
+                              flex: 1,
+                              padding: '7px 8px',
+                              borderRadius: 7,
+                              border: 'none',
+                              cursor: 'pointer',
+                              background: inputMode === m.key ? 'white' : 'transparent',
+                              color:
+                                inputMode === m.key
+                                  ? 'var(--color-text-primary)'
+                                  : 'var(--color-text-secondary)',
+                              fontWeight: inputMode === m.key ? 700 : 400,
+                              fontSize: 12,
+                              boxShadow:
+                                inputMode === m.key ? '0 1px 4px rgba(0,0,0,0.1)' : 'none',
+                              transition: 'all 150ms',
+                            }}
+                          >
+                            {m.label}
+                          </button>
+                        ))}
+                      </div>
+                      {inputMode === 'polygon' && (
+                        <div
+                          style={{
+                            fontSize: 11,
+                            color: '#6B7280',
+                            marginTop: 6,
+                            lineHeight: 1.4,
+                          }}
+                        >
+                          💡 Klik titik-titik di peta untuk menggambar area. Double-click untuk
+                          menutup polygon.
+                        </div>
+                      )}
+                    </div>
+
+                    <div style={{ marginBottom: 12 }}>
+                      <label
+                        style={{
+                          fontSize: 11,
+                          fontWeight: 700,
+                          color: '#6B7280',
+                          display: 'block',
+                          marginBottom: 6,
+                          textTransform: 'uppercase',
+                          letterSpacing: '0.05em',
+                        }}
+                      >
+                        Tipe Area
+                      </label>
+                      <div style={{ display: 'flex', gap: 4 }}>
+                        {(['URBAN', 'SUBURBAN', 'RURAL'] as const).map((t) => (
+                          <button
+                            key={t}
+                            type="button"
+                            onClick={() => setAreaType(t)}
+                            style={{
+                              flex: 1,
+                              padding: '7px 4px',
+                              borderRadius: 7,
+                              border: `1.5px solid ${areaType === t ? '#00D4B4' : '#E5E7EB'}`,
+                              background: areaType === t ? '#00D4B415' : 'white',
+                              color: areaType === t ? '#00D4B4' : '#374151',
+                              cursor: 'pointer',
+                              fontSize: 11,
+                              fontWeight: 600,
+                            }}
+                          >
+                            {t === 'URBAN' ? '🏙️' : t === 'SUBURBAN' ? '🏘️' : '🌳'}{' '}
+                            {t}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* FIX: show radius only in radius mode */}
+                    {inputMode === 'radius' && (
+                      <div style={{ marginBottom: 16 }}>
+                        <label
+                          style={{
+                            fontSize: 11,
+                            fontWeight: 700,
+                            color: '#6B7280',
+                            display: 'block',
+                            marginBottom: 6,
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.05em',
+                          }}
+                        >
+                          Radius Area: {areaRadius}m
+                        </label>
+                        <input
+                          type="range"
+                          min={100}
+                          max={1000}
+                          step={50}
+                          value={areaRadius}
+                          onChange={(e) => setAreaRadius(Number(e.target.value))}
+                          style={{ width: '100%' }}
+                        />
+                        <div
+                          style={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            fontSize: 10,
+                            color: '#9CA3AF',
+                          }}
+                        >
+                          <span>100m</span>
+                          <span>500m</span>
+                          <span>1km</span>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* FIX: polygon area info */}
+                    {inputMode === 'polygon' && polygonAreaSqM != null && polygonAreaSqM > 0 && (
+                      <div
+                        style={{
+                          padding: '8px 12px',
+                          borderRadius: 8,
+                          marginBottom: 12,
+                          background: '#F0FDF4',
+                          border: '1px solid #BBF7D0',
+                          fontSize: 12,
+                        }}
+                      >
+                        <span style={{ fontWeight: 600, color: '#16A34A' }}>
+                          ✅ Polygon tergambar:{' '}
+                        </span>
+                        <span style={{ color: '#374151' }}>
+                          {polygonAreaSqM > 1_000_000
+                            ? `${(polygonAreaSqM / 1_000_000).toFixed(3)} km²`
+                            : `${Math.round(polygonAreaSqM).toLocaleString('id-ID')} m²`}
+                          {' · '}
+                          {polygonPoints.length} titik
+                        </span>
+                      </div>
+                    )}
+                    {inputMode === 'polygon' && (!polygonAreaSqM || polygonAreaSqM <= 0) && (
+                      <div
+                        style={{
+                          padding: '8px 12px',
+                          borderRadius: 8,
+                          marginBottom: 12,
+                          background: '#FFF7ED',
+                          border: '1px solid #FED7AA',
+                          fontSize: 11,
+                          color: '#92400E',
+                        }}
+                      >
+                        📍 Klik peta untuk tambah titik. Double-click untuk selesai.
+                      </div>
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={() => handleStartCalc()}
+                      style={{
+                        width: '100%',
+                        padding: '11px',
+                        borderRadius: 10,
+                        border: 'none',
+                        background: 'linear-gradient(135deg, #00D4B4, #00B89E)',
+                        color: 'white',
+                        cursor: 'pointer',
+                        fontSize: 13,
+                        fontWeight: 700,
+                        boxShadow: '0 4px 14px #00D4B440',
+                      }}
+                    >
+                      🧮 Mulai Kalkulasi
+                    </button>
+                  </>
+                )}
+
+                {(calcMode === 'backbone' || calcMode === 'target') && (
+                  <div style={{ textAlign: 'center', padding: '20px 0' }}>
+                    <div style={{ fontSize: 32, marginBottom: 12 }}>
+                      {calcMode === 'backbone' ? '📡' : '🎯'}
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 13,
+                        fontWeight: 600,
+                        color: '#111',
+                        marginBottom: 6,
+                      }}
+                    >
+                      {calcMode === 'backbone'
+                        ? 'Klik titik BACKBONE di peta'
+                        : 'Klik area TARGET di peta'}
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 11,
+                        color: '#6B7280',
+                        marginBottom: 16,
+                      }}
+                    >
+                      {calcMode === 'backbone'
+                        ? 'Tandai lokasi backbone/OLT terdekat'
+                        : 'Tandai area yang ingin dipasang FTTH'}
+                    </div>
+                    {backbonePoint && (
+                      <div
+                        style={{
+                          padding: '8px 12px',
+                          borderRadius: 8,
+                          background: '#EFF6FF',
+                          border: '1px solid #BFDBFE',
+                          fontSize: 11,
+                          color: '#1D4ED8',
+                          marginBottom: 8,
+                        }}
+                      >
+                        ✅ Backbone: {backbonePoint[1].toFixed(4)},{' '}
+                        {backbonePoint[0].toFixed(4)}
+                      </div>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        clearTopology(); // FIX: remove topology layers
+                        clearCalcGraphics();
+                        setCalcMode('idle');
+                      }}
+                      style={{
+                        padding: '7px 16px',
+                        borderRadius: 8,
+                        border: '1px solid #E5E7EB',
+                        background: 'none',
+                        cursor: 'pointer',
+                        fontSize: 12,
+                        color: '#6B7280',
+                      }}
+                    >
+                      ✕ Batalkan
+                    </button>
+                  </div>
+                )}
+
+                {calcMode === 'result' && !calcResult && (
+                  <div style={{ padding: '12px 0' }}>
+                    <div
+                      style={{
+                        padding: '10px 12px',
+                        borderRadius: 8,
+                        background: '#F0FDF4',
+                        border: '1px solid #BBF7D0',
+                        marginBottom: 12,
+                        fontSize: 12,
+                      }}
+                    >
+                      ✅ Backbone + Target sudah dipilih
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void runCalculation()}
+                      disabled={calculating}
+                      style={{
+                        width: '100%',
+                        padding: '11px',
+                        borderRadius: 10,
+                        border: 'none',
+                        background: calculating
+                          ? '#E5E7EB'
+                          : 'linear-gradient(135deg, #00D4B4, #00B89E)',
+                        color: calculating ? '#9CA3AF' : 'white',
+                        cursor: calculating ? 'not-allowed' : 'pointer',
+                        fontSize: 13,
+                        fontWeight: 700,
+                      }}
+                    >
+                      {calculating ? '⏳ Menghitung...' : '🧮 Hitung Sekarang'}
+                    </button>
+                  </div>
+                )}
+
+                {/* FIX: Enhanced calculation results */}
+                {calcResult && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                    {/* FIX: Category banner */}
+                    <div
+                      style={{
+                        padding: '12px 14px',
+                        borderRadius: 10,
+                        background:
+                          calcResult.summary.areaCategory === 'A'
+                            ? '#EF444415'
+                            : calcResult.summary.areaCategory === 'B'
+                              ? '#F59E0B15'
+                              : '#22C55E15',
+                        border: `1px solid ${
+                          calcResult.summary.areaCategory === 'A'
+                            ? '#EF444440'
+                            : calcResult.summary.areaCategory === 'B'
+                              ? '#F59E0B40'
+                              : '#22C55E40'
+                        }`,
+                      }}
+                    >
+                      <div
+                        style={{
+                          fontSize: 17,
+                          fontWeight: 800,
+                          color:
+                            calcResult.summary.areaCategory === 'A'
+                              ? '#EF4444'
+                              : calcResult.summary.areaCategory === 'B'
+                                ? '#F59E0B'
+                                : '#22C55E',
+                        }}
+                      >
+                        {calcResult.summary.areaCategory === 'A'
+                          ? '🔴'
+                          : calcResult.summary.areaCategory === 'B'
+                            ? '🟡'
+                            : '🟢'}{' '}
+                        Kategori {calcResult.summary.areaCategory}
+                      </div>
+                      <div
+                        style={{
+                          fontSize: 11,
+                          color: '#6B7280',
+                          marginTop: 3,
+                          lineHeight: 1.4,
+                        }}
+                      >
+                        {calcResult.summary.categoryReason}
+                      </div>
+                      <div style={{ fontSize: 11, color: '#6B7280', marginTop: 4 }}>
+                        📡 {calcResult.summary.backboneOwner} ·{' '}
+                        {calcResult.summary.backboneDistanceM}m · {calcResult.summary.areaType}
+                      </div>
+                    </div>

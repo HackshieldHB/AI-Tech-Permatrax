@@ -1,0 +1,48 @@
+  const handleSearchInput = useCallback((val: string) => {
+    setSearchQuery(val); // FIX
+    setShowSearchDrop(true); // FIX
+    if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current); // FIX
+    if (!val.trim() || val.length < 2) {
+      setSearchResults([]); // FIX
+      return; // FIX
+    }
+    searchTimeoutRef.current = setTimeout(() => {
+      void (async () => {
+        setSearchLoading(true); // FIX
+        try {
+          const res = await fetch(
+            `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(val)}&format=json&limit=6&addressdetails=1`,
+            {
+              headers: {
+                'Accept-Language': 'id,en', // FIX
+                'User-Agent': 'PermaTrax-GIS/1.0 (internal; contact: support@permatrax.local)', // FIX: Nominatim policy
+              },
+            },
+          ); // FIX
+          const data = (await res.json()) as NominatimResult[]; // FIX
+          setSearchResults(Array.isArray(data) ? data : []); // FIX
+        } catch {
+          setSearchResults([]); // FIX
+        } finally {
+          setSearchLoading(false); // FIX
+        }
+      })();
+    }, 500); // FIX: 500ms debounce
+  }, []);
+
+  // FIX: fly to selected Nominatim result
+  const handleSearchSelect = useCallback((result: NominatimResult) => {
+    const map = mapRef.current; // FIX
+    if (!map) return; // FIX
+    const lat = parseFloat(result.lat); // FIX
+    const lon = parseFloat(result.lon); // FIX
+    map.flyTo({
+      center: [lon, lat], // FIX
+      zoom: 15, // FIX
+      duration: 1200, // FIX
+      essential: true, // FIX
+    }); // FIX
+    setSearchQuery(result.display_name.split(',').slice(0, 2).join(',')); // FIX
+    setShowSearchDrop(false); // FIX
+    setSearchResults([]); // FIX
+  }, []);

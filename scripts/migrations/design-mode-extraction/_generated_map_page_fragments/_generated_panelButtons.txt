@@ -1,0 +1,43 @@
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 4,
+            background: 'white',
+            borderRadius: 10,
+            overflow: 'hidden',
+            boxShadow: '0 2px 12px rgba(0,0,0,0.15)',
+          }}
+        >
+          {[
+            { key: 'legend' as const, label: '🏷️ Legenda' },
+            { key: 'layers' as const, label: '📂 KMZ Layers' },
+            { key: 'calc' as const, label: '🧮 Kalkulasi' },
+          ].map((panel) => (
+            <button
+              key={panel.key}
+              type="button"
+              onClick={() =>
+                setActivePanel(activePanel === panel.key ? null : panel.key)
+              }
+              style={{
+                padding: '8px 14px',
+                border: 'none',
+                textAlign: 'left',
+                background:
+                  activePanel === panel.key ? '#00D4B410' : 'transparent',
+                color: activePanel === panel.key ? '#00D4B4' : '#374151',
+                cursor: 'pointer',
+                fontSize: 12,
+                fontWeight: 500,
+                borderLeft:
+                  activePanel === panel.key
+                    ? '3px solid #00D4B4'
+                    : '3px solid transparent',
+                transition: 'all 150ms',
+              }}
+            >
+              {panel.label}
+            </button>
+          ))}
+        </div>

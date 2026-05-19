@@ -1,0 +1,13 @@
+  // ── Calculation mode ────────────────────────────────────
+  const clearCalcGraphics = useCallback(() => {
+    const map = mapRef.current; // FIX
+    backboneMarkerRef.current?.remove(); // FIX
+    backboneMarkerRef.current = null; // FIX
+    targetMarkerRef.current?.remove(); // FIX
+    targetMarkerRef.current = null; // FIX
+    if (map) {
+      if (map.getLayer('calc-circle-fill')) map.removeLayer('calc-circle-fill'); // FIX
+      if (map.getLayer('calc-circle-line')) map.removeLayer('calc-circle-line'); // FIX
+      if (map.getSource('calc-circle')) map.removeSource('calc-circle'); // FIX
+    }
+  }, []);

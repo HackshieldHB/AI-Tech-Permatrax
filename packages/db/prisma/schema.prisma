@@ -1,0 +1,2850 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [postgis]
+}
+
+enum ProjectStatus {
+  PERMIT
+  SURVEY
+  DESIGN
+  IMPLEMENTATION
+  ATP
+  CLOSING
+}
+
+model Project {
+  id               String        @id @default(uuid())
+  projectCode      String        @unique
+  namaProyek       String
+  regionalArea     String
+  lokasiProyek     String
+  noPO             String
+  namaPelaksana    String
+  tanggalPerjanjian DateTime
+  status           ProjectStatus
+
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  homepasses       Homepass[]
+  documents        Document[]
+  requests         Request[]
+  activityLogs     ActivityLog[]
+  networkDesigns   NetworkDesign[]
+}
+
+// ── Network design (GIS FTTH topology persistence) ─────────────────────────
+// Phase 2 will use SPLITTER, POLE, SPLICE, CONNECTOR nodes and DROP edges.
+
+enum NodeType {
+  OLT
+  ODC
+  ODP
+  SPLITTER
+  POLE
+  SPLICE
+  CONNECTOR
+}
+
+enum EdgeType {
+  FEEDER
+  DISTRIBUTION
+  DROP
+}
+
+enum NodeOrigin {
+  AUTO
+  MANUAL
+  MODIFIED
+}
+
+enum DesignStatus {
+  DRAFT
+  IN_REVIEW
+  APPROVED
+  ARCHIVED
+}
+
+model NetworkDesign {
+  id           String       @id @default(cuid())
+  projectId    String
+  project      Project      @relation(fields: [projectId], references: [id])
+  calcInputs   Json
+  baseTopology Json
+  sketchTopology Json? @default("{}")
+  status       DesignStatus @default(DRAFT)
+  version      Int          @default(1)
+  createdBy    String
+  creator      User         @relation(fields: [createdBy], references: [id])
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  nodes        NetworkNode[]
+  edges        NetworkEdge[]
+
+  @@index([projectId])
+}
+
+model NetworkNode {
+  id         String        @id @default(cuid())
+  designId   String
+  design     NetworkDesign @relation(fields: [designId], references: [id], onDelete: Cascade)
+  type       NodeType
+  origin     NodeOrigin
+  geom       Unsupported("geometry(Point, 4326)")
+  properties Json
+  createdAt  DateTime      @default(now())
+  fromEdges  NetworkEdge[] @relation("FromNode")
+  toEdges    NetworkEdge[] @relation("ToNode")
+
+  @@index([designId])
+  @@index([geom], type: Gist)
+}
+
+// TODO(design-mode-phase-2): When implementing node deletion, the service must
+// delete or reassign edges referencing the node BEFORE deleting the node itself,
+// in the same transaction. fromNodeId/toNodeId use ON DELETE RESTRICT to prevent
+// silent edge orphaning. See DesignService.deleteNode() (Phase 2).
+
+model NetworkEdge {
+  id         String        @id @default(cuid())
+  designId   String
+  design     NetworkDesign @relation(fields: [designId], references: [id], onDelete: Cascade)
+  fromNodeId String
+  toNodeId   String
+  type       EdgeType
+  origin     NodeOrigin
+  geom       Unsupported("geometry(LineString, 4326)")
+  properties Json
+  fromNode   NetworkNode   @relation("FromNode", fields: [fromNodeId], references: [id])
+  toNode     NetworkNode   @relation("ToNode", fields: [toNodeId], references: [id])
+
+  @@index([designId])
+}
+
+model Homepass {
+  id        BigInt  @id @default(autoincrement())
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id])
+  clusterId String
+  status    String
+  geom      Unsupported("geometry(Point, 4326)")
+
+  @@index([geom], type: Gist)
+}
+
+enum DocumentType {
+  BAST
+  BAUT
+  BACT
+  ATP_FINDING
+}
+
+enum DocumentStatus {
+  DRAFT
+  GENERATED
+  SIGNED
+  ARCHIVED
+}
+
+model Document {
+  id             String         @id @default(uuid())
+  type           DocumentType
+  projectId      String
+  project        Project        @relation(fields: [projectId], references: [id])
+  documentNumber String         @unique
+  versionNumber  Int
+  status         DocumentStatus
+  fileUrl        String?
+  metadata       Json?
+}
+
+enum RequestType {
+  PERMIT_APPROVAL
+  DESIGN_APPROVAL
+  ATP_APPROVAL
+  DOCUMENT_SIGN
+}
+
+enum RequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum SlaStatus {
+  SAFE
+  WARNING
+  BREACHED
+}
+
+model Request {
+  id              String        @id @default(uuid())
+  type            RequestType
+  projectId       String
+  project         Project       @relation(fields: [projectId], references: [id])
+  status          RequestStatus
+  requestedBy     String
+  assignedToRole  String
+  currentApprover String
+  slaDeadline     DateTime
+  slaStatus       SlaStatus
+}
+
+model ActivityLog {
+  id          String   @id @default(uuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id])
+  action      String
+  performedBy String
+  metadata    Json?
+  timestamp   DateTime @default(now())
+}
+
+enum Role {
+  SURVEYOR_FTTH
+  SURVEYOR_FTTB
+  SURVEYOR_FTTT
+  PM_FTTH
+  PM_FTTB
+  PM_FTTT
+  PM_SENIOR
+  DESIGNER // FIX Issue 10: dedicated design-team role for HLD/LLD uploads
+  ADMIN
+  ADMIN_STOCK
+  FINANCE
+  GENERAL_MANAGER
+  MARKETING
+  MARKETING_HEAD
+  OPERATIONAL_MANAGER
+  PURCHASING // Phase 3: procurement / supplier pricing
+}
+
+enum FiberType {
+  FTTH
+  FTTB
+  FTTT
+}
+
+model User {
+  id           String     @id @default(cuid())
+  email        String     @unique
+  name         String
+  password     String     // Hashed
+  role         Role       @default(SURVEYOR_FTTH)
+  fiberType    FiberType?
+  signatureUrl String?
+  avatarUrl    String?
+  phone        String?
+  address      String?
+  isActive     Boolean    @default(true)
+  lastLoginAt  DateTime?
+  createdBy    String?
+  refreshToken String?    // stored as bcrypt hash, NOT plain
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  creator        User?    @relation("UserCreatedBy", fields: [createdBy], references: [id])
+  createdUsers   User[]   @relation("UserCreatedBy")
+
+  // Phase 2 relations
+  importedCleanLists   CleanList[]      @relation("CleanListImporter")
+  createdIspCustomers  IspCustomer[]    @relation("IspCustomerCreator")
+  visitRequests        VisitRequest[]   @relation("VisitRequester")
+  assignedVisits       VisitRequest[]   @relation("VisitPM")
+  generatedBaOpens     BaOpen[]         @relation("BaOpenGenerator")
+  visitApprovalLogs    VisitApprovalLog[] @relation("ApprovalActor")
+
+  // NEW: Phase 5 — permit pipeline relations
+  permitClustersAsPM     PermitCluster[]    @relation("PermitPM")
+  createdApds            Apd[]              @relation("ApdCreator")
+  approvedApds           Apd[]              @relation("ApdApprover")
+  apdRevisions           ApdRevision[]      @relation("ApdRevisionCreator")
+  createdAbds            Abd[]              @relation("AbdCreator")
+  approvedAbds           Abd[]              @relation("AbdApprover")
+  abdRevisions           AbdRevision[]      @relation("AbdRevisionCreator")
+  uploadedDiagrams       TechnicalDiagram[] @relation("DiagramUploader")
+  conductedSocializations Socialization[]   @relation("SocializationConductor")
+  createdCompensations   Compensation[]     @relation("CompensationCreator")
+  negotiationLogs        NegotiationLog[]   @relation("NegotiationRecorder")
+  createdBaks            Bak[]              @relation("BakCreator")
+  approvedBaks           Bak[]              @relation("BakApprover")
+  validatedSignatures    SignatureRecord[]  @relation("SignatureValidator")
+  conductedScoms         Scom[]             @relation("ScomConductor")
+  createdScoms           Scom[]             @relation("ScomCreator")
+  validatedBakps         Bakp[]             @relation("BakpValidator")
+  compiledBakps          Bakp[]             @relation("BakpCompiler")
+
+  // NEW: Phase 3 relations
+  createdStockItems    StockItem[]        @relation("StockItemCreator")
+  stockLogs            StockLog[]         @relation("StockLogActor")
+  createdOrders        Order[]            @relation("OrderCreator")
+  generatedSuratJalan  SuratJalan[]       @relation("SuratJalanGenerator")
+  confirmedSuratJalan  SuratJalan[]       @relation("SuratJalanConfirmer")
+  purchaseRequests     PurchaseRequest[]  @relation("PRRequester")
+  processedPRs         PurchaseRequest[]  @relation("PRProcessor")
+  cashOpRequests       CashOperationRequest[] @relation("CashOpRequester")
+  cashOpApprovals      CashOpApprovalStep[]   @relation("CashOpApprover")
+  cashOpAttachments    CashOpAttachment[]     @relation("CashOpUploader")
+  cashOpRealisasiSteps CashOpRealisasiStep[]  @relation("CashOpRealisasiApprover")
+
+  updatedFeatureFlags  FeatureFlag[]      @relation("FeatureFlagUpdater")
+
+  // NEW: full permit lifecycle v2 — survey → SIP → HLD/LLD → finance
+  surveyDataConducted   SurveyData[]           @relation("SurveyDataConductor")
+  generatedSips         Sip[]                  @relation("SipGenerator")
+  createdHlds           Hld[]                  @relation("HldCreator")
+  hldRevisions          HldRevision[]          @relation("HldRevisionCreator")
+  createdLlds           Lld[]                  @relation("LldCreator")
+  lldRevisions          LldRevision[]          @relation("LldRevisionCreator")
+  prBrRecords           PrBrRecord[]           @relation("PrBrCreator")
+  contracts             ContractRecord[]       @relation("ContractCreator")
+  createdSkomBudgets    SkomBudget[]           @relation("SkomCreator")
+  approvedSkomBudgets   SkomBudget[]           @relation("SkomApprover")
+  disbursementRecords   DisbursementRecord[]   @relation("DisbursementRecorder")
+  compiledClaims        ClaimPackage[]         @relation("ClaimCompiler")
+  generatedInvoices     InvoicePackage[]       @relation("InvoiceGenerator")
+  submittedDocPackages  SurveyorDocPackage[]   @relation("DocPackageSubmitter") // NEW: surveyor doc package submitter
+  pmReviewedDocPackages SurveyorDocPackage[]   @relation("DocPackagePmReviewer") // NEW: PM reviewer relation
+  adminReviewedDocPackages SurveyorDocPackage[] @relation("DocPackageAdminReviewer") // NEW: Admin reviewer relation
+  updatedIspConfigs     IspEmailConfig[]       @relation("IspEmailUpdater") // NEW: ISP email config updater
+  uploadedEvidences     SurveyEvidence[]       @relation("SurveyEvidenceUploader") // NEW: survey evidence uploader relation
+  notifications         Notification[]         @relation("UserNotifications") // FIX: in-app notification inbox
+  gisLayers             GisLayer[]             @relation("GisUploader") // FIX: KMZ / GIS layer uploads
+
+  // Finance dashboard — budget projects (separate from legacy Project model)
+  financeProjectsCreated     FinanceProject[] @relation("FinanceProjectCreatedBy")
+  financeProjectsUpdated     FinanceProject[] @relation("FinanceProjectUpdatedBy")
+  budgetLedgerEntriesCreated BudgetLedger[]   @relation("BudgetLedgerCreator")
+  budgetTransfersSubmitted   BudgetTransfer[] @relation("BudgetTransferSubmittedBy")
+  budgetTransfersDecided     BudgetTransfer[] @relation("BudgetTransferDecidedBy")
+
+  // Phase 3: procurement
+  suppliersCreated            Supplier[]         @relation("SupplierCreatedBy")
+  supplierInvoicesUploaded    SupplierInvoice[]  @relation("SupplierInvoiceUploadedBy")
+  supplierInvoicesApproved    SupplierInvoice[]  @relation("SupplierInvoiceApprovedBy")
+  stockOutsRequested         StockOut[]         @relation("StockOutRequestedBy")
+  stockOutsFulfilled         StockOut[]         @relation("StockOutFulfilledBy")
+  ordersPurchasingSubmitted   Order[]            @relation("OrderPurchasingSubmittedBy")
+  ordersCancelled            Order[]            @relation("OrderCancelledBy")
+  ordersPoEmailSent           Order[]            @relation("OrderPoEmailSentBy")
+
+  networkDesignsCreated NetworkDesign[]
+}
+
+// Phase 4 — GM-controlled feature visibility per role
+model FeatureFlag {
+  id          String   @id @default(cuid())
+  featureKey  String   @unique
+  roles       String[]
+  isEnabled   Boolean  @default(true)
+  description String?
+  updatedBy   String
+  updatedAt   DateTime @updatedAt
+
+  updater     User     @relation("FeatureFlagUpdater", fields: [updatedBy], references: [id])
+
+  @@index([featureKey])
+}
+
+model MapDrawing {
+  id          String   @id @default(cuid())
+  projectId   String?
+  geojson     Json
+  color       String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// FIX: GIS — KMZ layers converted to GeoJSON for MapLibre
+model GisLayer {
+  id         String   @id @default(cuid())
+  name       String
+  fileUrl    String
+  geoJson    Json
+  color      String   @default("#FF6B00")
+  isVisible  Boolean  @default(true)
+  uploadedBy String
+  uploader   User     @relation("GisUploader", fields: [uploadedBy], references: [id])
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([uploadedBy])
+}
+
+model DeploymentCluster {
+  id              String   @id @default(cuid())
+  code            String   @unique
+  name            String
+  category        String   
+  targetHp        Int      @default(0)
+  status          String   @default("PLANNING") 
+  proposedBudget  Float?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  surveyReport    SurveyReport?
+  legalAttachments LegalAttachment[]
+  documentRequest DocumentRequest?
+}
+
+model LegalAttachment {
+  id           String   @id @default(cuid())
+  clusterId    String
+  cluster      DeploymentCluster @relation(fields: [clusterId], references: [id], onDelete: Cascade)
+  documentType String   // "KTP", "SK_RT", "PKS", "SIGNED_BAKP"
+  fileUrl      String
+  uploadedBy   String
+  createdAt    DateTime @default(now())
+}
+
+model SurveyReport {
+  id              String   @id @default(cuid())
+  clusterId       String   @unique
+  cluster         DeploymentCluster @relation(fields: [clusterId], references: [id], onDelete: Cascade)
+  estimatedHP     Int      
+  estimatedPoles  Int      
+  fieldNotes      String?  @db.Text
+  latitude        Float?
+  longitude       Float?
+  surveyedBy      String   
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+
+model DocumentRequest {
+  id            String   @id @default(cuid())
+  clusterId     String   @unique
+  cluster       DeploymentCluster @relation(fields: [clusterId], references: [id], onDelete: Cascade)
+  documentType  String   // "BA_SURVEY", "BAK", "BAKP", "INVOICE"
+  currentStage  String   // "PENDING_ADMIN", "PENDING_FS", "PENDING_ACK", "PENDING_MANAGER", "READY_INVOICE"
+  status        String   @default("IN_PROGRESS") // IN_PROGRESS, APPROVED, REJECTED
+  requestedBy   String   // User ID
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  approvalLogs  ApprovalLog[]
+}
+
+model ApprovalLog {
+  id                String   @id @default(cuid())
+  documentRequestId String
+  documentRequest   DocumentRequest @relation(fields: [documentRequestId], references: [id], onDelete: Cascade)
+  actionBy          String   // User ID or Role
+  action            String   // "SUBMITTED", "APPROVED", "REJECTED", "ACKNOWLEDGED"
+  stage             String   // The stage this action occurred in
+  notes             String?  // Reason for rejection/approval
+  createdAt         DateTime @default(now())
+}
+
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  userRole  String?
+  title     String
+  message   String
+  type      String    @default("GENERAL")
+  link      String?
+  entityId  String?
+  isRead    Boolean   @default(false)
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  user      User      @relation("UserNotifications", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead])
+  @@index([userRole, isRead])
+  @@index([createdAt])
+}
+
+// ─────────────────────────────────────────────────────────────────
+// NEW: PHASE 2 MODELS
+// ─────────────────────────────────────────────────────────────────
+
+// NEW: ISP CUSTOMER — managed by GM in settings
+model IspCustomer {
+  id           String    @id @default(cuid())
+  name         String    @unique
+  code         String    @unique
+  contactEmail String?
+  logoUrl      String?
+  isActive     Boolean   @default(true)
+  createdBy    String
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  creator      User      @relation("IspCustomerCreator", fields: [createdBy], references: [id])
+  pipelineTemplates PipelineTemplate[]
+}
+
+// NEW: CLEAN LIST STATUS ENUM
+enum CleanListStatus {
+  AVAILABLE
+  IN_PROGRESS
+  HAS_EXISTING_FIBER
+  COMPLETED
+  REJECTED
+}
+
+// NEW: CLEAN LIST — ISP cluster data imported by GM
+model CleanList {
+  id                String          @id @default(cuid())
+  ispCustomer       String
+  fiberType         FiberType
+  rwCode            String
+  kelurahan         String
+  kecamatan         String
+  kotaKabupaten     String
+  homepasCount      Int             @default(0)
+  hasExistingFiber  Boolean         @default(false)
+  existingOperator  String?
+  existingMarkedAt  DateTime?
+  status            CleanListStatus @default(AVAILABLE)
+  importedBy        String
+  importedAt        DateTime        @default(now())
+  siteName          String?
+  projectType       String?
+  permitStatus      String?
+  implStatus        String?
+  picPermit         String?
+  actualHP          Int?
+  hpHldApproved     Int?
+  coordinates       String?
+  lastUpdate        DateTime?
+  remark            String?
+  sourceSheet       String?
+  externalCode      String?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  importer          User            @relation("CleanListImporter", fields: [importedBy], references: [id])
+  visitRequests     VisitRequest[]
+
+  @@index([ispCustomer])
+  @@index([fiberType])
+  @@index([status])
+  @@index([rwCode, kelurahan])
+}
+
+// NEW: VISIT REQUEST STATUS ENUM — dual PM gates (visit schedule vs survey result)
+enum VisitRequestStatus {
+  DRAFT
+  PM_REVIEW_VISIT
+  APPROVED_PENDING_DATA
+  PM_REVIEW_SURVEY
+  PM_SENIOR_REVIEW
+  ADMIN_REVIEW
+  APPROVED
+  REJECTED
+  EXISTING_FIBER
+}
+
+// NEW: STAKEHOLDER RESPONSE ENUM
+enum StakeholderResponse {
+  PENDING
+  ALLOWED
+  NOT_ALLOWED
+  CONDITIONAL
+}
+
+// NEW: VISIT REQUEST — Surveyor requests field visit
+model VisitRequest {
+  id                    String              @id @default(cuid())
+  cleanListId           String
+  requestedBy           String
+  assignedPmId          String?
+  fiberType             FiberType
+  ispCustomer           String
+
+  rtContact             String?
+  rwContact             String?
+  pengelolaContact      String?
+  areaCondition         String?
+  existingNetworkFound  Boolean             @default(false)
+  existingOperator      String?
+  stakeholderResponse   StakeholderResponse? // optional until survey data step
+  surveyNotes           String?
+  visitDate             DateTime?
+  evidencePhotos        String[]
+
+  visitGateApprovedAt   DateTime?
+  visitGateApprovedBy   String?
+
+  status                VisitRequestStatus  @default(DRAFT)
+  pmReviewedAt          DateTime?
+  pmReviewedBy          String?
+  pmSeniorApprovedAt    DateTime?
+  pmSeniorApprovedBy    String?
+  adminApprovedAt       DateTime?
+  adminApprovedBy       String?
+  rejectionReason       String?
+
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
+
+  cleanList             CleanList           @relation(fields: [cleanListId], references: [id])
+  requester             User                @relation("VisitRequester", fields: [requestedBy], references: [id])
+  assignedPm            User?               @relation("VisitPM", fields: [assignedPmId], references: [id])
+  baOpen                BaOpen?
+  approvalLogs          VisitApprovalLog[]
+  permitCluster         PermitCluster?
+
+  @@index([status])
+  @@index([fiberType])
+  @@index([requestedBy])
+}
+
+// NEW: BA OPEN STATUS ENUM
+enum BaOpenStatus {
+  GENERATED
+  SENT
+  ARCHIVED
+}
+
+// NEW: BA OPEN — auto-generated after visit approved
+model BaOpen {
+  id                 String        @id @default(cuid())
+  visitRequestId     String        @unique
+  documentNumber     String        @unique
+  generatedAt        DateTime      @default(now())
+  generatedBy        String
+  pdfUrl             String?
+  status             BaOpenStatus  @default(GENERATED)
+
+  clusterName        String
+  rwCode             String
+  kelurahan          String
+  ispCustomer        String
+  visitDate          DateTime
+  surveyorName       String
+  rtRwName           String?
+  areaDescription    String?
+  stakeholderSummary String?
+  tanggal            DateTime? // NEW: date of meeting/kunjungan
+  tempat             String? // NEW: meeting location
+  topik              String? // NEW: BA topic / Berita Acara subject
+  description        String? // NEW: issues/description
+
+  /// Area survey menemukan jaringan existing — tetap generate BA Open + cluster (Issue #46)
+  existingFiber     Boolean   @default(false)
+  existingOperator  String?
+
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+
+  visitRequest       VisitRequest  @relation(fields: [visitRequestId], references: [id])
+  generator          User          @relation("BaOpenGenerator", fields: [generatedBy], references: [id])
+  permitCluster      PermitCluster?
+
+  @@index([status])
+  @@index([documentNumber])
+}
+
+// NEW: APPROVAL ACTION ENUM
+enum ApprovalAction {
+  SUBMITTED
+  VISIT_GATE_APPROVED
+  VISIT_GATE_REJECTED
+  PM_APPROVED
+  PM_REJECTED
+  PM_SENIOR_APPROVED
+  PM_SENIOR_REJECTED
+  ADMIN_APPROVED
+  ADMIN_REJECTED
+  MARKED_EXISTING_FIBER
+}
+
+// NEW: VISIT APPROVAL LOG — audit trail for VisitRequest approvals
+// Named VisitApprovalLog to avoid conflict with existing ApprovalLog (DocumentRequest)
+model VisitApprovalLog {
+  id             String         @id @default(cuid())
+  visitRequestId String
+  actorId        String
+  action         ApprovalAction
+  fromStatus     String
+  toStatus       String
+  notes          String?
+  createdAt      DateTime       @default(now())
+
+  visitRequest   VisitRequest   @relation(fields: [visitRequestId], references: [id])
+  actor          User           @relation("ApprovalActor", fields: [actorId], references: [id])
+
+  @@index([visitRequestId])
+  @@index([actorId])
+}
+
+// ─────────────────────────────────────────────────────────────────
+// NEW: PHASE 3 MODELS — STOCK / ORDER / SURAT JALAN / PURCHASE REQUEST
+// ─────────────────────────────────────────────────────────────────
+
+// NEW: StockLogType enum
+enum StockLogType {
+  IN_PURCHASE   // Barang masuk dari pembelian
+  IN_ORDER      // Barang masuk dari verifikasi order (barang diterima / SESUAI)
+  IN_RETURN     // Barang dikembalikan
+  OUT_ORDER     // Barang keluar untuk order proyek
+  OUT_DAMAGED   // Barang rusak/disposal
+  ADJUSTMENT    // Koreksi stok manual oleh admin
+}
+
+// NEW: STOCK ITEM — master item catalog
+model StockItem {
+  id            String    @id @default(cuid())
+  name          String
+  code          String    @unique
+  category      String
+  unit          String
+  currentQty    Int       @default(0)
+  minStockQty   Int       @default(0)
+  description   String?
+  isActive      Boolean   @default(true)
+  createdBy     String
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  creator       User        @relation("StockItemCreator", fields: [createdBy], references: [id])
+  orderItems    OrderItem[]
+  stockLogs     StockLog[]
+
+  @@index([name])
+  @@index([category])
+  @@index([code])
+}
+
+// NEW: STOCK LOG — every quantity change recorded
+model StockLog {
+  id            String       @id @default(cuid())
+  stockItemId   String
+  type          StockLogType
+  qtyBefore     Int
+  qtyChange     Int
+  qtyAfter      Int
+  reference     String?
+  notes         String?
+  actorId       String
+  createdAt     DateTime     @default(now())
+
+  stockItem     StockItem    @relation(fields: [stockItemId], references: [id])
+  actor         User         @relation("StockLogActor", fields: [actorId], references: [id])
+
+  @@index([stockItemId])
+  @@index([type])
+  @@index([createdAt])
+}
+
+// Phase 3 — procurement enums (unified Order flow)
+enum OrderTrigger {
+  PROJECT_REQUEST
+  STOCK_RESTOCK
+}
+
+enum PaymentMethod {
+  CBD
+  COD
+  TERMIN
+}
+
+enum SupplierInvoiceStatus {
+  DRAFT
+  SENT_TO_SUPPLIER
+  APPROVED_BY_SUPPLIER
+  REJECTED_BY_SUPPLIER
+}
+
+enum StockOutStatus {
+  PENDING
+  FULFILLED
+  REJECTED
+}
+
+// FIX: OrderStatus — alur stok katalog (Surat Jalan) + alur approval pembelian (satu model Order)
+enum OrderStatus {
+  DRAFT
+  SUBMITTED
+  STOCK_AVAILABLE
+  PARTIAL_STOCK
+  NO_STOCK
+  PENDING_ADMIN_STOCK
+  PENDING_PURCHASING_INPUT
+  PENDING_OPS_APPROVAL
+  REJECTED_BY_OPS
+  PENDING_GM_APPROVAL
+  REJECTED_BY_GM
+  PENDING_PAYMENT_RECEIPT
+  PENDING_FINANCE
+  PURCHASED
+  PENDING_VERIFICATION
+  FULFILLED
+  CANCELLED
+  PROCESSING // FIX: reserved / legacy compatibility
+  COMPLETED // FIX: reserved / legacy compatibility
+}
+
+// NEW: ORDER — PM requests materials for a project (Phase 3: STOCK_RESTOCK + procurement)
+model Order {
+  id                String    @id @default(cuid())
+  orderNumber       String    @unique
+  createdBy         String
+  fiberType         FiberType
+  projectRef        String?
+  notes             String?
+  status            OrderStatus @default(DRAFT)
+  suratJalanId      String?   @unique
+  purchaseRequestId String?   @unique
+
+  orderTrigger      OrderTrigger @default(PROJECT_REQUEST)
+
+  requestedItems         Json?
+  purchaseItems          Json?
+  totalAmount            Decimal?  @default(0) @db.Decimal(15, 2)
+  adminStockNotes        String?
+  opsNotes               String?
+  gmNotes                String?
+  financeNotes           String?
+  submittedByAdminAt     DateTime?
+  opsApprovedAt          DateTime?
+  gmApprovedAt           DateTime?
+  financeProcessedAt     DateTime?
+  itemsArrivedAt         DateTime?
+  fulfilledAt            DateTime?
+  adminStockSubmittedBy  String?
+  opsApprovedBy          String?
+  gmApprovedBy           String?
+  financeProcessedBy     String?
+  verifiedBy             String?
+  verificationNotes      String?
+  verificationStatus     String?
+  financeReceiptUrl      String?
+
+  opsRejectionReason     String? // FIX: Ops tolak → revisi Admin Stok
+  gmRejectionReason      String? // FIX: GM tolak → revisi Admin Stok
+  revisionCount          Int       @default(0) // FIX: jumlah siklus revisi
+
+  supplierId               String?
+  supplier                 Supplier? @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+
+  purchasingSubmittedById String?
+  purchasingSubmittedAt DateTime?
+  purchasingNotes         String?
+  purchasingSubmittedBy   User?    @relation("OrderPurchasingSubmittedBy", fields: [purchasingSubmittedById], references: [id], onDelete: SetNull)
+
+  poNumber          String?   @unique
+  poGeneratedAt     DateTime?
+  poFileUrl         String?
+  poEmailSentAt     DateTime?
+  poEmailSentById   String?
+  poEmailMessageId  String?
+  poEmailSentBy     User?     @relation("OrderPoEmailSentBy", fields: [poEmailSentById], references: [id], onDelete: SetNull)
+
+  ppnType           String?   // 'PERCENT' | 'NOMINAL'
+  ppnValue          Decimal?  @db.Decimal(15, 2)
+
+  cancelledById    String?
+  cancelledAt      DateTime?
+  cancelReason     String?
+  cancelledBy      User?     @relation("OrderCancelledBy", fields: [cancelledById], references: [id], onDelete: SetNull)
+
+  financeProjectId String?
+  financeProject   FinanceProject? @relation(fields: [financeProjectId], references: [id], onDelete: SetNull)
+
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  creator           User             @relation("OrderCreator", fields: [createdBy], references: [id])
+  items             OrderItem[]
+  suratJalan        SuratJalan?      @relation("OrderSuratJalan", fields: [suratJalanId], references: [id])
+  purchaseRequest   PurchaseRequest? @relation("OrderPurchaseRequest", fields: [purchaseRequestId], references: [id])
+  supplierInvoice   SupplierInvoice?
+
+  @@index([status])
+  @@index([createdBy])
+  @@index([orderNumber])
+  @@index([financeProjectId])
+  @@index([orderTrigger])
+  @@index([supplierId])
+  @@index([status, orderTrigger])
+}
+
+// NEW: ORDER ITEM — line items in an order
+model OrderItem {
+  id            String    @id @default(cuid())
+  orderId       String
+  stockItemId   String?
+  itemName      String
+  itemCode      String?
+  category      String?
+  unit          String
+  requestedQty  Int
+  availableQty  Int       @default(0)
+  fulfilledQty  Int       @default(0)
+  unitPrice     Decimal?  @db.Decimal(15, 2)
+  totalPrice    Decimal?  @db.Decimal(15, 2)
+
+  order         Order      @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  stockItem     StockItem? @relation(fields: [stockItemId], references: [id])
+
+  @@index([orderId])
+}
+
+model Supplier {
+  id              String   @id @default(cuid())
+  code            String   @unique
+  name            String
+  npwp            String?
+  email           String?
+  phone           String?
+  address         String?
+  bankAccount     String?
+  bankName        String?
+  contactPerson   String?
+  notes           String?
+  isActive        Boolean  @default(true)
+  createdById     String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  createdBy        User               @relation("SupplierCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  orders           Order[]
+  supplierInvoices SupplierInvoice[]
+
+  @@index([isActive])
+  @@index([code])
+}
+
+model SupplierInvoice {
+  id                      String                @id @default(cuid())
+  invoiceNumber           String                @unique
+  orderId                 String                @unique
+  supplierId              String
+
+  invoiceFileUrl          String?
+  invoiceAmount           Decimal               @db.Decimal(18, 2)
+
+  paymentMethod           PaymentMethod
+  paymentDueDate          DateTime?
+
+  status                  SupplierInvoiceStatus @default(DRAFT)
+  emailSentAt             DateTime?
+  supplierAckAt           DateTime?
+  supplierRejectionReason String?
+
+  uploadedById String
+  approvedById String?
+  approvedAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  order      Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  supplier   Supplier @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  uploadedBy User     @relation("SupplierInvoiceUploadedBy", fields: [uploadedById], references: [id], onDelete: Restrict)
+  approvedBy User?    @relation("SupplierInvoiceApprovedBy", fields: [approvedById], references: [id], onDelete: SetNull)
+
+  @@index([status])
+  @@index([supplierId])
+}
+
+model StockOut {
+  id              String         @id @default(cuid())
+  requestNumber   String         @unique
+  requestedById   String
+  permitClusterId String?
+  items           Json
+  status          StockOutStatus @default(PENDING)
+
+  fulfilledById   String?
+  fulfilledAt     DateTime?
+  rejectionReason String?
+  notes           String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  requestedBy   User            @relation("StockOutRequestedBy", fields: [requestedById], references: [id], onDelete: Restrict)
+  fulfilledBy   User?           @relation("StockOutFulfilledBy", fields: [fulfilledById], references: [id], onDelete: SetNull)
+  permitCluster PermitCluster?  @relation(fields: [permitClusterId], references: [id], onDelete: SetNull)
+
+  @@index([status, requestedById])
+}
+
+// NEW: SuratJalanType enum
+enum SuratJalanType {
+  OUT
+  IN
+}
+
+// NEW: SuratJalanStatus enum
+enum SuratJalanStatus {
+  GENERATED
+  DISPATCHED
+  CONFIRMED
+  CANCELLED
+}
+
+// NEW: SURAT JALAN — delivery/dispatch document
+model SuratJalan {
+  id             String           @id @default(cuid())
+  documentNumber String           @unique
+  type           SuratJalanType
+  generatedBy    String
+  confirmedBy    String?
+  confirmedAt    DateTime?
+  pdfUrl         String?
+  status         SuratJalanStatus @default(GENERATED)
+  notes          String?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  generator      User             @relation("SuratJalanGenerator", fields: [generatedBy], references: [id])
+  confirmer      User?            @relation("SuratJalanConfirmer", fields: [confirmedBy], references: [id])
+  order          Order?           @relation("OrderSuratJalan")
+
+  @@index([type])
+  @@index([status])
+  @@index([documentNumber])
+}
+
+// NEW: PurchaseRequestStatus enum
+enum PurchaseRequestStatus {
+  PENDING
+  IN_REVIEW
+  APPROVED
+  ORDERED
+  RECEIVED
+  REJECTED
+  CANCELLED
+}
+
+// NEW: PURCHASE REQUEST — sent to Finance when stock insufficient
+model PurchaseRequest {
+  id              String                @id @default(cuid())
+  requestNumber   String                @unique
+  requestedBy     String
+  processedBy     String?
+  totalAmount     Decimal?              @db.Decimal(15, 2)
+  currency        String                @default("IDR")
+  status          PurchaseRequestStatus @default(PENDING)
+  financeNotes    String?
+  approvedAt      DateTime?
+  processedAt     DateTime?
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+
+  requester       User                  @relation("PRRequester", fields: [requestedBy], references: [id])
+  processor       User?                 @relation("PRProcessor", fields: [processedBy], references: [id])
+  order           Order?                @relation("OrderPurchaseRequest")
+  items           PurchaseRequestItem[]
+
+  @@index([status])
+  @@index([requestedBy])
+}
+
+// NEW: PURCHASE REQUEST ITEM — line items
+model PurchaseRequestItem {
+  id                String   @id @default(cuid())
+  purchaseRequestId String
+  itemName          String
+  itemCode          String?
+  category          String?
+  unit              String
+  requestedQty      Int
+  unitPrice         Decimal? @db.Decimal(15, 2)
+  totalPrice        Decimal? @db.Decimal(15, 2)
+  supplierNote      String?
+
+  purchaseRequest   PurchaseRequest @relation(fields: [purchaseRequestId], references: [id], onDelete: Cascade)
+
+  @@index([purchaseRequestId])
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// NEW: PHASE 5 — Full permit document flow (APD → … → Construction Ready)
+// ═══════════════════════════════════════════════════════════════════════════
+
+model PermitCluster {
+  id                     String              @id @default(cuid())
+  visitRequestId         String              @unique
+  baOpenId               String?             @unique
+  clusterCode            String
+  ispCustomer            String
+  fiberType              FiberType
+  assignedPmId           String
+  currentPhase           PermitPhase         @default(CLUSTER_INTAKE)
+  status                 PermitClusterStatus @default(IN_PROGRESS)
+  readyForConstructionAt DateTime?
+  latitude               Float?
+  longitude              Float?
+  rwName                 String?
+  areaCategory           String?
+  createdAt              DateTime            @default(now())
+  updatedAt              DateTime            @updatedAt
+
+  visitRequest VisitRequest @relation(fields: [visitRequestId], references: [id])
+  baOpen       BaOpen?      @relation(fields: [baOpenId], references: [id])
+  assignedPm   User         @relation("PermitPM", fields: [assignedPmId], references: [id])
+
+  apd           Apd?
+  socialization Socialization?
+  compensation  Compensation?
+  bak           Bak?
+  bakAgreement  BakAgreement?
+  scom          Scom?
+  bakp          Bakp?
+
+  // NEW: lifecycle v2 relations
+  surveyData        SurveyData?
+  surveyorDocPackage SurveyorDocPackage?
+  sip               Sip?
+  hld               Hld?
+  lld               Lld?
+  prBrRecords       PrBrRecord[]
+  contracts         ContractRecord[]
+  prBrWorkflow      PrBrWorkflow?
+  skomBudget        SkomBudget?
+  claimPackage      ClaimPackage?
+  invoicePackage    InvoicePackage?
+  stockOuts         StockOut[]
+
+  // NEW: Phase 3A — Pipeline Template Engine
+  pipelineTemplateId   String?
+  pipelineTemplate     PipelineTemplate?     @relation(fields: [pipelineTemplateId], references: [id])
+  stageProgresses      ClusterStageProgress[]
+  documentUploads      StageDocumentUpload[]
+  smileProgresses      SmileProgress[]
+  jaminans             Jaminan[]
+  amandemen            Amandemen[]
+  mcvClaims            McvClaim[]
+  bastTimer            BastTimer?
+
+  @@index([status])
+  @@index([fiberType])
+  @@index([currentPhase])
+  @@index([status, createdAt])
+  @@index([pipelineTemplateId])
+}
+
+model PipelineTemplate {
+  id            String          @id @default(cuid())
+  name          String
+  fiberType     FiberType
+  ispCustomerId String
+  ispCustomer   IspCustomer     @relation(fields: [ispCustomerId], references: [id])
+  isActive      Boolean         @default(true)
+  version       Int             @default(1)
+  stages        PipelineStage[]
+  clusters      PermitCluster[]
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  @@unique([fiberType, ispCustomerId, version])
+}
+
+model PipelineStage {
+  id                String                  @id @default(cuid())
+  templateId        String
+  template          PipelineTemplate        @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  sequence          Int
+  name              String
+  shortLabel        String
+  color             String?
+  triggerConditions Json?
+  autoAdvance       Boolean                 @default(false)
+  notifyRoles       String[]
+  allowedActorRoles String[]
+  requiredDocuments StageDocument[]
+  progresses        ClusterStageProgress[]
+  createdAt         DateTime                @default(now())
+  updatedAt         DateTime                @updatedAt
+
+  @@unique([templateId, sequence])
+}
+
+model StageDocument {
+  id          String                @id @default(cuid())
+  stageId     String
+  stage       PipelineStage         @relation(fields: [stageId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  formats     String[]
+  isRequired  Boolean               @default(true)
+  uploads     StageDocumentUpload[]
+}
+
+model ClusterStageProgress {
+  id            String              @id @default(cuid())
+  clusterId     String
+  cluster       PermitCluster       @relation(fields: [clusterId], references: [id], onDelete: Cascade)
+  stageId       String
+  stage         PipelineStage       @relation(fields: [stageId], references: [id])
+  status        StageProgressStatus @default(LOCKED)
+  unlockedAt    DateTime?
+  completedAt   DateTime?
+  completedById String?             // User ID reference
+  notes         String?
+  metricValue   Decimal?            @db.Decimal(5, 2)
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+
+  @@unique([clusterId, stageId])
+}
+
+model StageDocumentUpload {
+  id              String        @id @default(cuid())
+  stageDocumentId String
+  stageDocument   StageDocument @relation(fields: [stageDocumentId], references: [id])
+  clusterId       String
+  cluster         PermitCluster @relation(fields: [clusterId], references: [id])
+  fileUrl         String
+  fileName        String
+  uploadedById    String        // User ID reference
+  uploadedAt      DateTime      @default(now())
+}
+
+model SmileProgress {
+  id          String        @id @default(cuid())
+  clusterId   String
+  cluster     PermitCluster @relation(fields: [clusterId], references: [id], onDelete: Cascade)
+  progressPct Decimal       @db.Decimal(5, 2)
+  evidenceUrl String?
+  recordedById String       // User ID reference
+  recordedAt  DateTime      @default(now())
+}
+
+model Jaminan {
+  id          String        @id @default(cuid())
+  clusterId   String
+  cluster     PermitCluster @relation(fields: [clusterId], references: [id], onDelete: Cascade)
+  type        JaminanType
+  amount      Decimal       @db.Decimal(15, 2)
+  issuedAt    DateTime?
+  expiresAt   DateTime?
+  documentUrl String?
+  createdById String        // User ID reference
+  createdAt   DateTime      @default(now())
+}
+
+model Amandemen {
+  id          String        @id @default(cuid())
+  clusterId   String
+  cluster     PermitCluster @relation(fields: [clusterId], references: [id], onDelete: Cascade)
+  version     Int
+  title       String
+  description String?
+  documentUrl String?
+  signedAt    DateTime?
+  createdById String        // User ID reference
+  createdAt   DateTime      @default(now())
+
+  @@unique([clusterId, version])
+}
+
+model McvClaim {
+  id          String        @id @default(cuid())
+  clusterId   String
+  cluster     PermitCluster @relation(fields: [clusterId], references: [id], onDelete: Cascade)
+  termNumber  Int
+  amount      Decimal       @db.Decimal(15, 2)
+  status      McvStatus     @default(DRAFT)
+  documents   McvDocument[]
+  submittedAt DateTime?
+  approvedAt  DateTime?
+  createdAt   DateTime      @default(now())
+
+  @@unique([clusterId, termNumber])
+}
+
+model McvDocument {
+  id         String   @id @default(cuid())
+  mcvId      String
+  mcv        McvClaim @relation(fields: [mcvId], references: [id], onDelete: Cascade)
+  name       String
+  fileUrl    String
+  uploadedAt DateTime @default(now())
+}
+
+model BastTimer {
+  id              String        @id @default(cuid())
+  clusterId       String        @unique
+  cluster         PermitCluster @relation(fields: [clusterId], references: [id], onDelete: Cascade)
+  bast1IssuedAt   DateTime?
+  bast2EligibleAt DateTime?
+  bast2IssuedAt   DateTime?
+  bast2Locked     Boolean       @default(true)
+}
+
+enum StageProgressStatus {
+  LOCKED
+  ACTIVE
+  DONE
+  BLOCKED
+  SKIPPED
+}
+
+enum JaminanType {
+  UANG_MUKA
+  PELAKSANAAN
+  PEMELIHARAAN
+}
+
+enum McvStatus {
+  DRAFT
+  SUBMITTED
+  MCV_REVIEW
+  APPROVED
+  REJECTED
+}
+
+
+enum PermitPhase {
+  CLUSTER_INTAKE
+  VISIT_REQUEST
+  BA_OPEN
+  SITE_VISIT
+  SURVEY_INPUT
+  ROUTE_SURVEY
+  BA_SURVEY
+  SIP_REQUEST
+  HLD_SUBMISSION
+  LLD_SUBMISSION
+  PR_BR_ISSUANCE
+  CONTRACT_MANAGEMENT
+  SKOM_BUDGET
+  MANAGEMENT_APPROVAL
+  FUND_DISBURSEMENT
+  BAK_GENERATION
+  BAKP_COMPILATION
+  CLAIM_SUBMISSION
+  INVOICE_PACKAGE
+  PERMIT_DONE
+}
+
+enum PermitClusterStatus {
+  IN_PROGRESS
+  ON_HOLD
+  COMPLETED
+  CANCELLED
+}
+
+model Apd {
+  id              String    @id @default(cuid())
+  permitClusterId String    @unique
+  createdBy       String
+  version         Int       @default(1)
+  status          ApdStatus @default(DRAFT)
+  gisRouteData    Json?
+  notes           String?
+  drmScheduledAt  DateTime?
+  drmCompletedAt  DateTime?
+  drmNotes        String?
+  approvedBy      String?
+  approvedAt      DateTime?
+  rejectionReason String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  permitCluster PermitCluster @relation(fields: [permitClusterId], references: [id])
+  creator       User          @relation("ApdCreator", fields: [createdBy], references: [id])
+  approver      User?         @relation("ApdApprover", fields: [approvedBy], references: [id])
+  revisions     ApdRevision[]
+  abd           Abd?
+
+  @@index([status])
+}
+
+enum ApdStatus {
+  DRAFT
+  SUBMITTED_FOR_DRM
+  DRM_IN_REVIEW
+  REVISION_REQUIRED
+  APPROVED
+}
+
+model ApdRevision {
+  id        String   @id @default(cuid())
+  apdId     String
+  version   Int
+  notes     String
+  gisData   Json?
+  createdBy String
+  createdAt DateTime @default(now())
+
+  apd     Apd  @relation(fields: [apdId], references: [id], onDelete: Cascade)
+  creator User @relation("ApdRevisionCreator", fields: [createdBy], references: [id])
+}
+
+model Abd {
+  id               String    @id @default(cuid())
+  apdId            String    @unique
+  createdBy        String
+  version          Int       @default(1)
+  status           AbdStatus @default(DRAFT)
+  gisRouteData     Json?
+  fileUrl          String?
+  submittedToIspAt DateTime?
+  ispFeedback      String?
+  approvedByIspAt  DateTime?
+  approvedBy       String?
+  rejectionReason  String?
+  notes            String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  apd       Apd                @relation(fields: [apdId], references: [id])
+  creator   User               @relation("AbdCreator", fields: [createdBy], references: [id])
+  approver  User?              @relation("AbdApprover", fields: [approvedBy], references: [id])
+  revisions AbdRevision[]
+  technicalDiagrams TechnicalDiagram[]
+
+  @@index([status])
+}
+
+enum AbdStatus {
+  DRAFT
+  SUBMITTED_TO_ISP
+  ISP_REVISION_REQUIRED
+  ISP_APPROVED
+}
+
+model AbdRevision {
+  id        String   @id @default(cuid())
+  abdId     String
+  version   Int
+  notes     String
+  fileUrl   String?
+  createdBy String
+  createdAt DateTime @default(now())
+
+  abd     Abd  @relation(fields: [abdId], references: [id], onDelete: Cascade)
+  creator User @relation("AbdRevisionCreator", fields: [createdBy], references: [id])
+}
+
+model TechnicalDiagram {
+  id         String               @id @default(cuid())
+  abdId      String
+  type       TechnicalDiagramType
+  fileUrl    String
+  version    Int                  @default(1)
+  uploadedBy String
+  createdAt  DateTime             @default(now())
+
+  abd      Abd  @relation(fields: [abdId], references: [id], onDelete: Cascade)
+  uploader User @relation("DiagramUploader", fields: [uploadedBy], references: [id])
+}
+
+enum TechnicalDiagramType {
+  FLOW_DIAGRAM
+  CORE_CONNECTION_DIAGRAM
+}
+
+model Socialization {
+  id                  String                   @id @default(cuid())
+  permitClusterId     String                   @unique
+  conductedBy         String
+  conductedAt       DateTime
+  location            String
+  attendees           Json
+  constructionScope   String?
+  affectedRoutes      String?
+  plannedSchedule     String?
+  communityFeedback   String?
+  agreementStatus     SocializationAgreement     @default(PENDING)
+  baSurveyNumber      String?                  @unique
+  baSurveyPdfUrl      String?
+  momNumber           String?                  @unique
+  momPdfUrl           String?
+  generatedAt         DateTime?
+  evidencePhotos      String[]
+  createdAt           DateTime                 @default(now())
+  updatedAt           DateTime                 @updatedAt
+
+  permitCluster PermitCluster @relation(fields: [permitClusterId], references: [id])
+  conductor     User          @relation("SocializationConductor", fields: [conductedBy], references: [id])
+}
+
+enum SocializationAgreement {
+  PENDING
+  AGREED
+  CONDITIONAL
+  REJECTED
+}
+
+model Compensation {
+  id               String                @id @default(cuid())
+  permitClusterId  String                @unique
+  homepasCount     Int
+  scheme           CompensationScheme    @default(PER_HOMEPASS)
+  proposedAmount   Decimal               @db.Decimal(15, 2)
+  negotiatedAmount Decimal?              @db.Decimal(15, 2)
+  finalAmount      Decimal?              @db.Decimal(15, 2)
+  currency         String                @default("IDR")
+  agreementStatus  CompensationAgreement @default(PENDING)
+  notes            String?
+  createdBy        String
+  createdAt        DateTime              @default(now())
+  updatedAt        DateTime              @updatedAt
+
+  permitCluster PermitCluster  @relation(fields: [permitClusterId], references: [id])
+  creator       User           @relation("CompensationCreator", fields: [createdBy], references: [id])
+  negotiations  NegotiationLog[]
+  bak           Bak?
+}
+
+enum CompensationScheme {
+  PER_HOMEPASS
+  LUMP_SUM
+}
+
+enum CompensationAgreement {
+  PENDING
+  AGREED
+  REJECTED
+}
+
+model NegotiationLog {
+  id              String   @id @default(cuid())
+  compensationId  String
+  roundNumber     Int
+  proposedAmount  Decimal  @db.Decimal(15, 2)
+  rtResponse      String
+  notes           String?
+  recordedBy      String
+  createdAt       DateTime @default(now())
+
+  compensation Compensation @relation(fields: [compensationId], references: [id], onDelete: Cascade)
+  recorder     User         @relation("NegotiationRecorder", fields: [recordedBy], references: [id])
+}
+
+model Bak {
+  id               String    @id @default(cuid())
+  permitClusterId  String    @unique
+  compensationId   String    @unique
+  documentNumber   String    @unique
+  finalAmount      Decimal   @db.Decimal(15, 2)
+  recipientName    String
+  recipientBank    String
+  recipientAccount String
+  status           BakStatus @default(DRAFT)
+  autoApproved     Boolean   @default(false)
+  approvedBy       String?
+  approvedAt       DateTime?
+  rejectionReason  String?
+  pdfUrl           String?
+  generatedAt      DateTime?
+  createdBy        String
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  permitCluster PermitCluster     @relation(fields: [permitClusterId], references: [id])
+  compensation  Compensation      @relation(fields: [compensationId], references: [id])
+  creator       User              @relation("BakCreator", fields: [createdBy], references: [id])
+  approver      User?             @relation("BakApprover", fields: [approvedBy], references: [id])
+  signatures    SignatureRecord[]
+}
+
+enum BakStatus {
+  DRAFT
+  PENDING_APPROVAL
+  AUTO_APPROVED
+  APPROVED
+  REJECTED
+  SIGNATURES_PENDING
+  SIGNATURES_VALID
+}
+
+/// FIX: Surveyor BAK — full 10-section form, PDF, signed upload, PM/Admin review (not the compensation `Bak` row)
+model BakAgreement {
+  id              String              @id @default(cuid())
+  permitClusterId String              @unique
+  permitCluster   PermitCluster       @relation(fields: [permitClusterId], references: [id], onDelete: Cascade)
+  status          BakAgreementStatus  @default(DRAFT)
+
+  wpNama                 String?
+  wpNoKtp                String?
+  wpJabatan              String?
+  wpAlamat               String?
+  wpNoTelp               String?
+
+  tipeLokasiType         String?
+  tipeLokasiOther        String?
+  namaLokasi             String?
+  alamatLokasi           String?
+  alamatKantorPemasaran  String?
+
+  jangkaWaktu            String?
+
+  homepasExisting        Int?
+  kategoriPerumahan      String?
+  occupancy              Float?
+
+  penempatanKabel        String?
+
+  existingCompetitor     String?
+
+  benefitIsp             String?
+  areaDimeterM           String?
+
+  benefitPemilik         String?
+
+  ketentuanListrik       String?
+  ketentuanTambahan      String?
+
+  useDigitalSignature    Boolean  @default(false)
+  signatureIspUrl        String?
+  signaturePemilikUrl    String?
+  signatureIspName       String?
+  signaturePemilikName   String?
+
+  ktpPhotoUrls           Json?
+  stempelPhotoUrl        String?
+
+  pdfUrl                 String?
+  signedPdfUrl           String?
+
+  pmNotes                String?
+  pmApprovedBy           String?
+  pmApprovedAt           DateTime?
+  adminNotes             String?
+  adminApprovedBy        String?
+  adminApprovedAt        DateTime?
+
+  submittedBy            String?
+  submittedAt            DateTime?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+}
+
+enum BakAgreementStatus {
+  DRAFT
+  FORM_COMPLETE
+  PDF_GENERATED
+  SIGNED_UPLOADED
+  PM_REVIEW
+  PM_REJECTED
+  ADMIN_REVIEW
+  ADMIN_REJECTED
+  APPROVED
+}
+
+model SignatureRecord {
+  id               String              @id @default(cuid())
+  bakId            String
+  signatoryName    String
+  signatoryNik     String
+  signatoryRole    String
+  ktpPhotoUrl      String?
+  signatureUrl     String?
+  hasStamp         Boolean             @default(false)
+  validationStatus SignatureValidation @default(PENDING)
+  validatedBy      String?
+  validatedAt      DateTime?
+  rejectionReason  String?
+  attemptNumber    Int                 @default(1)
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+
+  bak       Bak   @relation(fields: [bakId], references: [id], onDelete: Cascade)
+  validator User? @relation("SignatureValidator", fields: [validatedBy], references: [id])
+}
+
+enum SignatureValidation {
+  PENDING
+  VALID
+  INVALID
+}
+
+model Scom {
+  id               String    @id @default(cuid())
+  permitClusterId  String    @unique
+  conductedBy      String
+  conductedAt      DateTime
+  location         String
+  attendees        Json
+  agreementPoints  Json
+  workingHours     String?
+  safetyRules        String?
+  cleanlinessRules String?
+  momNumber        String?   @unique
+  momPdfUrl        String?
+  pksSignedUrl     String?
+  generatedAt      DateTime?
+  isComplete       Boolean   @default(false)
+  createdBy        String
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  permitCluster PermitCluster @relation(fields: [permitClusterId], references: [id])
+  conductor     User          @relation("ScomConductor", fields: [conductedBy], references: [id])
+  creator       User          @relation("ScomCreator", fields: [createdBy], references: [id])
+}
+
+model Bakp {
+  id                String     @id @default(cuid())
+  permitClusterId   String     @unique
+  documentNumber    String     @unique
+  status            BakpStatus @default(DRAFT)
+  hasBAOpen         Boolean    @default(false)
+  hasBASurvey       Boolean    @default(false)
+  hasBASocialization Boolean   @default(false)
+  hasApprovedBAK    Boolean    @default(false)
+  hasSignedBAK      Boolean    @default(false)
+  hasRtRwKtp        Boolean    @default(false)
+  hasRtRwSk         Boolean    @default(false)
+  hasSip            Boolean    @default(false)
+  hasPks            Boolean    @default(false)
+  hasReceipt        Boolean    @default(false)
+  hasTransferProof  Boolean    @default(false)
+  hasPaymentPhoto   Boolean    @default(false)
+  transferProofUrl  String?
+  receiptUrl        String?
+  paymentPhotoUrl   String?
+  paymentAmount     Decimal?   @db.Decimal(15, 2)
+  paymentDate       DateTime?
+  validatedBy       String?
+  validatedAt       DateTime?
+  validationNotes   String?
+  rejectionReason   String?
+  bundlePdfUrl      String?
+  finalMergedPdfUrl String?
+  compiledAt        DateTime?
+  compiledBy        String?
+  manualDocUrls     Json?      // NEW: optional map e.g. { rtRwKtp, rtRwSk, sip, receipt }
+  participants           BakpParticipant[] // NEW: dynamic participants list
+  stempelUrl             String? // NEW: stamp image url
+  requiresMaterai        Boolean  @default(false) // NEW: materai flag
+  fieldTeamSubmittedAt   DateTime? // NEW: field team submit timestamp
+  fieldTeamSubmittedBy   String? // NEW: field team submit user
+  pmBakpApprovedAt       DateTime? // NEW: PM approve timestamp
+  pmBakpApprovedBy       String? // NEW: PM approver
+  adminBakpApprovedAt    DateTime? // NEW: admin approve timestamp
+  adminBakpApprovedBy    String? // NEW: admin approver
+  // FIX: PM + Admin approval tracking (phase 17 workflow)
+  pmApprovedAt         DateTime?
+  pmApprovedBy         String?
+  pmRejectedAt         DateTime?
+  pmRejectionReason    String?
+  adminApprovedAt      DateTime?
+  adminApprovedBy      String?
+  adminRejectedAt      DateTime?
+  adminRejectionReason String?
+  ispSubmittedAt       DateTime?
+  ispSubmittedBy       String?
+  ispDecisionAt        DateTime?
+  ispDecisionBy        String?
+  ispDecision          BakpIspDecision?
+  ispRejectionReason   String?
+  // FIX: document uploads for BAKP compilation (Surveyor)
+  docBakpUrls          Json?
+  approvalLogs         Json?
+
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+
+  permitCluster PermitCluster @relation(fields: [permitClusterId], references: [id])
+  validator     User?         @relation("BakpValidator", fields: [validatedBy], references: [id])
+  compiler      User?         @relation("BakpCompiler", fields: [compiledBy], references: [id])
+}
+
+model BakpParticipant {
+  id           String   @id @default(cuid())
+  bakpId       String
+  name         String
+  role         String
+  ktpNumber    String?
+  ktpPhotoUrl  String?
+  signatureUrl String?
+  createdAt    DateTime @default(now())
+
+  bakp         Bakp     @relation(fields: [bakpId], references: [id], onDelete: Cascade)
+}
+
+enum BakpStatus {
+  DRAFT
+  SUBMITTED_TO_PM
+  PM_APPROVED
+  SUBMITTED_TO_ADMIN
+  ADMIN_APPROVED
+  SUBMITTED_TO_ISP
+  DONE
+  REJECTED_BY_PM
+  REJECTED_BY_ADMIN
+  REJECTED_BY_ISP
+}
+
+enum BakpIspDecision {
+  ACCEPTED
+  REJECTED
+}
+
+// ─────────────────────────────────────────────
+// NEW: Survey Data — Phases 4–6 + BA Survey PDF
+// ─────────────────────────────────────────────
+model SurveyData {
+  id              String    @id @default(cuid())
+  permitClusterId String    @unique
+  conductedBy     String
+  conductedAt     DateTime?
+
+  rtName           String?
+  rtPhone          String?
+  rwName           String?
+  rwPhone          String?
+  pengelolaName    String?
+  pengelolaPhone   String?
+  stakeholderNotes String?
+
+  areaCondition    String?
+  accessDifficulty String?
+  existingInfra    String?
+  surveyNotes      String?
+  evidencePhotos   String[] // MODIFIED: legacy field, kept for backward compatibility
+  evidenceFiles    SurveyEvidence[] // NEW: relational evidence files with GPS metadata
+
+  routeGeoJson     Json?
+  homepasCount     Int?
+  homepasCoords    Json?
+  polePositions    Json?
+  routeNotes       String?
+  routeDistanceM   Float?
+
+  baSurveyNumber   String?
+  baSurveyPdfUrl   String?
+
+  status           SurveyDataStatus @default(IN_PROGRESS)
+  completedAt      DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  permitCluster PermitCluster @relation(fields: [permitClusterId], references: [id], onDelete: Cascade)
+  conductor     User          @relation("SurveyDataConductor", fields: [conductedBy], references: [id])
+}
+
+model SurveyorDocPackage {
+  id                String           @id @default(cuid())
+  permitClusterId   String           @unique
+  submittedBy       String
+  hasBaOpen         Boolean          @default(false)
+  hasSurveyData     Boolean          @default(false)
+  hasEvidencePhotos Boolean          @default(false)
+  hasRouteData      Boolean          @default(false)
+  hasSip            Boolean          @default(false) // FIX: SIP completeness gate for official document list flow
+  status            DocPackageStatus @default(ASSEMBLING)
+  pmReviewedBy      String?
+  pmReviewedAt      DateTime?
+  pmNotes           String?
+  adminReviewedBy   String?
+  adminReviewedAt   DateTime?
+  adminNotes        String?
+  submittedAt       DateTime?
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  permitCluster     PermitCluster    @relation(fields: [permitClusterId], references: [id])
+  submitter         User             @relation("DocPackageSubmitter", fields: [submittedBy], references: [id])
+  pmReviewer        User?            @relation("DocPackagePmReviewer", fields: [pmReviewedBy], references: [id])
+  adminReviewer     User?            @relation("DocPackageAdminReviewer", fields: [adminReviewedBy], references: [id])
+}
+
+enum DocPackageStatus {
+  ASSEMBLING
+  SUBMITTED
+  PM_REVIEWING
+  PM_REJECTED
+  PM_APPROVED
+  ADMIN_REVIEWING
+  ADMIN_REJECTED
+  ADMIN_APPROVED
+}
+
+enum SurveyDataStatus {
+  IN_PROGRESS
+  COMPLETED
+  REVISION_REQUIRED
+}
+
+// ─────────────────────────────────────────────
+// NEW: SIP — Survey Information Permit (Phase 8)
+// ─────────────────────────────────────────────
+model Sip {
+  id              String    @id @default(cuid())
+  permitClusterId String    @unique
+  documentNumber  String    @unique
+  ispCustomer     String
+  submittedAt     DateTime?
+  reviewedAt      DateTime?
+  approvedAt      DateTime?
+  rejectedAt      DateTime?
+  rejectionReason String?
+  status          SipStatus @default(DRAFT)
+  pdfUrl          String?
+  ispFeedback     String?
+  siteName            String? // NEW: SIP form field
+  coordinates         String? // NEW: SIP form field
+  residenceType       String? // NEW: SIP form field
+  classing            String? // NEW: SIP form field
+  workMethod          String? // NEW: SIP form field
+  homepasCount        Int? // NEW: SIP form field
+  occupancyPercent    Float? // NEW: SIP form field
+  existingCompetitors String? // NEW: SIP form field
+  picKawasan          String? // NEW: SIP form field
+  requestBy           String? // NEW: SIP form field
+  boundaryKmzUrl      String? // NEW: SIP form field
+  picFs               String? // NEW: SIP form field
+  picCbn              String? // NEW: SIP form field
+  branch              String? // NEW: SIP form field
+  provinsi            String? // NEW: SIP form field
+  kota                String? // NEW: SIP form field
+  kecamatan           String? // NEW: SIP form field
+  kelurahan           String? // NEW: SIP form field
+  alamat              String? // NEW: SIP form field
+  remarks             String? // NEW: SIP form field
+  generatedBy     String
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  permitCluster PermitCluster @relation(fields: [permitClusterId], references: [id], onDelete: Cascade)
+  generator     User          @relation("SipGenerator", fields: [generatedBy], references: [id])
+}
+
+enum SipStatus {
+  DRAFT
+  FILLED
+  SUBMITTED
+  UNDER_REVIEW
+  APPROVED
+  REJECTED
+  ISP_REVISION
+  PENDING_ISP
+}
+
+// ─────────────────────────────────────────────
+// NEW: HLD — High Level Drawing (Phase 9)
+// ─────────────────────────────────────────────
+model Hld {
+  id              String    @id @default(cuid())
+  permitClusterId String    @unique
+  createdBy       String
+  version         Int       @default(1)
+  status          HldStatus @default(WAITING_INPUT)
+
+  kmzFileUrl      String?
+  boqFileUrl      String?
+  additionalFiles String[]
+
+  submittedAt     DateTime?
+  submittedToIsp  DateTime?
+  ispReviewedAt   DateTime?
+  ispApprovedAt   DateTime?
+  ispFeedback     String?
+  rejectionReason String?
+  approvedBy      String?
+  slaDeadline     DateTime? // NEW: ISP SLA deadline
+  pmApprovedBy    String? // NEW: PM approval user
+  pmApprovedAt    DateTime? // NEW: PM approval timestamp
+  adminApprovedBy String? // NEW: Admin approval user
+  adminApprovedAt DateTime? // NEW: Admin approval timestamp
+  pmNotes         String? // FIX: PM rejection / revision notes for designer
+  adminNotes      String? // FIX: Admin rejection notes for designer
+  pmRejectedAt    DateTime? // FIX: when PM sent back to DRAFT
+  adminRejectedAt DateTime? // FIX: when Admin sent back to DRAFT
+
+  // APPROVAL SNAPSHOT FIELDS — store at approval time for document consistency
+  pmApproverName    String? // Snapshot: PM name at approval time
+  pmApproverRole    String? // Snapshot: PM role at approval time
+  pmApproverSignatureUrl String? // Snapshot: PM signature URL at approval time
+  adminApproverName    String? // Snapshot: Admin name at approval time
+  adminApproverRole    String? // Snapshot: Admin role at approval time
+  adminApproverSignatureUrl String? // Snapshot: Admin signature URL at approval time
+
+  lastActivityAt    DateTime? // HARDEN: Track activity for stale detection
+  staleMarkedAt     DateTime? // HARDEN: When marked as stale
+  isStale           Boolean   @default(false) // HARDEN: Explicit stale flag for queries
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  permitCluster PermitCluster @relation(fields: [permitClusterId], references: [id], onDelete: Cascade)
+  creator       User          @relation("HldCreator", fields: [createdBy], references: [id])
+  revisions     HldRevision[]
+}
+
+enum HldStatus {
+  WAITING_INPUT
+  DRAFT
+  SUBMITTED_FOR_REVIEW
+  PM_APPROVED
+  PM_REJECTED
+  ADMIN_APPROVED
+  ADMIN_REJECTED
+  PENDING_ISP
+  ISP_REVISION
+  ISP_APPROVED
+}
+
+model HldRevision {
+  id         String   @id @default(cuid())
+  hldId      String
+  version    Int
+  kmzFileUrl String?
+  boqFileUrl String?
+  notes      String?
+  createdBy  String
+  createdAt  DateTime @default(now())
+
+  hld     Hld  @relation(fields: [hldId], references: [id], onDelete: Cascade)
+  creator User @relation("HldRevisionCreator", fields: [createdBy], references: [id])
+}
+
+// ─────────────────────────────────────────────
+// NEW: LLD — Low Level Drawing (Phase 10)
+// ─────────────────────────────────────────────
+model Lld {
+  id                  String    @id @default(cuid())
+  permitClusterId     String    @unique
+  createdBy           String
+  version             Int       @default(1)
+  status              LldStatus @default(WAITING_INPUT)
+
+  apdFileUrl          String?
+  schematicFileUrl    String?
+  coreConnectionUrl   String?
+  additionalFiles     String[]
+
+  submittedAt         DateTime?
+  submittedToIsp      DateTime?
+  ispReviewedAt       DateTime?
+  ispApprovedAt       DateTime?
+  ispFeedback         String?
+  rejectionReason     String?
+  approvedBy          String?
+  slaDeadline         DateTime? // NEW: ISP SLA deadline
+  pmApprovedBy        String? // NEW: PM approval user
+  pmApprovedAt        DateTime? // NEW: PM approval timestamp
+  adminApprovedBy     String? // NEW: Admin approval user
+  adminApprovedAt     DateTime? // NEW: Admin approval timestamp
+  adminNotes          String? // FIX: catatan penolakan / revisi Admin (LLD)
+
+  // APPROVAL SNAPSHOT FIELDS — store at approval time for document consistency
+  pmApproverName    String? // Snapshot: PM name at approval time
+  pmApproverRole    String? // Snapshot: PM role at approval time
+  pmApproverSignatureUrl String? // Snapshot: PM signature URL at approval time
+  adminApproverName    String? // Snapshot: Admin name at approval time
+  adminApproverRole    String? // Snapshot: Admin role at approval time
+  adminApproverSignatureUrl String? // Snapshot: Admin signature URL at approval time
+
+  lastActivityAt      DateTime? // HARDEN: Track activity for stale detection
+  staleMarkedAt       DateTime? // HARDEN: When marked as stale
+  isStale             Boolean   @default(false) // HARDEN: Explicit stale flag for queries
+
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  permitCluster       PermitCluster @relation(fields: [permitClusterId], references: [id], onDelete: Cascade)
+  creator             User          @relation("LldCreator", fields: [createdBy], references: [id])
+  revisions           LldRevision[]
+}
+
+enum LldStatus {
+  WAITING_INPUT
+  DRAFT
+  SUBMITTED_FOR_REVIEW
+  PM_APPROVED
+  PM_REJECTED
+  ADMIN_APPROVED
+  ADMIN_REJECTED
+  PENDING_ISP
+  ISP_REVISION
+  ISP_APPROVED
+}
+
+model LldRevision {
+  id                String   @id @default(cuid())
+  lldId             String
+  version           Int
+  apdFileUrl        String?
+  schematicFileUrl  String?
+  coreConnectionUrl String?
+  notes             String?
+  createdBy         String
+  createdAt         DateTime @default(now())
+
+  lld     Lld  @relation(fields: [lldId], references: [id], onDelete: Cascade)
+  creator User @relation("LldRevisionCreator", fields: [createdBy], references: [id])
+}
+
+// ─────────────────────────────────────────────
+// NEW: PR/BR records (Phase 11)
+// ─────────────────────────────────────────────
+model PrBrRecord {
+  id              String     @id @default(cuid())
+  permitClusterId String
+  type            PrBrType
+  documentNumber  String     @unique
+  amount          Decimal    @db.Decimal(15, 2)
+  description     String
+  status          PrBrStatus @default(DRAFT)
+  fileUrl         String?
+  issuedAt        DateTime?
+  approvedAt      DateTime?
+  createdBy       String
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  permitCluster PermitCluster @relation(fields: [permitClusterId], references: [id], onDelete: Cascade)
+  creator       User          @relation("PrBrCreator", fields: [createdBy], references: [id])
+
+  @@index([permitClusterId])
+  @@index([type])
+}
+
+enum PrBrType {
+  PR
+  BR
+}
+
+enum PrBrStatus {
+  DRAFT
+  ISSUED
+  APPROVED
+  REJECTED
+}
+
+// ─────────────────────────────────────────────
+// NEW: Contract / PO / PKS (Phase 12)
+// ─────────────────────────────────────────────
+model ContractRecord {
+  id              String          @id @default(cuid())
+  permitClusterId String
+  type            ContractType
+  contractNumber  String?         @unique
+  vendor          String?
+  amount          Decimal?        @db.Decimal(15, 2)
+  startDate       DateTime?
+  endDate         DateTime?
+  status          ContractStatus  @default(DRAFT)
+  fileUrl         String?
+  notes           String?
+  signedAt        DateTime?
+  opsApprovedBy   String? // NEW: Ops manager approver
+  opsApprovedAt   DateTime? // NEW: Ops manager approval date
+  gmApprovedBy    String? // NEW: GM approver
+  gmApprovedAt    DateTime? // NEW: GM approval date
+  rejectedBy      String? // NEW: rejector user
+  rejectedAt      DateTime? // NEW: rejection date
+  rejectionNotes  String? // NEW: rejection notes
+  createdBy       String
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  permitCluster PermitCluster   @relation(fields: [permitClusterId], references: [id], onDelete: Cascade)
+  creator       User            @relation("ContractCreator", fields: [createdBy], references: [id])
+
+  @@index([permitClusterId])
+}
+
+enum ContractType {
+  PO
+  PKS
+  OTHER
+}
+
+enum ContractStatus {
+  DRAFT
+  PENDING_OPS_MANAGER
+  PENDING_GM
+  APPROVED
+  REJECTED
+  ACTIVE
+  COMPLETED
+  TERMINATED
+}
+
+// ─────────────────────────────────────────────
+// FIX PR/BR→PO flow: unified workflow state per cluster
+// Phases: PR_BR_ISSUANCE (upload PR/BR → Admin review) →
+//         CONTRACT_MANAGEMENT (Admin creates PO → Ops review) → SKOM_BUDGET
+// ─────────────────────────────────────────────
+model PrBrWorkflow {
+  id              String              @id @default(cuid())
+  permitClusterId String              @unique // FIX: one workflow per cluster
+  permitCluster   PermitCluster       @relation(fields: [permitClusterId], references: [id], onDelete: Cascade)
+
+  // FIX: PR/BR documents from ISP
+  prFileUrl       String?
+  brFileUrl       String?
+  prBrNotes       String?
+
+  // FIX: PO document created by Admin after PR/BR approved
+  poFileUrl       String?
+  poNotes         String?
+
+  status          PrBrWorkflowStatus  @default(PENDING_UPLOAD) // FIX: state machine for the combined flow
+
+  // FIX: audit trail fields for each handover in the chain
+  uploadedBy      String?
+  uploadedAt      DateTime?
+  adminReviewedBy String?
+  adminReviewedAt DateTime?
+  adminNotes      String?
+  opsApprovedBy   String?
+  opsApprovedAt   DateTime?
+  opsNotes        String?
+
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  @@index([status])
+}
+
+enum PrBrWorkflowStatus {
+  PENDING_UPLOAD // FIX: cluster entered PR_BR_ISSUANCE, waiting for PM/Admin to upload PR/BR
+  UPLOADED       // FIX: PR/BR uploaded, waiting Admin review
+  ADMIN_APPROVED // FIX: Admin approved PR/BR → Admin now creates PO (phase advances to CONTRACT_MANAGEMENT)
+  ADMIN_REJECTED // FIX: Admin rejected PR/BR → PM must re-upload (stays in PR_BR_ISSUANCE)
+  PO_CREATED     // FIX: Admin uploaded PO → waiting Ops Manager approval
+  OPS_APPROVED   // FIX: Ops approved PO → phase advances to SKOM_BUDGET
+  OPS_REJECTED   // FIX: Ops rejected PO → Admin must revise (stays in CONTRACT_MANAGEMENT)
+}
+
+// ─────────────────────────────────────────────
+// NEW: SKOM Budget + disbursements (Phases 13–15)
+// ─────────────────────────────────────────────
+model SkomBudget {
+  id                 String   @id @default(cuid())
+  permitClusterId    String   @unique
+  createdBy          String
+
+  totalBudget        Decimal?  @db.Decimal(15, 2)
+  budgetFileUrl      String?
+  rabFileUrl         String?
+  timelineFileUrl    String?
+  kurvaSFileUrl      String?
+  kurvaSData         Json?
+
+  budgetAmount       Decimal?  @db.Decimal(15, 2)
+  notes              String?
+  startDate          DateTime?
+  endDate            DateTime?
+  durationDays       Int?
+
+  status             SkomStatus @default(DRAFT)
+  submittedBy        String?
+  submittedAt        DateTime?
+  opsApprovedBy      String?
+  opsApprovedAt      DateTime?
+  opsNotes           String?
+  gmApprovedBy       String?
+  gmApprovedAt       DateTime?
+  gmNotes            String?
+  approvedAt         DateTime?
+  approvedBy         String?
+  rejectionReason    String?
+  approvalNotes      String?
+
+  disbursementSchedule Json?
+  totalDisbursed     Decimal?  @db.Decimal(15, 2)
+
+  // FIX: disbursement schedule
+  disbursementStartDate DateTime?
+  disbursementEndDate   DateTime?
+  disbursementAmount    Decimal?
+  disbursementNotes     String?
+  disbursedBy           String?
+  disbursedAt           DateTime?
+
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  permitCluster PermitCluster @relation(fields: [permitClusterId], references: [id], onDelete: Cascade)
+  creator       User          @relation("SkomCreator", fields: [createdBy], references: [id])
+  approver      User?         @relation("SkomApprover", fields: [approvedBy], references: [id])
+  disbursements DisbursementRecord[]
+}
+
+enum SkomStatus {
+  DRAFT
+  SUBMITTED
+  UNDER_REVIEW
+  APPROVED
+  REJECTED
+  REVISION_REQUIRED
+  PENDING_OPS_APPROVAL
+  OPS_APPROVED
+  OPS_REJECTED
+  PENDING_GM_APPROVAL
+  GM_APPROVED
+  GM_REJECTED
+  DISBURSED
+}
+
+model DisbursementRecord {
+  id            String    @id @default(cuid())
+  skomBudgetId  String
+  amount        Decimal   @db.Decimal(15, 2)
+  description   String
+  scheduledDate DateTime
+  executedDate  DateTime?
+  status        String    @default("SCHEDULED")
+  evidenceUrl   String?
+  recordedBy    String
+  createdAt     DateTime  @default(now())
+
+  skomBudget SkomBudget @relation(fields: [skomBudgetId], references: [id], onDelete: Cascade)
+  recorder   User       @relation("DisbursementRecorder", fields: [recordedBy], references: [id])
+
+  @@index([skomBudgetId])
+}
+
+// ─────────────────────────────────────────────
+// NEW: Claim package (Phase 18)
+// ─────────────────────────────────────────────
+model ClaimPackage {
+  id              String          @id @default(cuid())
+  permitClusterId String          @unique
+  documentNumber  String          @unique
+  status          ClaimStatus     @default(DRAFT)
+
+  hasBAOpen           Boolean     @default(false)
+  hasBASurvey         Boolean     @default(false)
+  hasSip              Boolean     @default(false)
+  hasHld              Boolean     @default(false)
+  hasLld              Boolean     @default(false)
+  hasPrBr             Boolean     @default(false)
+  hasContract         Boolean     @default(false)
+  hasSkomBudget       Boolean     @default(false)
+  hasBAK              Boolean     @default(false)
+  hasBAKP             Boolean     @default(false)
+
+  ispDocumentUrls     String[]
+  govDocumentUrls     String[]
+  docMom              String? // NEW: stream A document
+  docBaOpen           String? // NEW: stream A document
+  docBaAcara          String? // NEW: stream A document
+  docBaTtdRt          String? // NEW: stream A document
+  docFcBukuTabungan   String? // NEW: stream A document
+  docSip              String? // NEW: stream A document
+  docKtpRtRw          String? // NEW: stream A document
+  docPks              String? // NEW: stream A document
+  docKwitansi         String? // NEW: stream A document
+  docEvidancePayment  String? // NEW: stream A document
+  docBuktiTrf         String? // NEW: stream A document
+  docSkInternal       String? // NEW: stream A document
+  docPoSpk            String? // NEW: stream A document
+  docBaOpenLengkap    String? // NEW: stream B document
+  docKwitansiGov      String? // NEW: stream B document
+  docFotoEvidance     String? // NEW: stream B document
+  docEvidancePaymentGov String? // NEW: stream B document
+  docSkInternalGov    String? // NEW: stream B document
+  docPoSpkGov         String? // NEW: stream B document
+  check1Status        String   @default("PENDING") // NEW: check1 system status
+  check1FailedDocs    String[] // NEW: check1 missing docs list
+  check1DoneAt        DateTime? // NEW: check1 completion time
+  check2Status        String   @default("PENDING") // NEW: check2 PM status
+  check2ReviewedBy    String? // NEW: check2 reviewer
+  check2ReviewedAt    DateTime? // NEW: check2 review time
+  check2Notes         String? // NEW: check2 notes
+  submittedToIspAt    DateTime? // NEW: final submit timestamp
+  submittedToIspBy    String? // NEW: final submit actor
+
+  compiledPackageUrl  String?
+  compiledAt          DateTime?
+  compiledBy          String?
+
+  submittedAt         DateTime?
+  reviewedAt          DateTime?
+  approvedAt          DateTime?
+  revisionReason      String?
+
+  // FIX: per-document approval (Admin then PM) — JSON map docKey → { adminStatus, pmStatus, ... }
+  docApprovals        Json?
+  // FIX: PM-level claim approval tracking
+  pmApprovedAt        DateTime?
+  pmApprovedBy        String?
+  pmRejectedAt        DateTime?
+  pmRejectionReason   String?
+
+  compiledByUser      User?       @relation("ClaimCompiler", fields: [compiledBy], references: [id]) // FIX: optional FK
+  permitCluster       PermitCluster @relation(fields: [permitClusterId], references: [id], onDelete: Cascade)
+
+  createdAt           DateTime    @default(now())
+  updatedAt           DateTime    @updatedAt
+}
+
+enum ClaimStatus {
+  DRAFT
+  COMPILING
+  SUBMITTED_FOR_REVIEW
+  REVISION_REQUIRED
+  APPROVED
+}
+
+// ─────────────────────────────────────────────
+// NEW: Invoice package (Phase 19)
+// ─────────────────────────────────────────────
+model InvoicePackage {
+  id              String          @id @default(cuid())
+  permitClusterId String          @unique
+  invoiceNumber   String          @unique
+  amount          Decimal         @db.Decimal(15, 2)
+  currency        String          @default("IDR")
+  status          InvoiceStatus   @default(DRAFT)
+
+  invoicePdfUrl   String?
+  supportingDocs  String[]
+
+  submittedToFinanceAt DateTime?
+  reviewedByFinanceAt  DateTime?
+  approvedAt           DateTime?
+  paidAt               DateTime?
+  paymentRef           String?
+  paymentEvidenceUrl   String?
+
+  followUpCount   Int             @default(0)
+  lastFollowUpAt  DateTime?
+  notes           String?
+
+  generatedBy     String
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  permitCluster   PermitCluster   @relation(fields: [permitClusterId], references: [id], onDelete: Cascade)
+  generator       User            @relation("InvoiceGenerator", fields: [generatedBy], references: [id])
+}
+
+enum InvoiceStatus {
+  DRAFT
+  SUBMITTED
+  UNDER_REVIEW
+  APPROVED
+  PAID
+  REJECTED
+}
+
+// NEW: outbound permit bundle email audit (no nodemailer dependency in MVP — log + metadata)
+model PermitEmailLog {
+  id                  String   @id @default(cuid())
+  permitClusterId     String
+  toEmail             String
+  subject             String
+  bodySummary         String?
+  sentByUserId        String
+  documentsAttached   Json?
+  createdAt           DateTime @default(now())
+
+  @@index([permitClusterId])
+}
+
+model IspEmailConfig {
+  id         String   @id @default(cuid())
+  ispName    String   @unique
+  emailTo    String[]
+  emailCc    String[]
+  emailBcc   String[]
+  smtpNotes  String?
+  updatedBy  String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  updater    User     @relation("IspEmailUpdater", fields: [updatedBy], references: [id])
+}
+
+model SurveyEvidence {
+  id           String     @id @default(cuid())
+  surveyDataId String
+  fileUrl      String
+  fileName     String
+  mimeType     String?
+  fileSize     Int?
+  latitude     Float?
+  longitude    Float?
+  capturedAt   DateTime?
+  uploadedAt   DateTime   @default(now())
+  uploadedBy   String
+
+  surveyData   SurveyData @relation(fields: [surveyDataId], references: [id], onDelete: Cascade)
+  uploader     User       @relation("SurveyEvidenceUploader", fields: [uploadedBy], references: [id])
+
+  @@index([surveyDataId])
+}
+
+// ─────────────────────────────────────────────
+// NEW: CASH OPERATION REQUEST
+// ─────────────────────────────────────────────
+model CashOperationRequest {
+  id              String              @id @default(cuid())
+  requestNumber   String              @unique
+  type            CashOperationType
+  requestedBy     String
+  description     String
+  amount          Decimal             @db.Decimal(15, 2)
+  currency        String              @default("IDR")
+  category        String?
+  projectRef      String?
+  status          CashOpStatus        @default(DRAFT)
+  currentStepRole String?
+  slaDeadline     DateTime?
+  slaBreached     Boolean             @default(false)
+  rejectionReason String?
+  financeNotes    String?
+  disbursedAt     DateTime?
+  disbursedAmount Decimal?            @db.Decimal(15, 2)
+
+  // FIX: structured line items
+  lineItems       Json?
+  totalAmount     Decimal?            @default(0)
+  photoUrls       Json?
+  fileUrl         String?
+
+  // FIX: approval chain tracking (full chain incl. submitter at index 0 — matches frontend)
+  approvalChain       Json?
+  approvalHistory     Json?
+  currentApproverRole String?
+  currentStep         Int               @default(0)
+  totalSteps          Int               @default(0)
+
+  // Cash Advance Stage 1 — usage period (optional until CA flow populated)
+  periodeFrom DateTime?
+  periodeTo   DateTime?
+
+  /// Final approved jasa amount after Stage 1 chain; set when status reaches APPROVED (both CA and reimbursement).
+  finalApprovedAmount Decimal? @db.Decimal(18, 2)
+
+  // Cash Advance Stage 2 — realization (null until CA enters realization flow)
+  realisasiSubmittedAt     DateTime?
+  realisasiTotal           Decimal?         @db.Decimal(18, 2)
+  realisasiStatus          RealisasiStatus?
+  realisasiCurrentStepRole String?
+  realisasiRejectionReason String?
+  realisasiCompletedAt     DateTime?
+  
+  // Issue C: Requester's bank account number for CA form
+  nomorRekeningPengaju     String?
+  
+  // Issue D: Finance-level realisasi rejection and bank account
+  realisasiNomorRekeningFinance String?
+  realisasiRejectedAt      DateTime?
+  realisasiRejectedById    String?
+  realisasiRejectedReason  String?
+
+  // GM and Finance signature fields for realisasi approval
+  gmSignatureUrl         String?
+  gmApprovedAt             DateTime?
+  gmApprovedById           String?
+  financeSignatureUrl      String?
+  financeApprovedAt        DateTime?
+  financeApprovedById      String?
+  financeNominalDisetujui  Decimal?
+  
+  approvedAt               DateTime?
+
+  financeProjectId String?
+  financeProject   FinanceProject? @relation(fields: [financeProjectId], references: [id], onDelete: SetNull)
+
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  requester       User                @relation("CashOpRequester", fields: [requestedBy], references: [id])
+  attachments     CashOpAttachment[]
+  approvalSteps   CashOpApprovalStep[]
+  realisasiItems  CashOpRealisasiItem[]
+  realisasiSteps  CashOpRealisasiStep[]
+
+  @@index([status])
+  @@index([requestedBy])
+  @@index([type])
+  @@index([requestNumber])
+  @@index([financeProjectId])
+  @@index([realisasiStatus])
+  @@index([periodeTo])
+}
+
+enum CashOperationType {
+  CASH_ADVANCE
+  REIMBURSEMENT
+}
+
+enum CashOpStatus {
+  DRAFT
+  SUBMITTED
+  IN_REVIEW
+  APPROVED
+  DISBURSED
+  REJECTED
+  CANCELLED
+  REALISASI_IN_PROGRESS
+  REALISASI_PENDING_PM
+  REALISASI_REJECTED_BY_PM
+  REALISASI_PENDING_OPS
+  REALISASI_PENDING_MARKETING_HEAD
+  REALISASI_REJECTED_BY_OPS
+  REALISASI_REJECTED_BY_MARKETING_HEAD
+  REALISASI_PENDING_GM
+  REALISASI_REJECTED_BY_GM
+  REALISASI_PENDING_FINANCE
+  REALISASI_REJECTED_BY_FINANCE
+  REALISASI_DONE
+  DONE
+}
+
+enum RealisasiStatus {
+  DRAFT
+  PENDING_PM_REVIEW
+  PENDING_OPS_REVIEW
+  PENDING_GM_REVIEW
+  PENDING_FINANCE_REVIEW
+  PENDING_MARKETING_HEAD_REVIEW
+  REJECTED
+  DONE
+}
+
+// ─────────────────────────────────────────────
+// NEW: APPROVAL STEP — each step in the chain
+// ─────────────────────────────────────────────
+model CashOpApprovalStep {
+  id              String               @id @default(cuid())
+  requestId       String
+  stepOrder       Int
+  approverRole    String
+  approverId      String?
+  status          StepStatus           @default(PENDING)
+  approvedAmount  Decimal?             @db.Decimal(18, 2)
+  notes           String?
+  decidedAt       DateTime?
+  createdAt       DateTime             @default(now())
+
+  request         CashOperationRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  approver        User?                @relation("CashOpApprover", fields: [approverId], references: [id])
+
+  @@index([requestId])
+  @@index([approverRole])
+  @@index([status])
+}
+
+model CashOpRealisasiItem {
+  id              String   @id @default(cuid())
+  cashOpRequestId String
+  itemNumber      Int
+  description     String
+  paymentDate     DateTime
+  amount          Decimal  @db.Decimal(18, 2)
+  // Issue D: Finance override amount
+  finalAmount     Decimal? @db.Decimal(15, 2)
+  photoUrl        String?
+  createdAt       DateTime @default(now())
+
+  cashOpRequest CashOperationRequest @relation(fields: [cashOpRequestId], references: [id], onDelete: Cascade)
+
+  @@index([cashOpRequestId, itemNumber])
+}
+
+model CashOpRealisasiStep {
+  id              String     @id @default(cuid())
+  cashOpRequestId String
+  stepOrder       Int
+  approverRole    String
+  approverId      String?
+  status          StepStatus @default(PENDING)
+  approvedAt      DateTime?
+  rejectionReason      String?
+  notes                String?
+  hasilCheckingFinance String?
+  createdAt            DateTime   @default(now())
+
+  cashOpRequest CashOperationRequest @relation(fields: [cashOpRequestId], references: [id], onDelete: Cascade)
+  approver      User?                @relation("CashOpRealisasiApprover", fields: [approverId], references: [id])
+
+  @@index([cashOpRequestId])
+}
+
+enum StepStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  SKIPPED
+}
+
+// ─────────────────────────────────────────────
+// NEW: ATTACHMENT
+// ─────────────────────────────────────────────
+model CashOpAttachment {
+  id          String               @id @default(cuid())
+  requestId   String
+  fileName    String
+  fileUrl     String
+  fileSize    Int?
+  mimeType    String?
+  uploadedBy  String
+  createdAt   DateTime             @default(now())
+
+  request     CashOperationRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  uploader    User                 @relation("CashOpUploader", fields: [uploadedBy], references: [id])
+
+  @@index([requestId])
+}
+
+// ─────────────────────────────────────────────
+// Finance Dashboard — budget projects & ledger (separate from legacy Project)
+// ─────────────────────────────────────────────
+
+enum FinanceProjectStatus {
+  ACTIVE
+  CLOSED
+  ARCHIVED
+}
+
+enum BudgetLedgerCategory {
+  MATERIAL
+  JASA
+}
+
+enum BudgetLedgerEntryType {
+  BUDGET_INIT
+  BUDGET_ADJUSTMENT
+  DEDUCT_MATERIAL
+  DEDUCT_JASA
+  REFUND_MATERIAL
+  REFUND_JASA
+  TRANSFER_OUT
+  TRANSFER_IN
+}
+
+enum BudgetLedgerSourceType {
+  ORDER
+  CASH_OP
+  MANUAL_ADJUSTMENT
+  TRANSFER
+}
+
+enum BudgetTransferStatus {
+  PENDING_GM_APPROVAL
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+model FinanceProject {
+  id          String  @id @default(cuid())
+  code        String  @unique
+  name        String
+  description String?
+
+  totalBudget    Decimal  @db.Decimal(18, 2)
+  materialBudget Decimal? @db.Decimal(18, 2)
+  jasaBudget     Decimal? @db.Decimal(18, 2)
+
+  materialSpent Decimal @default(0) @db.Decimal(18, 2)
+  jasaSpent     Decimal @default(0) @db.Decimal(18, 2)
+
+  isOverbudget              Boolean @default(false)
+  isDefaultUncategorized    Boolean @default(false)
+
+  endDate DateTime?
+
+  status FinanceProjectStatus @default(ACTIVE)
+
+  createdById String
+  updatedById String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  createdBy User  @relation("FinanceProjectCreatedBy", fields: [createdById], references: [id])
+  updatedBy User? @relation("FinanceProjectUpdatedBy", fields: [updatedById], references: [id])
+
+  ledgerEntries           BudgetLedger[]
+  orders                  Order[]
+  cashOperationRequests   CashOperationRequest[]
+  transfersOut            BudgetTransfer[] @relation("TransferSourceProject")
+  transfersIn             BudgetTransfer[] @relation("TransferTargetProject")
+  plannings               FinanceProjectPlanning[]
+
+  @@index([status])
+  @@index([isDefaultUncategorized])
+  @@index([code])
+}
+
+model FinanceProjectPlanning {
+  id               String         @id @default(cuid())
+  financeProjectId String
+  financeProject   FinanceProject @relation(fields: [financeProjectId], references: [id], onDelete: Cascade)
+  month            Int            // 1–12
+  year             Int            // e.g. 2024
+  plannedAmount    Decimal        @db.Decimal(15, 2)
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  @@unique([financeProjectId, month, year])
+}
+
+model BudgetLedger {
+  id               String @id @default(cuid())
+  financeProjectId String
+
+  entryType BudgetLedgerEntryType
+  category  BudgetLedgerCategory?
+
+  /// Positive magnitude; direction implied by entryType (deduct vs refund vs transfer).
+  amount Decimal @db.Decimal(18, 2)
+
+  sourceType BudgetLedgerSourceType?
+  sourceId   String?
+
+  budgetTransferId String?
+
+  notes    String?
+  metadata Json?
+
+  createdById String?
+  createdAt   DateTime @default(now())
+
+  financeProject FinanceProject @relation(fields: [financeProjectId], references: [id], onDelete: Restrict)
+  budgetTransfer BudgetTransfer? @relation(fields: [budgetTransferId], references: [id], onDelete: SetNull)
+  createdBy      User?           @relation("BudgetLedgerCreator", fields: [createdById], references: [id])
+
+  /// DB partial unique indexes (see migration `budget_ledger_idempotency_constraint`):
+  /// - Main: (sourceType, sourceId, entryType) for deduct/refund rows without metadata.partialRefundType
+  /// - Partial refund: (sourceType, sourceId, entryType, metadata->>'partialRefundType') for tagged REFUND_JASA
+
+  @@index([financeProjectId, createdAt])
+  @@index([sourceType, sourceId])
+  @@index([budgetTransferId])
+}
+
+model BudgetTransfer {
+  id String @id @default(cuid())
+
+  sourceFinanceProjectId String
+  targetFinanceProjectId String
+
+  sourceCategory BudgetLedgerCategory
+  targetCategory BudgetLedgerCategory
+
+  amount Decimal @db.Decimal(18, 2)
+  reason String
+
+  status          BudgetTransferStatus @default(PENDING_GM_APPROVAL)
+  submittedById   String
+  decidedById     String?
+  decidedAt       DateTime?
+  rejectionReason String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  sourceProject FinanceProject @relation("TransferSourceProject", fields: [sourceFinanceProjectId], references: [id], onDelete: Restrict)
+  targetProject FinanceProject @relation("TransferTargetProject", fields: [targetFinanceProjectId], references: [id], onDelete: Restrict)
+  submittedBy   User           @relation("BudgetTransferSubmittedBy", fields: [submittedById], references: [id])
+  decidedBy     User?          @relation("BudgetTransferDecidedBy", fields: [decidedById], references: [id])
+
+  ledgerEntries BudgetLedger[]
+
+  @@index([status])
+  @@index([sourceFinanceProjectId])
+  @@index([targetFinanceProjectId])
+  @@index([submittedById])
+}

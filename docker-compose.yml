@@ -1,0 +1,65 @@
+# PostgreSQL tuning notes (Sprint 2 — VPS ~16GB RAM target):
+# - shared_buffers=2GB + effective_cache_size=6GB ≈ hint alokasi memori untuk planner + cache
+# - max_connections=200 mendukung PM2 cluster (mis. 8 worker × connection_limit=5 = 40) + margin
+# - random_page_cost=1.1 mengasumsikan SSD; naikkan jika disk HDD
+# - Untuk laptop RAM kecil, turunkan shared_buffers / effective_cache_size atau pakai compose override lokal
+# - Recalculate: https://pgtune.leopard.in.ua/
+version: '3.8'
+
+services:
+  db:
+    image: postgis/postgis:15-3.3
+    container_name: permatrack_db
+    restart: unless-stopped
+    shm_size: '1gb'
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      POSTGRES_DB: ${POSTGRES_DB:-permatrack}
+    ports:
+      - "5432:5432"
+    volumes:
+      - permatrack_db_data:/var/lib/postgresql/data
+    command:
+      - 'postgres'
+      - '-c'
+      - 'shared_buffers=2GB'
+      - '-c'
+      - 'effective_cache_size=6GB'
+      - '-c'
+      - 'max_connections=200'
+      - '-c'
+      - 'work_mem=16MB'
+      - '-c'
+      - 'maintenance_work_mem=256MB'
+      - '-c'
+      - 'wal_buffers=16MB'
+      - '-c'
+      - 'checkpoint_completion_target=0.9'
+      - '-c'
+      - 'random_page_cost=1.1'
+      - '-c'
+      - 'max_worker_processes=8'
+      - '-c'
+      - 'max_parallel_workers=8'
+      - '-c'
+      - 'max_parallel_workers_per_gather=4'
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: permatrack_redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - permatrack_redis_data:/data
+    command: redis-server --appendonly yes
+
+volumes:
+  permatrack_db_data:
+  permatrack_redis_data:

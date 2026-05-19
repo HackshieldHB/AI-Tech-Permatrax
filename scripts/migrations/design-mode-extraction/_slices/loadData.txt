@@ -1,0 +1,25 @@
+  const loadData = useCallback(async (mapInstance?: maplibregl.Map | null) => {
+    try {
+      const m = mapInstance ?? mapRef.current;
+      let clustersPath = '/map/clusters?limit=200';
+      if (m) {
+        const b = m.getBounds();
+        clustersPath = `/map/clusters?bbox=${b.getWest()},${b.getSouth()},${b.getEast()},${b.getNorth()}&limit=200`;
+      }
+      const [clustersData, layersData] = await Promise.all([
+        apiGet<ClusterPin[]>(clustersPath),
+        apiGet<GisLayer[]>('/map/layers?limit=200'),
+      ]);
+      setClusters(clustersData || []); // FIX
+      setLayers(
+        (layersData || []).map((L) => ({
+          ...L,
+          isVisible: L.isVisible !== false, // FIX
+        })),
+      ); // FIX
+    } catch {
+      // FIX: map tetap bisa dipakai tanpa API
+    } finally {
+      setLoading(false); // FIX
+    }
+  }, []);

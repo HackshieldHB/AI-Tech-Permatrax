@@ -1,0 +1,31 @@
+// FIX: complete cleanup including tiang, backbone, closure
+const TOPO_SOURCE_IDS = [
+  'topo-feeder', // FIX
+  'topo-distribution', // FIX
+  'topo-drop', // FIX
+  'topo-homepass', // FIX
+  'topo-closure', // FIX: ensure included
+  'topo-odc', // FIX
+  'topo-odp', // FIX
+  'topo-backbone', // FIX: ensure included
+  'topo-tiang', // FIX: ensure included
+] as const; // FIX
+
+// FIX: layer list — all topology layers for safe removal
+const TOPO_LAYER_IDS = [
+  'topo-feeder-line', // FIX
+  'topo-dist-line', // FIX
+  'topo-drop-line', // FIX
+  'topo-homepass-circle', // FIX: reserved id if used
+  'topo-ont-circle', // FIX
+  'topo-ont-label', // FIX
+  'topo-closure-circle', // FIX: ensure included
+  'topo-tiang-circle', // FIX: ensure included
+  'topo-tiang-label', // FIX: ensure included
+  'topo-backbone-circle', // FIX: ensure included
+  'topo-backbone-label', // FIX: ensure included
+  'topo-odc-circle', // FIX
+  'topo-odc-label', // FIX
+  'topo-odp-circle', // FIX
+  'topo-odp-label', // FIX
+] as const; // FIX

@@ -1,0 +1,15 @@
+  // ── Switch map type ─────────────────────────────────────
+  const switchMapType = useCallback((type: 'osm' | 'satellite') => {
+    const map = mapRef.current; // FIX
+    if (!map) return; // FIX
+    setMapType(type); // FIX
+    map.setStyle(TILE_LAYERS[type].style); // FIX
+    map.once('style.load', () => {
+      // FIX: bump styleEpoch to trigger ALL layer useEffects
+      setStyleEpoch((prev) => prev + 1); // FIX
+      // FIX: small delay to ensure style fully loaded
+      setTimeout(() => {
+        setStyleEpoch((prev) => prev + 1); // FIX
+      }, 200); // FIX
+    }); // FIX
+  }, []);

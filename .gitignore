@@ -1,0 +1,46 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+.turbo/
+
+# Build output
+dist/
+build/
+.next/
+out/
+
+# Environment files (contain secrets)
+.env
+.env.local
+.env.*.local
+apps/api/.env
+apps/web/.env.local
+
+# ngrok config (contains authtoken - do not commit)
+ngrok.yml
+ngrok config
+ngrok.log
+ngrok-stdout.log
+ngrok-stderr.log
+.claude
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Uploads / runtime data
+apps/api/uploads/

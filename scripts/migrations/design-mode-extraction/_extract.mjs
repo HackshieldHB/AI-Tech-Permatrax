@@ -1,0 +1,32 @@
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const pagePath = path.join(__dirname, '..', 'page.tsx');
+const lines = fs.readFileSync(pagePath, 'utf8').split(/\r?\n/);
+const slice = (a, b) => lines.slice(a - 1, b).join('\n');
+const outDir = path.join(__dirname, '_slices');
+fs.mkdirSync(outDir, { recursive: true });
+fs.writeFileSync(path.join(outDir, 'helpers-pre-export.txt'), slice(14, 567), 'utf8');
+fs.writeFileSync(path.join(outDir, 'topo-ids.txt'), slice(971, 1001), 'utf8');
+fs.writeFileSync(path.join(outDir, 'tile-category-phase.txt'), slice(1186, 1276), 'utf8');
+fs.writeFileSync(path.join(outDir, 'clearCalcGraphics.txt'), slice(1902, 1914), 'utf8');
+fs.writeFileSync(path.join(outDir, 'clearTopology.txt'), slice(1916, 1945), 'utf8');
+fs.writeFileSync(path.join(outDir, 'renderTopology.txt'), slice(1947, 2666), 'utf8');
+fs.writeFileSync(path.join(outDir, 'clearCalcGraphics.txt'), slice(1902, 1914), 'utf8');
+fs.writeFileSync(path.join(outDir, 'startCalc.txt'), slice(2667, 2699), 'utf8');
+fs.writeFileSync(path.join(outDir, 'calc-polygon-effect.txt'), slice(2701, 2814), 'utf8');
+fs.writeFileSync(path.join(outDir, 'calc-click-effect.txt'), slice(2816, 2899), 'utf8');
+fs.writeFileSync(path.join(outDir, 'runCalc.txt'), slice(2901, 2955), 'utf8');
+fs.writeFileSync(path.join(outDir, 'calc-helpers-polygon.txt'), slice(395, 437), 'utf8');
+fs.writeFileSync(path.join(outDir, 'loadData.txt'), slice(1343, 1367), 'utf8');
+fs.writeFileSync(path.join(outDir, 'clusterMarkersEffect.txt'), slice(1503, 1612), 'utf8');
+fs.writeFileSync(path.join(outDir, 'initMap.txt'), slice(1461, 1501), 'utf8');
+fs.writeFileSync(path.join(outDir, 'searchHandlers.txt'), slice(1370, 1417), 'utf8');
+fs.writeFileSync(path.join(outDir, 'layerMutationHandlers.txt'), slice(1419, 1458), 'utf8');
+fs.writeFileSync(path.join(outDir, 'switchMapType.txt'), slice(1810, 1824), 'utf8');
+fs.writeFileSync(path.join(outDir, 'kmzEffect.txt'), slice(1614, 1808), 'utf8');
+fs.writeFileSync(path.join(outDir, 'kmzUpload.txt'), slice(1826, 1900), 'utf8');
+
+console.log('ok', slice(14, 20).split('\n').length);

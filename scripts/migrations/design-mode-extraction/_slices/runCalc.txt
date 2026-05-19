@@ -1,0 +1,55 @@
+  // ── Run calculation ─────────────────────────────────────
+  const runCalculation = useCallback(async () => {
+    if (!backbonePoint || !targetPoint) {
+      toast.error('Pilih titik backbone dan target terlebih dahulu'); // FIX
+      return; // FIX
+    } // FIX
+    if (inputMode === 'polygon' && (!polygonAreaSqM || polygonAreaSqM <= 0)) {
+      toast.error('Gambar polygon area terlebih dahulu'); // FIX
+      return; // FIX
+    } // FIX
+    setCalculating(true); // FIX
+    try {
+      const tags = nearestBackbone?.tags; // FIX
+      const result = await apiPost<FtthCalcApiResponse>('/map/calculate', {
+        targetLat: targetPoint[1], // FIX
+        targetLon: targetPoint[0], // FIX
+        backboneLat: backbonePoint[1], // FIX
+        backboneLon: backbonePoint[0], // FIX
+        areaType, // FIX
+        areaRadiusMeters: areaRadius, // FIX
+        backboneOwner: tags?.operator || tags?.name || 'OSM Data', // FIX
+        polygonAreaSqM: inputMode === 'polygon' ? polygonAreaSqM ?? undefined : undefined, // FIX
+        polygonCentroidLat:
+          inputMode === 'polygon' && polygonCentroid ? polygonCentroid[1] : undefined, // FIX
+        polygonCentroidLon:
+          inputMode === 'polygon' && polygonCentroid ? polygonCentroid[0] : undefined, // FIX
+      }); // FIX
+      setCalcResult(result); // FIX
+      toast.success('✅ Kalkulasi selesai!'); // FIX
+      if (backbonePoint && targetPoint) {
+        await renderTopology(
+          result, // FIX
+          backbonePoint, // FIX
+          targetPoint, // FIX
+          inputMode === 'polygon' && polygonPoints.length >= 3 ? polygonPoints : null, // FIX
+        ); // FIX
+      } // FIX
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Error'; // FIX
+      toast.error(`Kalkulasi gagal: ${msg}`); // FIX
+    } finally {
+      setCalculating(false); // FIX
+    } // FIX
+  }, [
+    backbonePoint, // FIX
+    targetPoint, // FIX
+    areaType, // FIX
+    areaRadius, // FIX
+    nearestBackbone, // FIX
+    inputMode, // FIX
+    polygonAreaSqM, // FIX
+    polygonCentroid, // FIX
+    polygonPoints, // FIX
+    renderTopology, // FIX
+  ]);

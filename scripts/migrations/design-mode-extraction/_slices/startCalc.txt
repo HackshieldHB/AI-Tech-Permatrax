@@ -1,0 +1,33 @@
+
+  const startCalculation = useCallback(() => {
+    const map = mapRef.current; // FIX
+    if (!map) return; // FIX
+    clearCalcGraphics(); // FIX
+    clearTopology(); // FIX
+    setCalcMode('backbone'); // FIX
+    setBackbonePoint(null); // FIX
+    setTargetPoint(null); // FIX
+    setCalcResult(null); // FIX
+    setNearestBackbone(null); // FIX
+    toast.info('📍 Klik pada peta untuk menandai titik BACKBONE terdekat'); // FIX
+  }, [clearCalcGraphics, clearTopology]);
+
+  // FIX: polygon mode starts drawing instead
+  const handleStartCalc = useCallback(() => {
+    if (inputMode === 'polygon') {
+      setIsDrawingPolygon(true); // FIX
+      setPolygonPoints([]); // FIX
+      setPolygonAreaSqM(null); // FIX
+      setPolygonCentroid(null); // FIX
+      polygonMarkersRef.current.forEach((mk) => mk.remove()); // FIX
+      polygonMarkersRef.current = []; // FIX
+      const map = mapRef.current; // FIX
+      if (map) clearPolygonFromMap(map); // FIX
+      setCalcMode('idle'); // FIX: backbone only after polygon closed
+      toast.info(
+        '🔷 Mode polygon: klik titik-titik area. Double-click untuk selesai, lalu klik backbone.', // FIX
+      ); // FIX
+    } else {
+      startCalculation(); // FIX
+    } // FIX
+  }, [inputMode, startCalculation]);

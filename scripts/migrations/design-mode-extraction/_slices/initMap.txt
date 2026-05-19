@@ -1,0 +1,41 @@
+  useEffect(() => {
+    if (!mapContainer.current || mapRef.current) return; // FIX
+
+    const map = new maplibregl.Map({
+      container: mapContainer.current, // FIX
+      style: TILE_LAYERS.osm.style, // FIX
+      center: [106.8456, -6.2088], // FIX: Jakarta default
+      zoom: 11, // FIX
+      maxZoom: 19, // FIX
+      preserveDrawingBuffer: true, // FIX: required for canvas.toDataURL() to work
+    }); // FIX
+
+    map.addControl(new maplibregl.NavigationControl(), 'top-right'); // FIX
+    // FIX: remove ScaleControl — causes white bar at bottom
+    map.addControl(
+      new maplibregl.GeolocateControl({ trackUserLocation: true }), // FIX
+      'top-right',
+    ); // FIX
+
+    mapRef.current = map; // FIX
+
+    const onMoveEnd = () => {
+      if (clusterReloadTimerRef.current) clearTimeout(clusterReloadTimerRef.current);
+      clusterReloadTimerRef.current = setTimeout(() => {
+        clusterReloadTimerRef.current = null;
+        void loadData(map);
+      }, 300);
+    };
+
+    map.on('load', () => {
+      void loadData(map);
+    });
+    map.on('moveend', onMoveEnd);
+
+    return () => {
+      map.off('moveend', onMoveEnd);
+      if (clusterReloadTimerRef.current) clearTimeout(clusterReloadTimerRef.current);
+      map.remove(); // FIX
+      mapRef.current = null; // FIX
+    };
+  }, [loadData]);

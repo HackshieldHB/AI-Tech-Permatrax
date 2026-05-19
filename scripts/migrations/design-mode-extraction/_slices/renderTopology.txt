@@ -1,0 +1,720 @@
+  // FIX: render full FTTH topology on map (backend route/snap/buildings + road ODPs)
+  const renderTopology = useCallback(
+    async (
+      result: FtthCalcApiResponse, // FIX
+      backbone: [number, number], // FIX
+      target: [number, number], // FIX
+      drawnPolygon?: [number, number][] | null, // FIX: closed user polygon for boundary filter
+    ) => {
+      const map = mapRef.current; // FIX
+      if (!map || !map.isStyleLoaded()) return; // FIX
+
+      setRenderingTopology(true); // FIX
+      clearTopology(); // FIX
+
+      // FIX: get API base + token for backend calls
+      const apiBase =
+        process.env.NEXT_PUBLIC_API_URL || API_BASE || 'http://localhost:3001/api'; // FIX
+      const cookieTok =
+        typeof document !== 'undefined' ? document.cookie.match(/token=([^;]+)/)?.[1] : ''; // FIX
+      const winTok =
+        typeof window !== 'undefined'
+          ? (window as unknown as { __permaToken?: string }).__permaToken
+          : ''; // FIX
+      const { accessToken } = useAuthStore.getState(); // FIX
+      const authToken = accessToken || cookieTok || winTok || ''; // FIX
+
+      try {
+        const odpCount = result.equipment.odp.count; // FIX
+        const spacingM = result.equipment.odp.spacingM || 65; // FIX
+        const radiusM =
+          result.summary.coverageRadiusMeters ?? result.summary.areaRadiusMeters ?? 300; // FIX
+
+        const polygonPoints =
+          drawnPolygon && drawnPolygon.length >= 3 ? drawnPolygon : null; // FIX
+        const boundary = polygonPoints // FIX: shared by ODP verify + buildings
+          ? { type: 'polygon' as const, points: polygonPoints } // FIX
+          : {
+              type: 'circle' as const, // FIX
+              radiusM, // FIX
+              centerLng: target[0], // FIX
+              centerLat: target[1], // FIX
+            }; // FIX
+
+        // ── STEP ①: Snap ODC to nearest road ────────────
+        toast.info('① Menempatkan ODC ke jalan terdekat...'); // FIX
+        const odcSnapped = await backendSnap(apiBase, authToken, target[0], target[1]); // FIX
+        const [odcLng, odcLat] = odcSnapped; // FIX
+        const odcSnappedLng = odcLng; // FIX
+        const odcSnappedLat = odcLat; // FIX
+
+        // ── STEP ②: Feeder route backbone → ODC ─────────
+        toast.info('② Menghitung jalur feeder (backbone → ODC)...'); // FIX
+        const feederResult = await backendRoute(
+          apiBase, // FIX
+          authToken, // FIX
+          backbone[0], // FIX
+          backbone[1], // FIX
+          odcLng, // FIX
+          odcLat, // FIX
+        ); // FIX
+        const feederCoords = feederResult.coordinates; // FIX
+
+        // FIX: place closures along feeder route geometry
+        const closurePoints: [number, number][] = []; // FIX
+        if (feederCoords.length > 1) {
+          let traversed = 0; // FIX
+          let nextClosureAt = 500; // FIX
+          for (let i = 1; i < feederCoords.length; i++) {
+            const [lng1, lat1] = feederCoords[i - 1]; // FIX
+            const [lng2, lat2] = feederCoords[i]; // FIX
+            const segmentM = haversineM(lat1, lng1, lat2, lng2); // FIX
+            while (traversed + segmentM >= nextClosureAt) {
+              const fromStart = nextClosureAt - traversed; // FIX
+              const ratio = fromStart / segmentM; // FIX
+              closurePoints.push([
+                lng1 + (lng2 - lng1) * ratio, // FIX
+                lat1 + (lat2 - lat1) * ratio, // FIX
+              ]); // FIX
+              nextClosureAt += 500; // FIX
+            }
+            traversed += segmentM; // FIX
+          }
+        }
+
+        // ── STEP ③: ODP placement along roads (linear) ──
+        toast.info(`③ Menghitung posisi ${odpCount} ODP di sepanjang jalan...`); // FIX
+
+        // FIX: use road-following distribution instead of spokes
+        const { positions: rawOdpPositions, routes: spokeRoutes } = await computeOdpAlongRoads(
+          apiBase, // FIX
+          authToken, // FIX
+          odcLng, // FIX
+          odcLat, // FIX
+          odpCount, // FIX
+          spacingM, // FIX
+          radiusM, // FIX
+        ); // FIX
+
+        // FIX: snap each ODP to nearest road
+        toast.info('③ Snap ODP ke jalan...'); // FIX
+        const snappedOdps = await Promise.all(
+          rawOdpPositions.map(([lng, lat]) => backendSnap(apiBase, authToken, lng, lat)), // FIX
+        ); // FIX
+
+        // FIX: verify each ODP is inside polygon boundary
+        const odpPositions = snappedOdps.map((odp) => verifyOdpInBoundary(odp, boundary)); // FIX
+
+        // ── STEP ④: Distribution — cascade chain routing ──
+        toast.info('④ Menghitung jalur distribusi (cascade)...'); // FIX
+
+        // FIX: use cascade routing instead of star from ODC
+        const cascadeRoutes = buildCascadeRoutes(
+          [odcSnappedLng, odcSnappedLat], // FIX
+          odpPositions, // FIX
+          spokeRoutes || [], // FIX
+          spacingM, // FIX
+        ); // FIX
+
+        // FIX: get actual road routes for cascade segments
+        const distRouteResults = await Promise.allSettled(
+          cascadeRoutes.map(([from, to]) =>
+            backendRoute(apiBase, authToken, from[0], from[1], to[0], to[1]), // FIX
+          ), // FIX
+        ); // FIX
+
+        const distRoutes: [number, number][][] = distRouteResults.map((r, i) =>
+          r.status === 'fulfilled' && r.value?.coordinates?.length
+            ? r.value.coordinates
+            : ([cascadeRoutes[i][0], cascadeRoutes[i][1]] as [number, number][]), // FIX
+        ); // FIX
+
+        // ── STEP ⑤: Get ALL buildings in polygon area ──
+        toast.info('⑤ Mengambil bangunan OSM dalam area...'); // FIX
+
+        let queryRadius = radiusM + 200; // FIX: larger default capture radius
+        if (drawnPolygon && drawnPolygon.length >= 3) {
+          queryRadius =
+            Math.max(
+              ...drawnPolygon.map(([lng, lat]) =>
+                haversineM(target[1], target[0], lat, lng), // FIX: centroid to vertex
+              ),
+            ) + 100; // FIX
+        } // FIX
+        queryRadius = Math.min(queryRadius, 2000); // FIX
+
+        const osmBuildingsRaw = await backendBuildings(
+          apiBase, // FIX
+          authToken, // FIX
+          target[1], // FIX
+          target[0], // FIX
+          queryRadius, // FIX
+        ); // FIX
+
+        const osmBuildings = osmBuildingsRaw.filter((b) => {
+          if (boundary.type === 'polygon') {
+            return isPointInPolygon(b.lng, b.lat, boundary.points); // FIX
+          }
+          return isPointInCircle(
+            b.lng, // FIX
+            b.lat, // FIX
+            boundary.centerLng, // FIX
+            boundary.centerLat, // FIX
+            boundary.radiusM, // FIX
+          ); // FIX
+        }); // FIX
+
+        const buildingToOdp = new Map<number, number>(); // FIX: building idx → nearest ODP
+        osmBuildings.forEach((b, bi) => {
+          let minDist = Infinity; // FIX
+          let nearest = 0; // FIX
+          odpPositions.forEach(([oLng, oLat], oi) => {
+            const d = haversineM(b.lat, b.lng, oLat, oLng); // FIX
+            if (d < minDist) {
+              minDist = d; // FIX
+              nearest = oi; // FIX
+            }
+          }); // FIX
+          buildingToOdp.set(bi, nearest); // FIX
+        }); // FIX
+
+        type OsmBld = (typeof osmBuildings)[number]; // FIX
+        const odpBuildings = new Map<number, OsmBld[]>(); // FIX
+        odpPositions.forEach((_, i) => odpBuildings.set(i, [])); // FIX
+        osmBuildings.forEach((b, bi) => {
+          const odpIdx = buildingToOdp.get(bi) ?? 0; // FIX
+          odpBuildings.get(odpIdx)?.push(b); // FIX
+        }); // FIX
+
+        const allHomepass: Array<{
+          coords: [number, number]; // FIX
+          odpIdx: number; // FIX
+        }> = []; // FIX
+
+        odpPositions.forEach((odp, odpIdx) => {
+          const assigned = odpBuildings.get(odpIdx) || []; // FIX
+          assigned.forEach((b) => {
+            allHomepass.push({
+              coords: [b.lng, b.lat], // FIX: OSM only — no synthetic
+              odpIdx, // FIX
+            }); // FIX
+          }); // FIX
+        }); // FIX
+
+        const validHomepass = allHomepass; // FIX
+        const osmCount = validHomepass.length; // FIX
+
+        // ── STEP ⑥: Render all layers ───────────────────
+        toast.info('⑥ Merender topologi di peta...'); // FIX
+
+        // FIX: safe addSource helper to prevent duplicate errors
+        const safeAddSource = (id: string, data: Parameters<maplibregl.Map['addSource']>[1]) => {
+          try {
+            if (map.getSource(id)) map.removeSource(id); // FIX
+            map.addSource(id, data); // FIX
+          } catch (e) {
+            console.warn(`Failed to add source ${id}:`, e); // FIX
+          }
+        }; // FIX
+        const safeAddLayer = (layer: Parameters<maplibregl.Map['addLayer']>[0]) => {
+          try {
+            if (map.getLayer(layer.id)) map.removeLayer(layer.id); // FIX
+            map.addLayer(layer); // FIX
+          } catch (e) {
+            console.warn(`Failed to add layer ${layer.id}:`, e); // FIX
+          }
+        }; // FIX
+
+        safeAddSource('topo-feeder', {
+          type: 'geojson', // FIX
+          data: {
+            type: 'Feature', // FIX
+            geometry: { type: 'LineString', coordinates: feederCoords }, // FIX
+            properties: {}, // FIX
+          },
+        }); // FIX
+        safeAddLayer({
+          id: 'topo-feeder-line', // FIX
+          type: 'line', // FIX
+          source: 'topo-feeder', // FIX
+          paint: {
+            'line-color': '#2563EB', // FIX: feeder blue
+            'line-width': 4, // FIX
+            'line-opacity': 0.9, // FIX
+          },
+        }); // FIX
+
+        // FIX: distribution uses cascade routes (chain topology)
+        safeAddSource('topo-distribution', {
+          type: 'geojson', // FIX
+          data: {
+            type: 'FeatureCollection', // FIX
+            features: distRoutes.map((coords, i) => ({
+              type: 'Feature', // FIX
+              geometry: { type: 'LineString', coordinates: coords }, // FIX
+              properties: {
+                segmentIndex: i + 1, // FIX: cascade segment
+                isCascade: true, // FIX
+              },
+            })), // FIX
+          },
+        }); // FIX
+        safeAddLayer({
+          id: 'topo-dist-line', // FIX
+          type: 'line', // FIX
+          source: 'topo-distribution', // FIX
+          paint: {
+            'line-color': '#00D4B4', // FIX: distribusi teal
+            'line-width': 2.5, // FIX
+            'line-opacity': 0.85, // FIX
+          },
+        }); // FIX
+
+        safeAddSource('topo-drop', {
+          type: 'geojson', // FIX
+          data: {
+            type: 'FeatureCollection', // FIX
+            features: validHomepass.map((hp) => ({
+              type: 'Feature', // FIX
+              geometry: {
+                type: 'LineString', // FIX
+                coordinates: [odpPositions[hp.odpIdx], hp.coords], // FIX
+              },
+              properties: {}, // FIX
+            })), // FIX
+          },
+        }); // FIX
+        safeAddLayer({
+          id: 'topo-drop-line', // FIX
+          type: 'line', // FIX
+          source: 'topo-drop', // FIX
+          paint: {
+            'line-color': '#86EFAC', // FIX: drop light green
+            'line-width': 0.8, // FIX
+            'line-opacity': 0.6, // FIX
+            'line-dasharray': [2, 2], // FIX
+          },
+        }); // FIX
+
+        if (closurePoints.length > 0) {
+          // FIX: Closure along feeder
+          safeAddSource('topo-closure', {
+            type: 'geojson', // FIX
+            data: {
+              type: 'FeatureCollection', // FIX
+              features: closurePoints.map(([lng, lat], i) => ({
+                type: 'Feature', // FIX
+                geometry: { type: 'Point', coordinates: [lng, lat] }, // FIX
+                properties: { label: `Closure ${i + 1}` }, // FIX
+              })), // FIX
+            },
+          }); // FIX
+          safeAddLayer({
+            id: 'topo-closure-circle', // FIX
+            type: 'circle', // FIX
+            source: 'topo-closure', // FIX
+            paint: {
+              'circle-radius': 6, // FIX
+              'circle-color': '#F59E0B', // FIX: closure amber
+              'circle-stroke-color': 'white', // FIX
+              'circle-stroke-width': 2, // FIX
+            },
+          }); // FIX
+        }
+
+        // FIX: tiang — always attempt to render if aerial route
+        const poleSpacingM = result.equipment?.pole?.spacingM || 45; // FIX
+        const installMethod = result.cable?.installMethod || ''; // FIX
+
+        if (
+          installMethod.includes('Aerial') || // FIX
+          installMethod.includes('aerial') || // FIX
+          (result.equipment?.pole?.total || 0) > 0 // FIX
+        ) {
+          const tiangPoints: [number, number][] = []; // FIX
+          let accumulated = 0; // FIX
+          let nextPoleAt = poleSpacingM; // FIX
+
+          // FIX: place tiang along feeder route
+          for (let i = 1; i < feederCoords.length; i++) {
+            const [lng1, lat1] = feederCoords[i - 1]; // FIX
+            const [lng2, lat2] = feederCoords[i]; // FIX
+            const segM = haversineM(lat1, lng1, lat2, lng2); // FIX
+            while (accumulated + segM >= nextPoleAt) {
+              const ratio = (nextPoleAt - accumulated) / segM; // FIX
+              tiangPoints.push([
+                lng1 + (lng2 - lng1) * ratio, // FIX
+                lat1 + (lat2 - lat1) * ratio, // FIX
+              ]); // FIX
+              nextPoleAt += poleSpacingM; // FIX
+            }
+            accumulated += segM; // FIX
+          }
+
+          // FIX: also place tiang along distribution routes
+          distRoutes.forEach((route) => {
+            let acc2 = 0; // FIX
+            let nextP2 = poleSpacingM; // FIX
+            for (let i = 1; i < route.length; i++) {
+              const [lng1, lat1] = route[i - 1]; // FIX
+              const [lng2, lat2] = route[i]; // FIX
+              const segM = haversineM(lat1, lng1, lat2, lng2); // FIX
+              while (acc2 + segM >= nextP2) {
+                const ratio = (nextP2 - acc2) / segM; // FIX
+                tiangPoints.push([
+                  lng1 + (lng2 - lng1) * ratio, // FIX
+                  lat1 + (lat2 - lat1) * ratio, // FIX
+                ]); // FIX
+                nextP2 += poleSpacingM; // FIX
+              }
+              acc2 += segM; // FIX
+            }
+          }); // FIX
+
+          // FIX: dedupe tiang too close together
+          const dedupedTiang: [number, number][] = []; // FIX
+          tiangPoints.forEach((t) => {
+            const tooClose = dedupedTiang.some(
+              (existing) => haversineM(t[1], t[0], existing[1], existing[0]) < 20, // FIX
+            ); // FIX
+            if (!tooClose) dedupedTiang.push(t); // FIX
+          }); // FIX
+
+          // FIX: max 100 tiang markers for performance
+          const tiangSample = dedupedTiang
+            .filter((_, i) => i % Math.max(1, Math.floor(dedupedTiang.length / 100)) === 0) // FIX
+            .slice(0, 100); // FIX
+
+          if (tiangSample.length > 0) {
+            safeAddSource('topo-tiang', {
+              type: 'geojson', // FIX
+              data: {
+                type: 'FeatureCollection', // FIX
+                features: tiangSample.map(([lng, lat], i) => ({
+                  type: 'Feature', // FIX
+                  geometry: { type: 'Point', coordinates: [lng, lat] }, // FIX
+                  properties: { label: `T-${i + 1}`, index: i + 1 }, // FIX
+                })), // FIX
+              },
+            }); // FIX
+            safeAddLayer({
+              id: 'topo-tiang-circle', // FIX
+              type: 'circle', // FIX
+              source: 'topo-tiang', // FIX
+              paint: {
+                'circle-radius': 4, // FIX
+                'circle-color': '#D1D5DB', // FIX
+                'circle-stroke-color': '#6B7280', // FIX
+                'circle-stroke-width': 1.5, // FIX
+                'circle-opacity': 0.85, // FIX
+              },
+            }); // FIX
+            safeAddLayer({
+              id: 'topo-tiang-label', // FIX
+              type: 'symbol', // FIX
+              source: 'topo-tiang', // FIX
+              layout: {
+                'text-field': ['get', 'label'] as maplibregl.ExpressionSpecification, // FIX
+                'text-size': 8, // FIX
+                'text-offset': [0, 1.2], // FIX
+                'text-anchor': 'top', // FIX
+                'text-optional': true, // FIX
+              }, // FIX
+              paint: {
+                'text-color': '#6B7280', // FIX
+                'text-halo-color': 'white', // FIX
+                'text-halo-width': 1, // FIX
+              },
+            }); // FIX
+          }
+        }
+
+        safeAddSource('topo-homepass', {
+          type: 'geojson', // FIX
+          data: {
+            type: 'FeatureCollection', // FIX
+            features: validHomepass.map((hp) => ({
+              type: 'Feature', // FIX
+              geometry: { type: 'Point', coordinates: hp.coords }, // FIX
+              properties: { odpIndex: hp.odpIdx + 1 }, // FIX
+            })), // FIX
+          },
+        }); // FIX
+
+        safeAddLayer({
+          id: 'topo-ont-circle', // FIX
+          type: 'circle', // FIX
+          source: 'topo-homepass', // FIX
+          paint: {
+            'circle-radius': 5, // FIX: homepass medium green
+            'circle-color': '#22C55E', // FIX
+            'circle-stroke-color': 'white', // FIX
+            'circle-stroke-width': 1.5, // FIX
+            'circle-opacity': 0.9, // FIX
+          },
+        }); // FIX
+        safeAddLayer({
+          id: 'topo-ont-label', // FIX
+          type: 'symbol', // FIX
+          source: 'topo-homepass', // FIX
+          layout: {
+            'text-field': 'HP', // FIX
+            'text-size': 7, // FIX
+            'text-offset': [0, -1.3], // FIX
+            'text-anchor': 'bottom', // FIX
+            'text-optional': true, // FIX
+          }, // FIX
+          paint: {
+            'text-color': '#15803D', // FIX
+            'text-halo-color': 'white', // FIX
+            'text-halo-width': 1, // FIX
+          },
+        }); // FIX
+
+        // FIX: Backbone/OLT — always render
+        safeAddSource('topo-backbone', {
+          type: 'geojson', // FIX
+          data: {
+            type: 'Feature', // FIX
+            geometry: { type: 'Point', coordinates: backbone }, // FIX
+            properties: { label: 'OLT' }, // FIX
+          },
+        }); // FIX
+        safeAddLayer({
+          id: 'topo-backbone-circle', // FIX
+          type: 'circle', // FIX
+          source: 'topo-backbone', // FIX
+          paint: {
+            'circle-radius': 13, // FIX
+            'circle-color': '#1D4ED8', // FIX
+            'circle-stroke-color': 'white', // FIX
+            'circle-stroke-width': 3, // FIX
+          },
+        }); // FIX
+        safeAddLayer({
+          id: 'topo-backbone-label', // FIX
+          type: 'symbol', // FIX
+          source: 'topo-backbone', // FIX
+          layout: {
+            'text-field': 'OLT', // FIX
+            'text-size': 11, // FIX
+            'text-offset': [0, -2], // FIX
+            'text-anchor': 'bottom', // FIX
+          },
+          paint: {
+            'text-color': '#1D4ED8', // FIX
+            'text-halo-color': 'white', // FIX
+            'text-halo-width': 2, // FIX
+          },
+        }); // FIX
+
+        safeAddSource('topo-odc', {
+          type: 'geojson', // FIX
+          data: {
+            type: 'Feature', // FIX
+            geometry: { type: 'Point', coordinates: [odcLng, odcLat] }, // FIX
+            properties: { label: `ODC ${result.equipment.odc.capacity}` }, // FIX
+          },
+        }); // FIX
+        safeAddLayer({
+          id: 'topo-odc-circle', // FIX
+          type: 'circle', // FIX
+          source: 'topo-odc', // FIX
+          paint: {
+            'circle-radius': 11, // FIX
+            'circle-color': '#7C3AED', // FIX
+            'circle-stroke-color': 'white', // FIX
+            'circle-stroke-width': 3, // FIX
+          },
+        }); // FIX
+
+        safeAddSource('topo-odp', {
+          type: 'geojson', // FIX
+          data: {
+            type: 'FeatureCollection', // FIX
+            features: odpPositions.map(([lng, lat], i) => ({
+              type: 'Feature', // FIX
+              geometry: { type: 'Point', coordinates: [lng, lat] }, // FIX
+              properties: {
+                label: `ODP-${i + 1}`, // FIX
+                capacity: result.equipment.odp.capacity, // FIX
+              },
+            })), // FIX
+          },
+        }); // FIX
+        safeAddLayer({
+          id: 'topo-odp-circle', // FIX
+          type: 'circle', // FIX
+          source: 'topo-odp', // FIX
+          paint: {
+            'circle-radius': 8, // FIX: ODP dark green
+            'circle-color': '#16A34A', // FIX
+            'circle-stroke-color': 'white', // FIX
+            'circle-stroke-width': 2.5, // FIX
+            'circle-opacity': 1.0, // FIX
+          },
+        }); // FIX
+        // FIX: ODP label shows splitter info
+        safeAddLayer({
+          id: 'topo-odp-label', // FIX
+          type: 'symbol', // FIX
+          source: 'topo-odp', // FIX
+          layout: {
+            'text-field': [
+              'concat',
+              ['get', 'label'],
+              '\n',
+              '1:',
+              ['to-string', ['get', 'capacity']], // FIX: show splitter ratio
+            ] as maplibregl.ExpressionSpecification, // FIX
+            'text-size': 9, // FIX
+            'text-offset': [0, 1.8], // FIX
+            'text-anchor': 'top', // FIX
+            'text-optional': true, // FIX
+            'text-line-height': 1.2, // FIX
+          },
+          paint: {
+            'text-color': '#15803D', // FIX
+            'text-halo-color': 'white', // FIX
+            'text-halo-width': 1.5, // FIX
+          },
+        }); // FIX
+
+        safeAddLayer({
+          id: 'topo-odc-label', // FIX
+          type: 'symbol', // FIX
+          source: 'topo-odc', // FIX
+          layout: {
+            'text-field': 'ODC', // FIX
+            'text-size': 11, // FIX
+            'text-offset': [0, -2], // FIX
+            'text-anchor': 'bottom', // FIX
+          },
+          paint: {
+            'text-color': '#7C3AED', // FIX
+            'text-halo-color': 'white', // FIX
+            'text-halo-width': 2, // FIX
+          },
+        }); // FIX
+
+        const addClickPopup = (
+          layerId: string, // FIX
+          htmlFn: (props: Record<string, unknown> | null | undefined, lngLat: maplibregl.LngLat) => string, // FIX
+        ) => {
+          const onClick = (e: maplibregl.MapLayerMouseEvent) => {
+            if (!e.features?.length) return; // FIX
+            new maplibregl.Popup({ maxWidth: '220px' }) // FIX
+              .setLngLat(e.lngLat) // FIX
+              .setHTML(htmlFn(e.features[0].properties as Record<string, unknown>, e.lngLat)) // FIX
+              .addTo(map); // FIX
+          }; // FIX
+          const onEnter = () => {
+            map.getCanvas().style.cursor = 'pointer'; // FIX
+          }; // FIX
+          const onLeave = () => {
+            map.getCanvas().style.cursor = ''; // FIX
+          }; // FIX
+          map.on('click', layerId, onClick); // FIX
+          map.on('mouseenter', layerId, onEnter); // FIX
+          map.on('mouseleave', layerId, onLeave); // FIX
+          topoHandlersRef.current.push({ layerId, ev: 'click', fn: onClick }); // FIX
+          topoHandlersRef.current.push({ layerId, ev: 'mouseenter', fn: onEnter }); // FIX
+          topoHandlersRef.current.push({ layerId, ev: 'mouseleave', fn: onLeave }); // FIX
+        }; // FIX
+
+        // FIX: enhanced OLT popup
+        addClickPopup('topo-backbone-circle', (_, ll) => // FIX
+          `<div style="font-family:sans-serif;padding:6px;min-width:180px">` + // FIX
+            `<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">` + // FIX
+            `<div style="width:10px;height:10px;border-radius:50%;background:#1D4ED8;flex-shrink:0"></div>` + // FIX
+            `<b style="color:#1D4ED8;font-size:13px">OLT / Backbone</b></div>` + // FIX
+            `<table style="width:100%;border-collapse:collapse;font-size:11px">` + // FIX
+            `<tr><td style="color:#6B7280;padding:2px 0">Provider</td>` + // FIX
+            `<td style="font-weight:600">${result.summary.backboneOwner || 'OSM Data'}</td></tr>` + // FIX
+            `<tr><td style="color:#6B7280;padding:2px 0">Standard</td>` + // FIX
+            `<td style="font-weight:600">${result.equipment.olt.standard || 'GPON ITU-T G.984'}</td></tr>` + // FIX
+            `<tr><td style="color:#6B7280;padding:2px 0">Port needed</td>` + // FIX
+            `<td style="font-weight:600">${result.equipment.olt.portsNeeded || 0} port</td></tr>` + // FIX
+            `<tr><td style="color:#6B7280;padding:2px 0">Koordinat</td>` + // FIX
+            `<td style="font-weight:600;font-size:10px">${ll.lat.toFixed(5)}, ${ll.lng.toFixed(5)}</td></tr>` + // FIX
+            `</table></div>`, // FIX
+        ); // FIX
+        // FIX: enhanced ODC popup
+        addClickPopup('topo-odc-circle', (_, ll) => // FIX
+          `<div style="font-family:sans-serif;padding:6px;min-width:180px">` + // FIX
+            `<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">` + // FIX
+            `<div style="width:10px;height:10px;border-radius:50%;background:#7C3AED;flex-shrink:0"></div>` + // FIX
+            `<b style="color:#7C3AED;font-size:13px">ODC</b></div>` + // FIX
+            `<table style="width:100%;border-collapse:collapse;font-size:11px">` + // FIX
+            `<tr><td style="color:#6B7280;padding:2px 0">Kapasitas</td>` + // FIX
+            `<td style="font-weight:600">${result.equipment.odc.capacity || '144-core'}</td></tr>` + // FIX
+            `<tr><td style="color:#6B7280;padding:2px 0">ODP terhubung</td>` + // FIX
+            `<td style="font-weight:600">${result.equipment.odp.count || 0} unit</td></tr>` + // FIX
+            `<tr><td style="color:#6B7280;padding:2px 0">Koordinat</td>` + // FIX
+            `<td style="font-weight:600;font-size:10px">${ll.lat.toFixed(5)}, ${ll.lng.toFixed(5)}</td></tr>` + // FIX
+            `</table></div>`, // FIX
+        ); // FIX
+        // FIX: enhanced ODP popup with full device info
+        addClickPopup('topo-odp-circle', (p, ll) => // FIX
+          `<div style="font-family:sans-serif;padding:6px;min-width:180px">` + // FIX
+            `<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">` + // FIX
+            `<div style="width:10px;height:10px;border-radius:50%;background:#16A34A;flex-shrink:0"></div>` + // FIX
+            `<b style="color:#16A34A;font-size:13px">${String(p?.label ?? 'ODP')}</b></div>` + // FIX
+            `<table style="width:100%;border-collapse:collapse;font-size:11px">` + // FIX
+            `<tr><td style="color:#6B7280;padding:2px 0">Tipe</td>` + // FIX
+            `<td style="font-weight:600">ODP ${p?.capacity}-port</td></tr>` + // FIX
+            `<tr><td style="color:#6B7280;padding:2px 0">Splitter</td>` + // FIX
+            `<td style="font-weight:600">1:${p?.capacity} passive</td></tr>` + // FIX
+            `<tr><td style="color:#6B7280;padding:2px 0">Koordinat</td>` + // FIX
+            `<td style="font-weight:600;font-size:10px">${ll.lat.toFixed(5)}, ${ll.lng.toFixed(5)}</td></tr>` + // FIX
+            `</table></div>`, // FIX
+        ); // FIX
+        addClickPopup('topo-ont-circle', (p, ll) => // FIX: Homepass popup
+          `<div style="font-family:sans-serif;padding:4px">` + // FIX
+            `<b style="color:#16A34A">🏠 Homepass</b><br>` + // FIX
+            `<small style="color:#6B7280">` + // FIX
+            `ODP-${p?.odpIndex}` + // FIX
+            `</small><br>` + // FIX
+            `<small>${ll.lat.toFixed(5)}, ${ll.lng.toFixed(5)}</small>` + // FIX
+            `</div>`, // FIX
+        ); // FIX
+        if (map.getLayer('topo-closure-circle')) {
+          // FIX: enhanced Closure popup
+          addClickPopup('topo-closure-circle', (p, ll) => // FIX
+            `<div style="font-family:sans-serif;padding:6px">` + // FIX
+              `<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">` + // FIX
+              `<div style="width:10px;height:10px;border-radius:50%;background:#F59E0B;flex-shrink:0"></div>` + // FIX
+              `<b style="color:#F59E0B;font-size:13px">${String(p?.label || 'Closure')}</b></div>` + // FIX
+              `<div style="font-size:11px;color:#6B7280">` + // FIX
+              `Splice Closure — setiap 500m di feeder<br>` + // FIX
+              `<span style="font-size:10px">${ll.lat.toFixed(5)}, ${ll.lng.toFixed(5)}</span>` + // FIX
+              `</div></div>`, // FIX
+          ); // FIX
+        }
+
+        // FIX: store for KMZ export
+        setTopoExportData({
+          backbone, // FIX
+          odcPoint: [odcLng, odcLat], // FIX
+          odpPositions, // FIX
+          homepassPoints: validHomepass.map((h) => ({
+            lng: h.coords[0], // FIX
+            lat: h.coords[1], // FIX
+            isOsm: true, // FIX: OSM buildings only
+          })), // FIX
+        }); // FIX
+
+        setTopologyRendered(true); // FIX
+        toast.success(
+          `✅ Topologi selesai: ${odpPositions.length} ODP, ` + // FIX
+            `${osmCount} homepass (bangunan OSM)`, // FIX
+        ); // FIX
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : 'Error'; // FIX
+        toast.error(`Gagal render topologi: ${msg}`); // FIX
+      } finally {
+        setRenderingTopology(false); // FIX
+      }
+    },
+    [clearTopology, inputMode, polygonPoints],
+  );

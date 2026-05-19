@@ -1,0 +1,31 @@
+        <div
+          style={{
+            display: 'flex',
+            gap: 4,
+            padding: 4,
+            background: 'white',
+            borderRadius: 10,
+            boxShadow: '0 2px 12px rgba(0,0,0,0.15)',
+          }}
+        >
+          {(['osm', 'satellite'] as const).map((type) => (
+            <button
+              key={type}
+              type="button"
+              onClick={() => switchMapType(type)}
+              style={{
+                padding: '6px 12px',
+                borderRadius: 7,
+                border: 'none',
+                background: mapType === type ? '#00D4B4' : 'transparent',
+                color: mapType === type ? 'white' : '#374151',
+                cursor: 'pointer',
+                fontSize: 12,
+                fontWeight: 600,
+                transition: 'all 150ms',
+              }}
+            >
+              {TILE_LAYERS[type].icon} {TILE_LAYERS[type].label}
+            </button>
+          ))}
+        </div>

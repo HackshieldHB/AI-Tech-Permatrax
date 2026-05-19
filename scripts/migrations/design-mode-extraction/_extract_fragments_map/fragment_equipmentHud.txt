@@ -1,0 +1,92 @@
+      {topologyRendered && calcResult && (
+        <div
+          style={{
+            position: 'absolute', // FIX
+            bottom: 40, // FIX
+            right: 12, // FIX
+            zIndex: 10, // FIX
+            background: 'white', // FIX
+            borderRadius: 10, // FIX
+            overflow: 'hidden', // FIX
+            boxShadow: '0 2px 12px rgba(0,0,0,0.15)', // FIX
+            minWidth: 180, // FIX
+          }}
+        >
+          <div
+            style={{
+              padding: '6px 12px', // FIX
+              background: '#F9FAFB', // FIX
+              borderBottom: '1px solid #E5E7EB', // FIX
+              fontSize: 10, // FIX
+              fontWeight: 700, // FIX
+              color: '#374151', // FIX
+              textTransform: 'uppercase', // FIX
+              letterSpacing: '0.05em', // FIX
+            }}
+          >
+            🔧 Equipment di Peta
+          </div>
+          {[
+            { icon: '📡', label: 'OLT', value: '1 unit', color: '#1D4ED8' }, // FIX
+            {
+              icon: '🟣', // FIX
+              label: 'ODC', // FIX
+              value: `${calcResult.equipment.odc.count} unit`, // FIX
+              color: '#7C3AED', // FIX
+            },
+            {
+              icon: '🟢', // FIX
+              label: 'ODP', // FIX
+              value: `${calcResult.equipment.odp.count} unit`, // FIX
+              color: '#16A34A', // FIX
+            },
+            {
+              icon: '🟡', // FIX
+              label: 'Closure', // FIX
+              value: `${calcResult.equipment.closure.total} unit`, // FIX
+              color: '#F59E0B', // FIX
+            },
+            {
+              icon: '🏠', // FIX
+              label: 'Homepass', // FIX
+              value: `${calcResult.homepass.estimated} est.`, // FIX
+              color: '#22C55E', // FIX
+            },
+          ].map((item) => (
+            <div
+              key={item.label}
+              style={{
+                display: 'flex', // FIX
+                alignItems: 'center', // FIX
+                justifyContent: 'space-between', // FIX
+                padding: '5px 12px', // FIX
+                borderBottom: '1px solid #F3F4F6', // FIX
+                fontSize: 11, // FIX
+              }}
+            >
+              <span style={{ color: item.color, fontWeight: 600 }}>
+                {item.icon} {item.label}
+              </span>
+              <span style={{ fontWeight: 700, color: '#111' }}>{item.value}</span>
+            </div>
+          ))}
+          <div style={{ padding: '5px 12px' }}>
+            <button
+              type="button"
+              onClick={() => setActivePanel('legend')}
+              style={{
+                width: '100%', // FIX
+                padding: '4px', // FIX
+                borderRadius: 5, // FIX
+                border: '1px solid #E5E7EB', // FIX
+                background: 'none', // FIX
+                cursor: 'pointer', // FIX
+                fontSize: 10, // FIX
+                color: '#6B7280', // FIX
+              }}
+            >
+              Lihat Legenda →
+            </button>
+          </div>
+        </div>
+      )}

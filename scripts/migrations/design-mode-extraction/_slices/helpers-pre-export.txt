@@ -1,0 +1,553 @@
+// FIX: extract every [lng, lat] from any GeoJSON geometry (module scope — not inside component)
+function getAllCoordinates(geometry: Geometry | null | undefined): [number, number][] {
+  if (!geometry) return []; // FIX
+  const coords: [number, number][] = []; // FIX
+  const extract = (c: unknown): void => {
+    if (c == null) return; // FIX
+    if (
+      Array.isArray(c) &&
+      c.length >= 2 &&
+      typeof c[0] === 'number' &&
+      typeof c[1] === 'number'
+    ) {
+      coords.push([c[0], c[1]]); // FIX: coordinate pair
+      return; // FIX
+    }
+    if (Array.isArray(c)) {
+      c.forEach((x) => extract(x)); // FIX: recurse nested rings / lines
+    }
+  }; // FIX
+  if ('coordinates' in geometry && geometry.coordinates !== undefined) {
+    extract(geometry.coordinates); // FIX
+  }
+  return coords; // FIX
+}
+
+// FIX: haversine distance in meters
+function haversineM(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371000; // FIX
+  const dLat = ((lat2 - lat1) * Math.PI) / 180; // FIX
+  const dLon = ((lon2 - lon1) * Math.PI) / 180; // FIX
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLon / 2) ** 2; // FIX
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)); // FIX
+}
+
+// FIX: route via backend proxy (OSRM + Valhalla + cache)
+async function backendRoute(
+  apiBase: string, // FIX
+  token: string, // FIX
+  fromLng: number, // FIX
+  fromLat: number, // FIX
+  toLng: number, // FIX
+  toLat: number, // FIX
+): Promise<{ coordinates: [number, number][]; distanceM: number }> {
+  try {
+    const res = await fetch(`${apiBase}/map/route`, {
+      method: 'POST', // FIX
+      headers: {
+        'Content-Type': 'application/json', // FIX
+        Authorization: `Bearer ${token}`, // FIX
+        'ngrok-skip-browser-warning': 'true', // FIX
+      }, // FIX
+      body: JSON.stringify({ fromLng, fromLat, toLng, toLat }), // FIX
+      signal: AbortSignal.timeout(12000), // FIX
+    }); // FIX
+    if (!res.ok) throw new Error(`route HTTP ${res.status}`); // FIX
+    return await res.json(); // FIX
+  } catch {
+    // FIX: straight line fallback if backend unreachable
+    return {
+      coordinates: [
+        [fromLng, fromLat],
+        [toLng, toLat],
+      ], // FIX
+      distanceM: Math.round(haversineM(fromLat, fromLng, toLat, toLng) * 1.4), // FIX
+    }; // FIX
+  }
+}
+
+// FIX: batch route via backend — 1 OSRM call for multi-waypoint leg
+async function backendMultiRoute(
+  apiBase: string, // FIX
+  token: string, // FIX
+  waypoints: Array<[number, number]>, // FIX
+): Promise<Array<{ coordinates: [number, number][]; distanceM: number }>> {
+  try {
+    const res = await fetch(`${apiBase}/map/multi-route`, {
+      method: 'POST', // FIX
+      headers: {
+        'Content-Type': 'application/json', // FIX
+        Authorization: `Bearer ${token}`, // FIX
+        'ngrok-skip-browser-warning': 'true', // FIX
+      }, // FIX
+      body: JSON.stringify({ waypoints }), // FIX
+      signal: AbortSignal.timeout(15000), // FIX
+    }); // FIX
+    if (!res.ok) throw new Error(`multi-route HTTP ${res.status}`); // FIX
+    const data = await res.json(); // FIX
+    return data.segments || []; // FIX
+  } catch {
+    return waypoints.slice(0, -1).map((wp, i) => ({
+      coordinates: [wp, waypoints[i + 1]] as [number, number][], // FIX
+      distanceM: Math.round(
+        haversineM(wp[1], wp[0], waypoints[i + 1][1], waypoints[i + 1][0]) * 1.4, // FIX
+      ), // FIX
+    })); // FIX
+  }
+}
+
+// FIX: snap point to road via backend proxy
+async function backendSnap(
+  apiBase: string, // FIX
+  token: string, // FIX
+  lng: number, // FIX
+  lat: number, // FIX
+): Promise<[number, number]> {
+  try {
+    const res = await fetch(`${apiBase}/map/snap`, {
+      method: 'POST', // FIX
+      headers: {
+        'Content-Type': 'application/json', // FIX
+        Authorization: `Bearer ${token}`, // FIX
+        'ngrok-skip-browser-warning': 'true', // FIX
+      }, // FIX
+      body: JSON.stringify({ lng, lat }), // FIX
+      signal: AbortSignal.timeout(5000), // FIX
+    }); // FIX
+    if (!res.ok) throw new Error(`snap HTTP ${res.status}`); // FIX
+    const data = await res.json(); // FIX
+    return Array.isArray(data) ? (data as [number, number]) : [lng, lat]; // FIX
+  } catch {
+    return [lng, lat]; // FIX: return original if snap fails
+  }
+}
+
+// FIX: get OSM buildings via backend proxy
+async function backendBuildings(
+  apiBase: string, // FIX
+  token: string, // FIX
+  lat: number, // FIX
+  lon: number, // FIX
+  radiusM: number, // FIX
+): Promise<Array<{ lng: number; lat: number; osmId: number; type: string }>> {
+  try {
+    const res = await fetch(
+      `${apiBase}/map/buildings?lat=${lat}&lon=${lon}&radius=${Math.min(radiusM, 2000)}`, // FIX
+      {
+        headers: {
+          Authorization: `Bearer ${token}`, // FIX
+          'ngrok-skip-browser-warning': 'true', // FIX
+        }, // FIX
+        signal: AbortSignal.timeout(25000), // FIX
+      },
+    ); // FIX
+    if (!res.ok) throw new Error(`buildings HTTP ${res.status}`); // FIX
+    const data = await res.json(); // FIX
+    return data.buildings || []; // FIX
+  } catch {
+    return []; // FIX: empty — fallback to synthetic
+  }
+}
+
+// FIX: place ODPs along a road route geometry
+function placeOdpsAlongRoute(
+  routeCoords: [number, number][], // FIX
+  odpCount: number, // FIX
+  spacingM: number, // FIX
+): [number, number][] {
+  if (!routeCoords || routeCoords.length < 2) return []; // FIX
+
+  // FIX: compute cumulative distance along route
+  const cumDist: number[] = [0]; // FIX
+  for (let i = 1; i < routeCoords.length; i++) {
+    const [lng1, lat1] = routeCoords[i - 1]; // FIX
+    const [lng2, lat2] = routeCoords[i]; // FIX
+    cumDist.push(cumDist[i - 1] + haversineM(lat1, lng1, lat2, lng2)); // FIX
+  }
+  const totalRouteM = cumDist[cumDist.length - 1]; // FIX
+
+  // FIX: place ODP at every spacingM along the route
+  const positions: [number, number][] = []; // FIX
+  let placedAt = spacingM; // FIX: first ODP at spacingM from ODC
+
+  while (positions.length < odpCount && placedAt <= totalRouteM) {
+    // FIX: find which segment this distance falls in
+    let segIdx = Math.max(0, cumDist.length - 2); // FIX
+    for (let i = 1; i < cumDist.length; i++) {
+      if (cumDist[i] >= placedAt) {
+        segIdx = i - 1; // FIX
+        break; // FIX
+      }
+    }
+    // FIX: interpolate position within segment
+    const segStart = cumDist[segIdx]; // FIX
+    const segEnd = cumDist[segIdx + 1] ?? cumDist[segIdx]; // FIX
+    const segLen = segEnd - segStart; // FIX
+    const ratio = segLen > 0 ? (placedAt - segStart) / segLen : 0; // FIX
+    const [lng1, lat1] = routeCoords[segIdx]; // FIX
+    const [lng2, lat2] = routeCoords[segIdx + 1] ?? routeCoords[segIdx]; // FIX
+    positions.push([lng1 + (lng2 - lng1) * ratio, lat1 + (lat2 - lat1) * ratio]); // FIX
+    placedAt += spacingM; // FIX
+  }
+
+  // FIX: if route too short, add remaining at end
+  while (positions.length < odpCount) {
+    positions.push(routeCoords[routeCoords.length - 1]); // FIX
+  }
+
+  return positions.slice(0, odpCount); // FIX
+}
+
+// FIX: generate ODP positions along road network
+// FIX: Uses a ring/chain pattern: ODC → road segments → back
+// FIX: Much more realistic than radial spokes
+async function computeOdpAlongRoads(
+  apiBase: string, // FIX
+  token: string, // FIX
+  odcLng: number, // FIX
+  odcLat: number, // FIX
+  odpCount: number, // FIX
+  spacingM: number, // FIX
+  radiusM: number, // FIX
+): Promise<{
+  positions: [number, number][]; // FIX
+  routes: [number, number][][]; // FIX
+}> {
+  // FIX: also add diagonal routes for better coverage
+  const ALL_DIRECTIONS = [0, 45, 90, 135, 180, 225, 270, 315].map((angle) => {
+    const rad = (angle * Math.PI) / 180; // FIX
+    const dLat = ((radiusM * 0.85) / 6371000) * (180 / Math.PI) * Math.cos(rad); // FIX
+    const dLng =
+      ((radiusM * 0.85) / 6371000) *
+      (180 / Math.PI) *
+      (Math.sin(rad) / Math.cos((odcLat * Math.PI) / 180)); // FIX
+    return {
+      angle, // FIX
+      edgeLng: odcLng + dLng, // FIX
+      edgeLat: odcLat + dLat, // FIX
+    }; // FIX
+  }); // FIX
+
+  // FIX: get road routes from ODC to each direction
+  const numDirections = Math.min(8, Math.max(4, Math.ceil(odpCount / 3))); // FIX
+  const selectedDirs = ALL_DIRECTIONS.slice(0, numDirections); // FIX
+
+  const routeResults = await Promise.allSettled(
+    selectedDirs.map((d) => backendRoute(apiBase, token, odcLng, odcLat, d.edgeLng, d.edgeLat)), // FIX
+  ); // FIX
+
+  // FIX: place ODPs along each route at spacingM intervals
+  const allPositions: [number, number][] = []; // FIX
+  const allRoutes: [number, number][][] = []; // FIX
+  const odpsPerDir = Math.ceil(odpCount / numDirections); // FIX
+
+  routeResults.forEach((result, i) => {
+    if (result.status !== 'fulfilled' || !result.value?.coordinates?.length) {
+      // FIX: fallback straight line for this direction
+      const d = selectedDirs[i]; // FIX
+      const pts = placeOdpsAlongRoute(
+        [
+          [odcLng, odcLat],
+          [d.edgeLng, d.edgeLat],
+        ], // FIX
+        odpsPerDir, // FIX
+        spacingM, // FIX
+      ); // FIX
+      pts.forEach((p) => allPositions.push(p)); // FIX
+      allRoutes.push([
+        [odcLng, odcLat],
+        [d.edgeLng, d.edgeLat],
+      ]); // FIX
+      return; // FIX
+    } // FIX
+
+    const coords = result.value.coordinates; // FIX
+    // FIX: place ODPs at regular intervals along this road route
+    const pts = placeOdpsAlongRoute(coords, odpsPerDir, spacingM); // FIX
+    pts.forEach((p) => allPositions.push(p)); // FIX
+    allRoutes.push(coords); // FIX
+  }); // FIX
+
+  // FIX: deduplicate positions that are too close (< 30m)
+  const deduped: [number, number][] = []; // FIX
+  allPositions.forEach((pos) => {
+    const tooClose = deduped.some(
+      (existing) => haversineM(pos[1], pos[0], existing[1], existing[0]) < 30, // FIX
+    ); // FIX
+    if (!tooClose) deduped.push(pos); // FIX
+  }); // FIX
+
+  // FIX: pad if dedupe removed too many
+  while (deduped.length < odpCount) {
+    const last = deduped[deduped.length - 1] ?? ([odcLng, odcLat] as [number, number]); // FIX
+    deduped.push(last); // FIX
+  } // FIX
+
+  return {
+    positions: deduped.slice(0, odpCount), // FIX
+    routes: allRoutes, // FIX
+  }; // FIX
+}
+
+// FIX: cascade chain routing — more realistic cable layout
+// FIX: ODC → ODP-1 → ODP-2 → ODP-3 (daisy chain per road branch)
+// FIX: Saves cable vs star topology for long distances
+function buildCascadeRoutes(
+  odcPos: [number, number], // FIX
+  odpPositions: [number, number][], // FIX
+  spokeRoutes: [number, number][][], // FIX
+  _spacingM: number, // FIX: reserved for trim tolerance
+): [number, number][][] {
+  if (odpPositions.length === 0) return []; // FIX
+
+  if (spokeRoutes.length === 0) {
+    const sorted = [...odpPositions].sort(
+      (a, b) =>
+        haversineM(a[1], a[0], odcPos[1], odcPos[0]) - haversineM(b[1], b[0], odcPos[1], odcPos[0]), // FIX
+    ); // FIX
+    const chain: [number, number][][] = []; // FIX
+    let prevPos: [number, number] = odcPos; // FIX
+    sorted.forEach((odp) => {
+      chain.push([prevPos, odp]); // FIX
+      prevPos = odp; // FIX
+    }); // FIX
+    return chain; // FIX
+  } // FIX
+
+  // FIX: group ODPs by nearest spoke route
+  const groups = new Map<number, [number, number][]>(); // FIX
+  spokeRoutes.forEach((_, i) => groups.set(i, [])); // FIX
+
+  odpPositions.forEach((odp) => {
+    let minDist = Infinity; // FIX
+    let bestSpoke = 0; // FIX
+    spokeRoutes.forEach((route, i) => {
+      route.forEach(([rLng, rLat]) => {
+        const d = haversineM(odp[1], odp[0], rLat, rLng); // FIX
+        if (d < minDist) {
+          minDist = d; // FIX
+          bestSpoke = i; // FIX
+        } // FIX
+      }); // FIX
+    }); // FIX
+    groups.get(bestSpoke)?.push(odp); // FIX
+  }); // FIX
+
+  // FIX: for each spoke group, sort ODPs by distance from ODC
+  // FIX: then chain them: ODC → nearest ODP → next ODP → ...
+  const cascadeRoutes: [number, number][][] = []; // FIX
+
+  groups.forEach((odps) => {
+    if (odps.length === 0) return; // FIX
+
+    const sorted = [...odps].sort(
+      (a, b) =>
+        haversineM(a[1], a[0], odcPos[1], odcPos[0]) - haversineM(b[1], b[0], odcPos[1], odcPos[0]), // FIX
+    ); // FIX
+
+    // FIX: build chain: ODC → ODP1, ODP1 → ODP2, ODP2 → ODP3
+    let prevPos: [number, number] = odcPos; // FIX
+    sorted.forEach((odp) => {
+      cascadeRoutes.push([prevPos, odp]); // FIX
+      prevPos = odp; // FIX
+    }); // FIX
+  }); // FIX
+
+  return cascadeRoutes; // FIX
+}
+
+// FIX: generate synthetic homepass around ODP
+function syntheticHomepass(
+  odp: [number, number], // FIX
+  count: number, // FIX
+  radiusM: number, // FIX
+  seed: number, // FIX
+): Array<{ lng: number; lat: number }> {
+  const points: Array<{ lng: number; lat: number }> = []; // FIX
+  const R = 6371000; // FIX
+  for (let i = 0; i < count; i++) {
+    // FIX: deterministic "random" using seed so it's stable
+    const angle = ((2 * Math.PI * (i + seed * 7)) / count + seed * 0.4); // FIX
+    const dist = radiusM * (0.3 + (0.7 * (((i * 3 + seed) % 7) / 7))); // FIX
+    const dLat = (dist / R) * (180 / Math.PI) * Math.cos(angle); // FIX
+    const dLng =
+      ((dist / R) * (180 / Math.PI) * Math.sin(angle)) / Math.cos((odp[1] * Math.PI) / 180); // FIX
+    points.push({ lng: odp[0] + dLng, lat: odp[1] + dLat }); // FIX
+  }
+  return points; // FIX
+}
+
+// FIX: calculate polygon area using Shoelace formula
+function polygonAreaFromCoords(coords: [number, number][]): number {
+  // FIX: use turf if available, else Shoelace
+  try {
+    const poly = turf.polygon([[...coords, coords[0]]]); // FIX
+    return turf.area(poly); // FIX: returns m²
+  } catch {
+    // FIX: fallback Shoelace formula (approximate)
+    const R = 6371000; // FIX
+    let area = 0; // FIX
+    const n = coords.length; // FIX
+    for (let i = 0; i < n; i++) {
+      const [lng1, lat1] = coords[i]; // FIX
+      const [lng2, lat2] = coords[(i + 1) % n]; // FIX
+      area +=
+        ((lng2 - lng1) * Math.PI) / 180 * (2 + Math.sin((lat1 * Math.PI) / 180) + Math.sin((lat2 * Math.PI) / 180)); // FIX
+    } // FIX
+    return Math.abs((area * R * R) / 2); // FIX
+  } // FIX
+} // FIX
+
+// FIX: polygon centroid
+function polygonCentroidFromCoords(coords: [number, number][]): [number, number] {
+  try {
+    const poly = turf.polygon([[...coords, coords[0]]]); // FIX
+    const c = turf.centroid(poly); // FIX
+    return c.geometry.coordinates as [number, number]; // FIX
+  } catch {
+    const lng = coords.reduce((s, c) => s + c[0], 0) / coords.length; // FIX
+    const lat = coords.reduce((s, c) => s + c[1], 0) / coords.length; // FIX
+    return [lng, lat]; // FIX
+  } // FIX
+} // FIX
+
+// FIX: clear polygon from map
+function clearPolygonFromMap(map: maplibregl.Map) {
+  ['poly-line', 'poly-fill', 'poly-points'].forEach((id) => {
+    if (map.getLayer(id)) map.removeLayer(id); // FIX: layers before sources
+  }); // FIX
+  ['poly-fill', 'poly-points'].forEach((id) => {
+    if (map.getSource(id)) map.removeSource(id); // FIX
+  }); // FIX
+} // FIX
+
+// FIX: check if point is inside polygon using ray casting
+function isPointInPolygon(lng: number, lat: number, poly: [number, number][]): boolean {
+  // FIX: try turf first
+  try {
+    return turf.booleanPointInPolygon(turf.point([lng, lat]), turf.polygon([[...poly, poly[0]]])); // FIX
+  } catch {
+    // FIX: fallback ray casting (lng/lat plane, small areas)
+    let inside = false; // FIX
+    const n = poly.length; // FIX
+    for (let i = 0, j = n - 1; i < n; j = i++) {
+      const [xi, yi] = poly[i]; // FIX
+      const [xj, yj] = poly[j]; // FIX
+      const intersect =
+        yi > lat !== yj > lat && lng < ((xj - xi) * (lat - yi)) / (yj - yi + 1e-12) + xi; // FIX
+      if (intersect) inside = !inside; // FIX
+    } // FIX
+    return inside; // FIX
+  } // FIX
+} // FIX
+
+// FIX: check if point is inside circle
+function isPointInCircle(
+  lng: number, // FIX
+  lat: number, // FIX
+  centerLng: number, // FIX
+  centerLat: number, // FIX
+  radiusM: number, // FIX
+): boolean {
+  return haversineM(lat, lng, centerLat, centerLng) <= radiusM; // FIX
+} // FIX
+
+// FIX: after snap — ensure ODP stays inside polygon/circle (clamp to edge or nearest vertex)
+function verifyOdpInBoundary(
+  [lng, lat]: [number, number], // FIX
+  boundary: // FIX
+    | { type: 'polygon'; points: [number, number][] } // FIX
+    | { type: 'circle'; centerLng: number; centerLat: number; radiusM: number }, // FIX
+): [number, number] {
+  if (boundary.type === 'circle') {
+    const d = haversineM(lat, lng, boundary.centerLat, boundary.centerLng); // FIX
+    if (d <= boundary.radiusM) return [lng, lat]; // FIX
+    const R = 6371000; // FIX
+    const dist = boundary.radiusM * 0.95; // FIX
+    const δ = dist / R; // FIX
+    const φ1 = (boundary.centerLat * Math.PI) / 180; // FIX
+    const λ1 = (boundary.centerLng * Math.PI) / 180; // FIX
+    const y =
+      ((lng - boundary.centerLng) * Math.PI) / 180; // FIX
+    const x = ((lat - boundary.centerLat) * Math.PI) / 180; // FIX
+    const θ = Math.atan2(y * Math.cos(φ1), x); // FIX: bearing toward point
+    const φ2 = Math.asin(Math.sin(φ1) * Math.cos(δ) + Math.cos(φ1) * Math.sin(δ) * Math.cos(θ)); // FIX
+    const λ2 =
+      λ1 +
+      Math.atan2(
+        Math.sin(θ) * Math.sin(δ) * Math.cos(φ1), // FIX
+        Math.cos(δ) - Math.sin(φ1) * Math.sin(φ2), // FIX
+      ); // FIX
+    return [(λ2 * 180) / Math.PI, (φ2 * 180) / Math.PI]; // FIX: [lng, lat]
+  } // FIX
+  if (isPointInPolygon(lng, lat, boundary.points)) return [lng, lat]; // FIX
+  let minDist = Infinity; // FIX
+  let nearest: [number, number] = boundary.points[0]; // FIX
+  boundary.points.forEach(([px, py]) => {
+    const d = haversineM(lat, lng, py, px); // FIX
+    if (d < minDist) {
+      minDist = d; // FIX
+      nearest = [px, py]; // FIX
+    }
+  }); // FIX
+  return nearest; // FIX
+} // FIX
+
+// FIX: max distance from center to polygon vertices (meters) — sampling radius for syntheticInsideBoundary
+function polygonMaxRadiusFromCenter(
+  points: [number, number][], // FIX
+  centerLng: number, // FIX
+  centerLat: number, // FIX
+): number {
+  let maxD = 0; // FIX
+  for (const [lng, lat] of points) {
+    maxD = Math.max(maxD, haversineM(lat, lng, centerLat, centerLng)); // FIX
+  } // FIX
+  return maxD > 0 ? maxD : 200; // FIX
+} // FIX
+
+// FIX: generate synthetic homepass points INSIDE boundary (deterministic seed)
+function syntheticInsideBoundary(
+  centerLng: number, // FIX
+  centerLat: number, // FIX
+  count: number, // FIX
+  boundary: { type: 'circle'; radiusM: number } | { type: 'polygon'; points: [number, number][] }, // FIX
+  seed: number, // FIX
+): Array<{ lng: number; lat: number }> {
+  const results: Array<{ lng: number; lat: number }> = []; // FIX
+  const R = 6371000; // FIX
+  const maxTries = count * 40; // FIX: try up to 40x per point
+  let tries = 0; // FIX
+  let s = (seed + 1) * 9973; // FIX
+  const rnd = (): number => {
+    s = (s * 1103515245 + 12345) >>> 0; // FIX
+    return (s % 0x7fffffff) / 0x7fffffff; // FIX
+  }; // FIX
+
+  const maxR =
+    boundary.type === 'circle' // FIX
+      ? boundary.radiusM * 0.92 // FIX
+      : polygonMaxRadiusFromCenter(boundary.points, centerLng, centerLat) * 0.95; // FIX
+
+  while (results.length < count && tries < maxTries) {
+    tries++; // FIX
+    const angle = rnd() * 2 * Math.PI; // FIX
+    const dist = rnd() * maxR; // FIX
+    const dLat = (dist / R) * (180 / Math.PI) * Math.cos(angle); // FIX
+    const dLng =
+      ((dist / R) * (180 / Math.PI) * Math.sin(angle)) / Math.cos((centerLat * Math.PI) / 180); // FIX
+    const lng = centerLng + dLng; // FIX
+    const lat = centerLat + dLat; // FIX
+
+    const inside = // FIX
+      boundary.type === 'circle' // FIX
+        ? isPointInCircle(lng, lat, centerLng, centerLat, boundary.radiusM) // FIX
+        : isPointInPolygon(lng, lat, boundary.points); // FIX
+
+    if (inside) results.push({ lng, lat }); // FIX
+  } // FIX
+
+  return results; // FIX
+} // FIX

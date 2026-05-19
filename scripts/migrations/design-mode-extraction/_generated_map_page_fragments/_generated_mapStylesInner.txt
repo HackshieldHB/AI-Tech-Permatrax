@@ -1,0 +1,40 @@
+      <style>{`
+        @keyframes spin {
+          from { transform: rotate(0deg); }
+          to { transform: rotate(360deg); }
+        }
+        .maplibregl-popup-content {
+          border-radius: 10px !important;
+          padding: 8px 12px !important;
+          box-shadow: 0 4px 20px rgba(0,0,0,0.15) !important;
+        }
+        .maplibregl-popup-close-button {
+          font-size: 16px !important;
+          padding: 2px 6px !important;
+        }
+        /* FIX: hide scale bar white background */
+        .maplibregl-ctrl-scale {
+          display: none !important;
+        }
+        /* FIX: hide white attribution bar at bottom */
+        /* FIX: hide bottom bar completely */
+        .maplibregl-ctrl-bottom-left,
+        .maplibregl-ctrl-bottom-right {
+          display: none !important;
+        }
+        .maplibregl-ctrl-attrib {
+          display: none !important;
+        }
+        /* FIX: hide default maplibre logo bar */
+        .maplibregl-ctrl-logo {
+          display: none !important;
+        }
+        /* FIX: ensure map fills container with no white bar */
+        .maplibregl-map {
+          background: transparent !important;
+        }
+        .maplibregl-canvas-container,
+        .maplibregl-canvas {
+          display: block !important;
+        }
+      `}</style>

@@ -1,0 +1,57 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Primary (Coral) */
+  --primary: #F06A6A;
+  --primary-hover: #E05555;
+  --primary-light: #FDE8E8;
+  --primary-foreground: #ffffff;
+
+  /* Sidebar */
+  --sidebar-bg: #F3F4F6;
+  --sidebar-border: #E5E7EB;
+  --sidebar-text: #4B5563;
+  --sidebar-text-active: #F06A6A;
+  --sidebar-active-bg: #FDE8E8;
+
+  /* Navigation */
+  --nav-active-text: #F06A6A;
+  --nav-active-bg: #FDE8E8;
+  --nav-active-bar: #F06A6A;
+  --nav-inactive: #4B5563;
+  --nav-hover-bg: #FDE8E8;
+
+  /* Page & Content */
+  --background: #F9FAFB;
+  --content-bg: #F9FAFB;
+  --card: #FFFFFF;
+  --border: #E5E7EB;
+
+  /* Navbar */
+  --navbar-bg: #FFFFFF;
+  --navbar-border: #E5E7EB;
+
+  /* Text */
+  --foreground: #111827;
+  --muted-foreground: #6B7280;
+  --accent: #F06A6A;
+
+  /* Keep sidebar width for calculations */
+  --sidebar-width: 240px;
+}
+
+html,
+body {
+  padding: 0;
+  margin: 0;
+  height: 100vh;
+  width: 100vw;
+  overflow: hidden; /* Prevent page scrolling, layout drives scrolling natively */
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-jakarta, sans-serif);
+}
+
+

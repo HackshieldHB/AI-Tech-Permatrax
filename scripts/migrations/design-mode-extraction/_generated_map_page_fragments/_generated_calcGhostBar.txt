@@ -1,0 +1,22 @@
+      {calcMode !== 'idle' && (
+        <div
+          style={{
+            position: 'absolute',
+            bottom: 40,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            background: 'rgba(0,0,0,0.75)',
+            color: 'white',
+            padding: '8px 18px',
+            borderRadius: 20,
+            fontSize: 13,
+            fontWeight: 500,
+            zIndex: 10,
+            backdropFilter: 'blur(4px)',
+          }}
+        >
+          {calcMode === 'backbone' && '📡 Klik untuk pilih titik BACKBONE'}
+          {calcMode === 'target' && '🎯 Klik untuk pilih area TARGET'}
+          {calcMode === 'result' && '✅ Siap dihitung — klik Hitung Sekarang'}
+        </div>
+      )}

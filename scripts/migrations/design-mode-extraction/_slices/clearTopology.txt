@@ -1,0 +1,30 @@
+  // FIX: cleanup topology from map
+  const clearTopology = useCallback(() => {
+    const map = mapRef.current; // FIX
+    if (!map) return; // FIX
+    topoHandlersRef.current.forEach(({ layerId, ev, fn }) => {
+      try {
+        map.off(ev, layerId, fn); // FIX
+      } catch {
+        /* FIX: silent */ // FIX
+      }
+    }); // FIX
+    topoHandlersRef.current = []; // FIX
+    // FIX: remove all layers first (before sources)
+    TOPO_LAYER_IDS.forEach((id) => {
+      try {
+        if (map.getLayer(id)) map.removeLayer(id); // FIX
+      } catch {
+        /* FIX: silent */ // FIX
+      }
+    }); // FIX
+    // FIX: then remove sources
+    TOPO_SOURCE_IDS.forEach((id) => {
+      try {
+        if (map.getSource(id)) map.removeSource(id); // FIX
+      } catch {
+        /* FIX: silent */ // FIX
+      }
+    }); // FIX
+    setTopologyRendered(false); // FIX
+  }, []);

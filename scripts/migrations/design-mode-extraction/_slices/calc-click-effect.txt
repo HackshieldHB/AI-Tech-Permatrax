@@ -1,0 +1,84 @@
+  // FIX: Map click handler for calculation
+  useEffect(() => {
+    const map = mapRef.current; // FIX
+    if (!map) return; // FIX
+
+    const handleClick = async (e: maplibregl.MapMouseEvent) => {
+      if (isDrawingPolygon) return; // FIX: polygon drawing takes precedence
+      if (calcMode === 'idle') return; // FIX
+      const { lng, lat } = e.lngLat; // FIX
+
+      if (calcMode === 'backbone') {
+        backboneMarkerRef.current?.remove(); // FIX
+        setBackbonePoint([lng, lat]); // FIX
+        setCalcMode('target'); // FIX
+
+        const m = new maplibregl.Marker({ color: '#3B82F6' }) // FIX
+          .setLngLat([lng, lat]) // FIX
+          .setPopup(new maplibregl.Popup().setText('📡 Titik Backbone')) // FIX
+          .addTo(map); // FIX
+        backboneMarkerRef.current = m; // FIX
+
+        try {
+          const backbone = await apiGet<unknown[]>(
+            `/map/fiber-backbone?lat=${lat}&lon=${lng}&radius=3000`,
+          ); // FIX
+          if (backbone?.length > 0) {
+            setNearestBackbone(backbone[0] as OsmElement); // FIX
+            toast.success(`📡 Ditemukan ${backbone.length} jalur backbone di OSM`); // FIX
+          } else {
+            toast.info('📡 Tidak ada backbone di OSM — gunakan titik yang Anda pilih'); // FIX
+          }
+        } catch {
+          // FIX: tetap lanjut tanpa Overpass
+        }
+
+        toast.info('🎯 Sekarang klik area TARGET yang ingin dipasang FTTH'); // FIX
+      } else if (calcMode === 'target') {
+        targetMarkerRef.current?.remove(); // FIX
+        setTargetPoint([lng, lat]); // FIX
+        setCalcMode('result'); // FIX
+
+        const tm = new maplibregl.Marker({ color: '#EF4444' }) // FIX
+          .setLngLat([lng, lat]) // FIX
+          .setPopup(new maplibregl.Popup().setText('🎯 Area Target')) // FIX
+          .addTo(map); // FIX
+        targetMarkerRef.current = tm; // FIX
+
+        if (inputMode === 'radius') {
+          const circle = turf.circle([lng, lat], areaRadius / 1000, {
+            steps: 64, // FIX
+            units: 'kilometers', // FIX
+          }); // FIX
+
+          const circleSourceId = 'calc-circle'; // FIX
+          if (map.getLayer('calc-circle-fill')) map.removeLayer('calc-circle-fill'); // FIX
+          if (map.getLayer('calc-circle-line')) map.removeLayer('calc-circle-line'); // FIX
+          if (map.getSource(circleSourceId)) map.removeSource(circleSourceId); // FIX
+
+          map.addSource(circleSourceId, { type: 'geojson', data: circle }); // FIX
+          map.addLayer({
+            id: 'calc-circle-fill', // FIX
+            type: 'fill', // FIX
+            source: circleSourceId, // FIX
+            paint: { 'fill-color': '#EF4444', 'fill-opacity': 0.1 }, // FIX
+          }); // FIX
+          map.addLayer({
+            id: 'calc-circle-line', // FIX
+            type: 'line', // FIX
+            source: circleSourceId, // FIX
+            paint: {
+              'line-color': '#EF4444', // FIX
+              'line-width': 2, // FIX
+              'line-dasharray': [3, 3], // FIX
+            },
+          }); // FIX
+        }
+      }
+    }; // FIX
+
+    map.on('click', handleClick); // FIX
+    return () => {
+      map.off('click', handleClick); // FIX
+    };
+  }, [calcMode, areaRadius, isDrawingPolygon, inputMode]);

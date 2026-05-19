@@ -1,0 +1,114 @@
+  // FIX: polygon drawing click handler
+  useEffect(() => {
+    const map = mapRef.current; // FIX
+    if (!map || !isDrawingPolygon) return; // FIX
+
+    let lastClickTime = 0; // FIX
+
+    const handlePolyClick = (e: maplibregl.MapMouseEvent) => {
+      const now = Date.now(); // FIX
+      const { lng, lat } = e.lngLat; // FIX
+
+      if (now - lastClickTime < 300) {
+        setPolygonPoints((prev) => {
+          if (prev.length >= 3) {
+            const area = polygonAreaFromCoords(prev); // FIX
+            const centroid = polygonCentroidFromCoords(prev); // FIX
+            setPolygonAreaSqM(area); // FIX
+            setPolygonCentroid(centroid); // FIX
+            setIsDrawingPolygon(false); // FIX
+            setCalcMode('backbone'); // FIX
+
+            const closedCoords = [...prev, prev[0]]; // FIX
+            clearPolygonFromMap(map); // FIX
+
+            map.addSource('poly-fill', {
+              type: 'geojson', // FIX
+              data: {
+                type: 'Feature', // FIX
+                geometry: { type: 'Polygon', coordinates: [closedCoords] }, // FIX
+                properties: {}, // FIX
+              },
+            }); // FIX
+            map.addLayer({
+              id: 'poly-fill', // FIX
+              type: 'fill', // FIX
+              source: 'poly-fill', // FIX
+              paint: { 'fill-color': '#EF4444', 'fill-opacity': 0.15 }, // FIX
+            }); // FIX
+            map.addLayer({
+              id: 'poly-line', // FIX
+              type: 'line', // FIX
+              source: 'poly-fill', // FIX
+              paint: {
+                'line-color': '#EF4444', // FIX
+                'line-width': 2, // FIX
+                'line-dasharray': [3, 3], // FIX
+              },
+            }); // FIX
+
+            toast.success(
+              `✅ Area polygon: ${
+                area > 1_000_000
+                  ? `${(area / 1_000_000).toFixed(3)} km²`
+                  : `${Math.round(area).toLocaleString('id-ID')} m²`
+              }`, // FIX
+            ); // FIX
+            toast.info('📡 Sekarang klik titik BACKBONE di peta'); // FIX
+          } else {
+            toast.warning('Minimal 3 titik untuk membuat polygon'); // FIX
+          } // FIX
+          return prev; // FIX
+        }); // FIX
+        lastClickTime = 0; // FIX: reset so triple-click does not chain
+        return; // FIX
+      } // FIX
+
+      lastClickTime = now; // FIX
+
+      const el = document.createElement('div'); // FIX
+      el.style.cssText = `
+      width: 10px; height: 10px; border-radius: 50%;
+      background: #EF4444; border: 2px solid white;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+    `; // FIX
+      const marker = new maplibregl.Marker({ element: el }).setLngLat([lng, lat]).addTo(map); // FIX
+      polygonMarkersRef.current.push(marker); // FIX
+
+      setPolygonPoints((prev) => {
+        const newPoints = [...prev, [lng, lat] as [number, number]]; // FIX
+
+        if (newPoints.length >= 2) {
+          clearPolygonFromMap(map); // FIX
+          const previewCoords = [...newPoints]; // FIX
+          map.addSource('poly-fill', {
+            type: 'geojson', // FIX
+            data: {
+              type: 'Feature', // FIX
+              geometry: { type: 'LineString', coordinates: previewCoords }, // FIX
+              properties: {}, // FIX
+            },
+          }); // FIX
+          map.addLayer({
+            id: 'poly-line', // FIX
+            type: 'line', // FIX
+            source: 'poly-fill', // FIX
+            paint: {
+              'line-color': '#EF4444', // FIX
+              'line-width': 2, // FIX
+              'line-dasharray': [3, 3], // FIX
+            },
+          }); // FIX
+        } // FIX
+        return newPoints; // FIX
+      }); // FIX
+    }; // FIX
+
+    map.on('click', handlePolyClick); // FIX
+    map.getCanvas().style.cursor = 'crosshair'; // FIX
+
+    return () => {
+      map.off('click', handlePolyClick); // FIX
+      map.getCanvas().style.cursor = ''; // FIX
+    }; // FIX
+  }, [isDrawingPolygon]);
