@@ -8,6 +8,9 @@ import './globals.css'; // MODIFIED: global styles only
 export const metadata: Metadata = {
   title: 'PermaTrax — Fiber Construction Management', // MODIFIED: new product branding
   description: 'Enterprise platform for fiber optic construction permit management', // MODIFIED
+  icons: {
+    icon: '/icon.svg',
+  },
 };
 
 const jakarta = Plus_Jakarta_Sans({ // NEW: requested typography setup
