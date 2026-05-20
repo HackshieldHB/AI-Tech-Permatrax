@@ -55,7 +55,7 @@ export type UpdateBudgetInput = z.infer<typeof UpdateBudgetDto>;
 export const FinanceProjectFilterDto = PaginationQuerySchema.merge(
   z.object({
     search: z.string().optional(),
-    status: z.nativeEnum(FinanceProjectStatus).optional(),
+    status: z.enum(['ACTIVE', 'CLOSED', 'ARCHIVED']).optional().transform(v => v as FinanceProjectStatus | undefined),
     includeArchived: z.coerce.boolean().optional(),
     sortBy: z.enum(['createdAt', 'updatedAt', 'name', 'code']).optional(),
   }),
