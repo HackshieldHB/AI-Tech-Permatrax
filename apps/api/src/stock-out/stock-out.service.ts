@@ -8,7 +8,7 @@ import { runSerializableTransaction } from '../budget-ledger/transaction-retry.u
 import { paginate, PaginatedResponse } from '../common/dto/pagination.dto';
 import type { CreateStockOutDtoType, FilterStockOutDtoType, RejectStockOutDtoType } from './stock-out.dto';
 
-type StockOutItemJson = { stockItemId: string; qty: number; notes?: string };
+type StockOutItemJson = { stockItemId: string; qty: number; notes?: string; itemName?: string };
 
 @Injectable()
 export class StockOutService {
@@ -53,12 +53,21 @@ export class StockOutService {
 
       const requestNumber = await this.generateRequestNumber(tx);
 
+      // Build a name map so we can store itemName in the JSON for display in detail view
+      const nameMap = new Map(stockItems.map((s) => [s.id, s.name]));
+      const itemsWithName = dto.items.map((item) => ({
+        stockItemId: item.stockItemId,
+        qty: item.qty,
+        notes: item.notes,
+        itemName: nameMap.get(item.stockItemId) ?? null,
+      }));
+
       return tx.stockOut.create({
         data: {
           requestNumber,
           requestedById,
           permitClusterId: dto.permitClusterId ?? null,
-          items: dto.items as Prisma.InputJsonValue,
+          items: itemsWithName as Prisma.InputJsonValue,
           notes: dto.notes ?? null,
           status: StockOutStatus.PENDING,
         },

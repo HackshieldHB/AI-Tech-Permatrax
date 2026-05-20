@@ -101,9 +101,9 @@ export default function StockOutDetailPage() {
       <div style={{ background: '#fff', borderRadius: 12, border: '1px solid #D0D7DE', padding: 16, marginBottom: 16 }}>
         <strong style={{ fontSize: 14 }}>Item</strong>
         <ul style={{ margin: '8px 0 0', paddingLeft: 18 }}>
-          {(Array.isArray(row.items) ? row.items : []).map((it: { stockItemId: string; qty: number; notes?: string }, i: number) => (
+          {(Array.isArray(row.items) ? row.items : []).map((it: { stockItemId: string; qty: number; notes?: string; itemName?: string }, i: number) => (
             <li key={`${it.stockItemId}-${i}`} style={{ marginBottom: 6 }}>
-              {it.stockItemId} × {it.qty}
+              {it.itemName || it.stockItemId} × {it.qty}
               {it.notes ? ` — ${it.notes}` : ''}
             </li>
           ))}

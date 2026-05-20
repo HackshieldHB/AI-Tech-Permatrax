@@ -15,6 +15,7 @@ export class NotificationsController {
     Role.PM_FTTH, Role.PM_FTTB, Role.PM_FTTT, Role.PM_SENIOR,
     Role.DESIGNER,
     Role.ADMIN, Role.ADMIN_STOCK, Role.GENERAL_MANAGER, Role.FINANCE,
+    Role.PURCHASING,
     Role.MARKETING, Role.MARKETING_HEAD, Role.OPERATIONAL_MANAGER,
   )
   @ApiOperation({ summary: 'Notifikasi untuk user saat ini' })
@@ -32,6 +33,7 @@ export class NotificationsController {
     Role.PM_FTTH, Role.PM_FTTB, Role.PM_FTTT, Role.PM_SENIOR,
     Role.DESIGNER,
     Role.ADMIN, Role.ADMIN_STOCK, Role.GENERAL_MANAGER, Role.FINANCE,
+    Role.PURCHASING,
     Role.MARKETING, Role.MARKETING_HEAD, Role.OPERATIONAL_MANAGER,
   )
   @ApiOperation({ summary: 'Tandai semua sudah dibaca' })
@@ -45,6 +47,7 @@ export class NotificationsController {
     Role.PM_FTTH, Role.PM_FTTB, Role.PM_FTTT, Role.PM_SENIOR,
     Role.DESIGNER,
     Role.ADMIN, Role.ADMIN_STOCK, Role.GENERAL_MANAGER, Role.FINANCE,
+    Role.PURCHASING,
     Role.MARKETING, Role.MARKETING_HEAD, Role.OPERATIONAL_MANAGER,
   )
   @ApiOperation({ summary: 'Tandai satu notifikasi dibaca' })

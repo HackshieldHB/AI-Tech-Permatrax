@@ -152,6 +152,23 @@ export class PurchasingService {
       entityId: updated.id,
     });
 
+    // Notify the Admin Stock user who submitted/created the order so they know
+    // Purchasing has processed it and it is now advancing through the approval chain.
+    // For STOCK_RESTOCK, createdBy is the Admin Stock user. For PROJECT_REQUEST processed
+    // via adminStockSubmit, adminStockSubmittedBy holds the Admin Stock user ID.
+    const adminStockNotifyUserId =
+      updated.adminStockSubmittedBy ??
+      (updated.orderTrigger === 'STOCK_RESTOCK' ? updated.createdBy : null);
+    if (adminStockNotifyUserId) {
+      await this.notifications.createForUser(adminStockNotifyUserId, {
+        title: '📋 Harga Disubmit Purchasing',
+        message: `Purchasing telah mengisi harga untuk order ${updated.orderNumber} (Rp ${totalLabel}). Menunggu approval ${nextRoleLabel}.`,
+        type: 'STOCK',
+        link: `/orders/${updated.id}`,
+        entityId: updated.id,
+      });
+    }
+
     if (updated.status === 'PENDING_OPS_APPROVAL') {
       this.gateway.emitToRoom(`role:${Role.OPERATIONAL_MANAGER}`, 'order:pendingOpsApproval', {
         orderId: updated.id,

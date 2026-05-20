@@ -256,8 +256,6 @@ export class PoGenerationService {
         await renderSigBox(rightCol, 'Disetujui Oleh,', approvedBy);
 
         doc.moveDown(6);
-        doc.fontSize(10).font('Helvetica-Bold').fillColor('#000000')
-          .text('PT. PermaTrack', 50, doc.y, { align: 'left' });
 
         doc.end();
       };
