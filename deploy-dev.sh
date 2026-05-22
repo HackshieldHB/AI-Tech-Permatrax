@@ -144,7 +144,7 @@ services:
     image: redis:7-alpine
     container_name: permatrax-dev-redis
     restart: unless-stopped
-    command: redis-server --requirepass ${REDIS_PASS} --appendonly yes --bind 127.0.0.1
+    command: redis-server --requirepass ${REDIS_PASS} --appendonly yes
     ports:
       - "127.0.0.1:6379:6379"
     volumes:
