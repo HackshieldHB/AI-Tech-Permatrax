@@ -38,8 +38,7 @@ PERMATRAX_REPO="https://github.com/HackshieldHB/AI-Tech-Permatrax.git"
 PERMATRAX_BRANCH="dev"
 PERMATRAX_DIR="/var/www/permatrax-dev"
 
-# NOTE: Ganti ini dengan repo URL website kalau sudah di-push ke GitHub
-WEBSITE_REPO=""
+WEBSITE_REPO="https://github.com/HackshieldHB/AI-Tech-Website.git"
 WEBSITE_DIR="/var/www/aitech-website"
 
 # Ports
