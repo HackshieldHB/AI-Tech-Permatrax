@@ -14,6 +14,9 @@ log_info "Stopping old Redis container..."
 docker stop permatrax-dev-redis 2>/dev/null || true
 docker rm   permatrax-dev-redis 2>/dev/null || true
 
+log_info "Creating Docker network if not exists..."
+docker network create permatrax-dev-net 2>/dev/null || log_ok "Network already exists"
+
 log_info "Starting Redis (fixed config)..."
 docker run -d \
   --name permatrax-dev-redis \
