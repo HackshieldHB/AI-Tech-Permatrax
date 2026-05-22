@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { apiFetch } from '../lib/auth';
+import { apiFetch, NEXT_ROUTE_BASE } from '../lib/auth';
 
 interface AuthUser {
   id: string;
@@ -75,7 +75,7 @@ export const useAuthStore = create<AuthState>()(
         const userId = get().user?.id;
         if (!userId) return;
         try {
-          const res = await fetch('/api/auth/refresh', {
+          const res = await fetch(`${NEXT_ROUTE_BASE}/api/auth/refresh`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ userId }),
@@ -91,7 +91,7 @@ export const useAuthStore = create<AuthState>()(
       },
 
       logout: async () => {
-        await fetch('/api/auth/clear-cookie', { method: 'POST' }).catch(() => {});
+        await fetch(`${NEXT_ROUTE_BASE}/api/auth/clear-cookie`, { method: 'POST' }).catch(() => {});
         if (typeof window !== 'undefined') {
           localStorage.removeItem('accessToken');
           sessionStorage.removeItem('accessToken');

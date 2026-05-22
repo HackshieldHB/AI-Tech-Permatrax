@@ -3,7 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuthStore } from '../../store/authStore';
-import { API_URL } from '../../lib/auth'; // FIX: single source of truth — smart fallback handles ngrok + localhost
+import { API_URL, NEXT_ROUTE_BASE } from '../../lib/auth'; // FIX: single source of truth — smart fallback handles ngrok + localhost
 import { Eye, EyeOff } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -120,7 +120,7 @@ export default function EnterpriseLoginPage() {
       }
 
       try {
-        await fetch('/api/auth/set-cookie', {
+        await fetch(`${NEXT_ROUTE_BASE}/api/auth/set-cookie`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           // FIX: forward rememberMe so the cookie maxAge matches the user's intent

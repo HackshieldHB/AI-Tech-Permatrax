@@ -6,19 +6,33 @@ function getServerApiUrl(): string {
 }
 
 /**
- * Browser: ALWAYS same-origin `/api` so Next.js rewrites proxy to Nest (ngrok single-tunnel model).
- * Never use http://localhost:3001 from the client bundle in production.
+ * Browser API URL pointing to the Nest backend.
+ * - Dev (localhost): same-origin `/api` so Next.js rewrites handle the proxy.
+ * - Production (public host): uses NEXT_PUBLIC_API_URL so requests go directly
+ *   to the correct path (e.g. /Permatrax/api) rather than the app root /api.
  */
 function getApiUrl(): string {
   if (typeof window !== 'undefined') {
-    const leaked = process.env.NEXT_PUBLIC_API_URL?.trim();
-    if (process.env.NODE_ENV === 'production' && leaked?.includes('localhost:3001')) {
+    const envUrl = process.env.NEXT_PUBLIC_API_URL?.trim();
+    if (process.env.NODE_ENV === 'production' && envUrl?.includes('localhost:3001')) {
       throw new Error('INVALID API CONFIG: NEXT_PUBLIC_API_URL leaks localhost:3001 in production');
+    }
+    // Production: use the full configured API URL so basePath is respected
+    if (process.env.NODE_ENV === 'production' && envUrl) {
+      return envUrl;
     }
     return '/api';
   }
   return getServerApiUrl();
 }
+
+/**
+ * Base path prefix for Next.js Route Handlers (set-cookie, clear-cookie, refresh).
+ * In dev this is '' (empty) so `/api/auth/set-cookie` works as-is.
+ * In production with basePath (e.g. /Permatrax) it must be prepended so the
+ * browser reaches the correct Next.js route handler instead of the root app.
+ */
+export const NEXT_ROUTE_BASE = process.env.NEXT_PUBLIC_BASE_PATH?.trim() || '';
 
 /**
  * Host for Socket.IO / MapLibre tile URLs / legacy absolute file URLs.
@@ -50,7 +64,7 @@ export const clearTokens = async (): Promise<void> => {
     sessionStorage.removeItem('accessToken');
   }
   useAuthStore.getState().setToken('');
-  await fetch('/api/auth/clear-cookie', { method: 'POST' });
+  await fetch(`${NEXT_ROUTE_BASE}/api/auth/clear-cookie`, { method: 'POST' });
 };
 
 function persistRefreshedAccessToken(token: string) {
@@ -61,7 +75,7 @@ function persistRefreshedAccessToken(token: string) {
 
 export const refreshAccessToken = async (userId: string): Promise<string | null> => {
   try {
-    const res = await fetch('/api/auth/refresh', {
+    const res = await fetch(`${NEXT_ROUTE_BASE}/api/auth/refresh`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ userId }),
