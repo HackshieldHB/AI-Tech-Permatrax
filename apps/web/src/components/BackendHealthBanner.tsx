@@ -14,10 +14,17 @@ export function BackendHealthBanner() {
     if (dismissed) return;
     if (process.env.NEXT_PUBLIC_DISABLE_API_HEALTH_BANNER === 'true') return;
 
+    // Use NEXT_PUBLIC_API_URL so the path is correct whether running at root
+    // (PROD: permatrax.tech/api/health) or under a basePath
+    // (DEV VPS: aitech-ilt.co.id/Permatrax/api/health).
+    // Fallback to relative /api/health for local `next dev`.
+    const apiBase = process.env.NEXT_PUBLIC_API_URL ?? '/api';
+    const healthUrl = `${apiBase}/health`;
+
     const ac = new AbortController();
     void (async () => {
       try {
-        const res = await fetch('/api/health', {
+        const res = await fetch(healthUrl, {
           method: 'GET',
           signal: ac.signal,
           headers: { 'ngrok-skip-browser-warning': 'true' },
