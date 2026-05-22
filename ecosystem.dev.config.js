@@ -18,7 +18,7 @@ module.exports = {
       name: 'aitech-website',
       cwd: '/var/www/aitech-website/website',
       script: 'node',
-      args: '.next/standalone/server.js',
+      args: 'node_modules/next/dist/bin/next start -p 3000',
       instances: 1,
       exec_mode: 'fork',
       watch: false,
@@ -27,7 +27,6 @@ module.exports = {
       env: {
         NODE_ENV: 'production',
         PORT: 3000,
-        HOSTNAME: '0.0.0.0',
       },
       error_file: '/var/log/pm2/aitech-website-error.log',
       out_file: '/var/log/pm2/aitech-website-out.log',
