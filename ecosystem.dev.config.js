@@ -17,8 +17,8 @@ module.exports = {
     {
       name: 'aitech-website',
       cwd: '/var/www/aitech-website/website',
-      script: 'node_modules/.bin/next',
-      args: 'start -p 3000',
+      script: 'node',
+      args: 'node_modules/next/dist/bin/next start -p 3000',
       instances: 1,
       exec_mode: 'fork',
       watch: false,
@@ -37,8 +37,8 @@ module.exports = {
     {
       name: 'permatrax-dev-web',
       cwd: '/var/www/permatrax-dev/apps/web',
-      script: 'node_modules/.bin/next',
-      args: 'start -p 3002',
+      script: 'node',
+      args: 'node_modules/next/dist/bin/next start -p 3002',
       instances: 1,
       exec_mode: 'fork',
       watch: false,
