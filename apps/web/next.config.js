@@ -1,8 +1,19 @@
 const sentryEnabled =
   Boolean(process.env.NEXT_PUBLIC_SENTRY_DSN?.trim()) || Boolean(process.env.SENTRY_DSN?.trim());
 
+// DEV VPS: set BASE_PATH=/Permatrax in .env to serve under aitech-ilt.co.id/Permatrax
+// PROD:    leave BASE_PATH unset — runs at root (permatrax.tech/)
+const basePath = process.env.BASE_PATH || '';
+
+// DEV VPS: API runs on port 3003 to avoid conflict with website (3000)
+// PROD:    API runs on port 3001 (default)
+const apiUrl = process.env.API_URL || 'http://localhost:3001';
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // basePath: '' on PROD, '/Permatrax' on DEV VPS
+  ...(basePath && { basePath }),
+
   // NEW: standalone output only for Docker build on Linux
   output: process.env.DOCKER_BUILD === '1' ? 'standalone' : undefined,
   // FIX: reduce build memory pressure on Windows CI/dev boxes
@@ -43,7 +54,7 @@ const nextConfig = {
     return [
       {
         source: '/api/:path*',
-        destination: 'http://localhost:3001/api/:path*',
+        destination: `${apiUrl}/api/:path*`,
       },
     ];
   },
