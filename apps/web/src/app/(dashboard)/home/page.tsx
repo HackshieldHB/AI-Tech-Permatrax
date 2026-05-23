@@ -2,6 +2,7 @@
 
 import { useEffect } from 'react'; // NEW: redirect side effect
 import { useRouter } from 'next/navigation'; // NEW: routing
+import Link from 'next/link'; // MAP_VIEWER: link to GIS map
 import { useAuthStore } from '../../../store/authStore'; // NEW: auth store
 
 export default function HomePage() { // NEW: smart role redirect page
@@ -49,10 +50,57 @@ export default function HomePage() { // NEW: smart role redirect page
       case 'PURCHASING':
         router.replace('/dashboard-purchasing');
         break;
+      case 'MAP_VIEWER': // FIX: MAP_VIEWER stays on /home — no auto-redirect to /map
+        break;
       default:
         router.replace('/map');
     }
   }, [user, router]);
+
+  // FIX: MAP_VIEWER gets a proper welcome card instead of the infinite loading spinner
+  if (user?.role === 'MAP_VIEWER') {
+    return (
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          height: '60vh',
+          flexDirection: 'column',
+          gap: '16px',
+        }}
+      >
+        <div style={{ fontSize: '56px', lineHeight: 1 }}>🗺️</div>
+        <h2 style={{ color: '#1E293B', fontSize: '20px', fontWeight: 600, margin: 0 }}>
+          Selamat Datang, {user.name}
+        </h2>
+        <p style={{ color: '#64748B', fontSize: '14px', margin: 0, textAlign: 'center', maxWidth: 320 }}>
+          Akses Anda terbatas pada fitur <strong>Peta GIS</strong>.<br />
+          Gunakan menu di sidebar atau tombol di bawah untuk membuka peta.
+        </p>
+        <Link
+          href="/map"
+          style={{
+            marginTop: '8px',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '8px',
+            background: '#00D4B4',
+            color: '#fff',
+            padding: '10px 24px',
+            borderRadius: '10px',
+            textDecoration: 'none',
+            fontSize: '14px',
+            fontWeight: 600,
+            boxShadow: '0 2px 8px rgba(0,212,180,0.3)',
+            transition: 'background 150ms',
+          }}
+        >
+          Buka Peta GIS →
+        </Link>
+      </div>
+    );
+  }
 
   return ( // NEW: loading fallback while redirecting
     <div
