@@ -63,7 +63,7 @@ function getDashboardHref(role: string): string {
     MARKETING_HEAD: '/dashboard-marketing', // FIX
     ADMIN_STOCK: '/dashboard-admin-stock', // FIX
     PURCHASING: '/dashboard-purchasing',
-    MAP_VIEWER: '/map', // map-only users land directly on the GIS map
+    MAP_VIEWER: '/home', // map-only users go to home first, then pick Peta GIS from sidebar
   };
   return routes[role] || '/home'; // FIX
 }
