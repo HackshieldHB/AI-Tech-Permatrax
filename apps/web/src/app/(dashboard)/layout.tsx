@@ -30,7 +30,8 @@ type Role =
   | 'ADMIN' | 'ADMIN_STOCK' | 'FINANCE'
   | 'SURVEYOR_FTTH' | 'SURVEYOR_FTTB' | 'SURVEYOR_FTTT'
   | 'DESIGNER' // FIX Issue 10: nav knows about the new DESIGNER role
-  | 'MARKETING' | 'MARKETING_HEAD' | 'OPERATIONAL_MANAGER' | 'PURCHASING'; // Phase 3 + UI roles
+  | 'MARKETING' | 'MARKETING_HEAD' | 'OPERATIONAL_MANAGER' | 'PURCHASING' // Phase 3 + UI roles
+  | 'MAP_VIEWER'; // read-only GIS map access (e.g. JLM external users)
 
 type NavItem = {
   href: string;
@@ -62,6 +63,7 @@ function getDashboardHref(role: string): string {
     MARKETING_HEAD: '/dashboard-marketing', // FIX
     ADMIN_STOCK: '/dashboard-admin-stock', // FIX
     PURCHASING: '/dashboard-purchasing',
+    MAP_VIEWER: '/map', // map-only users land directly on the GIS map
   };
   return routes[role] || '/home'; // FIX
 }
@@ -85,6 +87,7 @@ const NAV_ITEMS: NavItem[] = [
       'OPERATIONAL_MANAGER',
       'GENERAL_MANAGER',
       'ADMIN',
+      'MAP_VIEWER', // JLM / external read-only users
     ],
   },
   {

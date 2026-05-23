@@ -223,6 +223,7 @@ enum Role {
   MARKETING_HEAD
   OPERATIONAL_MANAGER
   PURCHASING // Phase 3: procurement / supplier pricing
+  MAP_VIEWER  // Read-only GIS map access (e.g. JLM external users)
 }
 
 enum FiberType {

@@ -34,6 +34,7 @@ const ROLE_LABELS: Record<string, string> = {
   SURVEYOR_FTTT: 'Surveyor FTTT',
   PURCHASING: 'Purchasing',
   DESIGNER: 'Designer',
+  MAP_VIEWER: 'Map Viewer',
 };
 
 const ROLE_COLORS: Record<string, string> = {
@@ -53,6 +54,7 @@ const ROLE_COLORS: Record<string, string> = {
   SURVEYOR_FTTT: '#374151',
   DESIGNER: '#EC4899', // FIX Fix 2B: distinct color for Design Team role badges
   PURCHASING: '#059669',
+  MAP_VIEWER: '#2563EB',
 };
 
 const FIBER_ROLES = ['PM_FTTH', 'PM_FTTB', 'PM_FTTT', 'SURVEYOR_FTTH', 'SURVEYOR_FTTB', 'SURVEYOR_FTTT'];
