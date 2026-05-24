@@ -60,6 +60,8 @@ class CalculateFtthDto {
 }
 
 // FIX: roles that can access GIS map API
+// FIX MAP_VIEWER: added so JLM external users can run area calc, view layers,
+// view clusters, use fiber-backbone / route / snap / buildings / multi-route.
 const GIS_ROLES = [
   Role.SURVEYOR_FTTH,
   Role.SURVEYOR_FTTB,
@@ -72,6 +74,7 @@ const GIS_ROLES = [
   Role.OPERATIONAL_MANAGER,
   Role.GENERAL_MANAGER,
   Role.ADMIN,
+  Role.MAP_VIEWER, // FIX: JLM read-only GIS access — calculate, layers, clusters, etc.
 ];
 
 @ApiTags('Map')
@@ -176,6 +179,7 @@ export class MapController {
   }
 
   // FIX: Save KMZ layer (GeoJSON dari frontend)
+  // FIX MAP_VIEWER: JLM must be able to upload and persist KMZ layers on GIS Maps
   @Post('layers')
   @Roles(
     Role.SURVEYOR_FTTH,
@@ -187,6 +191,7 @@ export class MapController {
     Role.PM_SENIOR,
     Role.DESIGNER,
     Role.ADMIN,
+    Role.MAP_VIEWER, // FIX: JLM can save their own KMZ layers
   )
   async saveLayer(
     @Body()

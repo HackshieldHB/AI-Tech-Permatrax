@@ -128,6 +128,9 @@ export const PERMISSIONS = {
   ],
 
   /** GIS network design draft create/list/detail/archive (calc → persisted topology) */
+  // FIX MAP_VIEWER: JLM users access Saved Design menu on GIS Maps.
+  // Without this, GET /design returns 403 instead of an empty list.
+  // The list endpoint already filters by createdBy so JLM only sees their own designs.
   NETWORK_DESIGN: [
     Role.DESIGNER,
     Role.PM_FTTH,
@@ -135,6 +138,7 @@ export const PERMISSIONS = {
     Role.PM_FTTT,
     Role.PM_SENIOR,
     Role.ADMIN,
+    Role.MAP_VIEWER, // FIX: allow Saved Design list/view/create/delete for JLM scope
   ],
 
   // ─── PHASE 3: Stock / Order / Surat Jalan / Purchase Request ─────────────

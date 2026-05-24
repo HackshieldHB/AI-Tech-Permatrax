@@ -17,6 +17,7 @@ import { Roles } from '../auth/decorators/roles.decorator'; // FIX: enforce role
 import * as path from 'path';
 
 // FIX: restrict upload to roles that legitimately need it (no MARKETING wildcard)
+// FIX MAP_VIEWER: JLM users upload KMZ files to GIS Maps — must be in this list
 const UPLOAD_ALLOWED_ROLES = [
   Role.DESIGNER, // FIX: Designer uploads HLD/LLD files — was missing, caused "Akses ditolak" on /storage/upload
   Role.SURVEYOR_FTTH, Role.SURVEYOR_FTTB, Role.SURVEYOR_FTTT,
@@ -26,6 +27,7 @@ const UPLOAD_ALLOWED_ROLES = [
   Role.FINANCE,
   Role.PURCHASING,
   Role.MARKETING, Role.MARKETING_HEAD,
+  Role.MAP_VIEWER, // FIX: JLM KMZ upload — no restricted prefix applies to KMZ/GIS files
 ] as const;
 
 // FIX: per-prefix allow-list — stops marketing/surveyors overwriting PKS, invoices, etc.
