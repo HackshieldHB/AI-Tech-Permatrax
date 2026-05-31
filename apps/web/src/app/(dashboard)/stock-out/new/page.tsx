@@ -41,6 +41,7 @@ const ItemSchema = z.object({
 const FormSchema = z.object({
   items: z.array(ItemSchema).min(1, 'Minimal satu item'),
   permitClusterId: z.string().optional(),
+  recipient: z.string().min(1, 'Penerima wajib diisi'),
   notes: z.string().optional(),
 });
 
@@ -61,6 +62,7 @@ export default function NewStockOutPage() {
   const [loadingClusters, setLoadingClusters] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [permitClusterId, setPermitClusterId] = useState('');
+  const [recipient, setRecipient] = useState('');
   const [notes, setNotes] = useState('');
   const [rows, setRows] = useState<ItemRowUi[]>(() => [emptyRow()]);
   const searchTimers = useRef<Record<number, ReturnType<typeof setTimeout>>>({});
@@ -136,6 +138,7 @@ export default function NewStockOutPage() {
         notes: r.notes?.trim() || undefined,
       })),
       permitClusterId: permitClusterId || undefined,
+      recipient: recipient.trim(),
       notes: notes.trim() || undefined,
     });
     if (parsed.success === false) {
@@ -181,6 +184,20 @@ export default function NewStockOutPage() {
                 </option>
               ))}
             </select>
+          </label>
+        </div>
+
+        <div style={{ background: '#fff', borderRadius: 12, border: '1px solid #D0D7DE', padding: 16 }}>
+          <label style={{ fontSize: 13, display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <span style={{ fontWeight: 600 }}>Up./Penerima <span style={{ color: '#CF222E' }}>*</span></span>
+            <span style={{ fontSize: 12, color: '#57606a' }}>Nama orang/unit yang akan menerima barang</span>
+            <input
+              required
+              value={recipient}
+              onChange={(e) => setRecipient(e.target.value)}
+              placeholder="Nama penerima barang…"
+              style={{ padding: 10, borderRadius: 8, border: '1px solid #D0D7DE' }}
+            />
           </label>
         </div>
 

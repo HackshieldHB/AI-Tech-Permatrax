@@ -112,6 +112,13 @@ const NAV_ITEMS: NavItem[] = [
     roles: ['ADMIN', 'GENERAL_MANAGER'],
   },
   { href: '/clean-list', label: 'Clean List', icon: Database, featureKey: 'CLEAN_LIST', section: 'OPERASIONAL' },
+  {
+    href: '/fttt-projects',
+    label: 'FTTT Projects',
+    icon: Database,
+    section: 'OPERASIONAL',
+    roles: ['PM_FTTT', 'SURVEYOR_FTTT', 'ADMIN', 'GENERAL_MANAGER', 'ADMIN_STOCK'],
+  },
   { href: '/ba-open', label: 'BA Open', icon: FileText, featureKey: 'BA_OPEN', section: 'OPERASIONAL' },
   { href: '/cash-operation', label: 'Cash Operation', icon: Wallet, featureKey: 'CASH_OPERATION', section: 'OPERASIONAL', badge: 'cashOp' },
   {
@@ -221,6 +228,8 @@ const BREADCRUMB_MAP: Record<string, string[]> = {
   '/visit-requests/new': ['Visit Request', 'Buat Baru'],
   '/admin/legacy-ba-open': ['Admin', 'Legacy BA Open'],
   '/clean-list': ['Clean List'],
+  '/fttt-projects': ['FTTT Projects'],
+  '/fttt-projects/new': ['FTTT Projects', 'Baru'],
   '/ba-open': ['BA Open'],
   '/cash-operation': ['Cash Operation'],
   '/cash-operation/new': ['Cash Operation', 'Buat Request'],
@@ -267,6 +276,7 @@ function resolveBreadcrumb(pathname: string): string[] {
   if (pathname.startsWith('/purchasing/')) return ['Purchasing', 'Detail'];
   if (pathname.startsWith('/supplier-invoices/')) return ['Tagihan Supplier', 'Detail'];
   if (pathname.startsWith('/stock-out/') && pathname !== '/stock-out/new') return ['Stock Out', 'Detail'];
+  if (pathname.startsWith('/fttt-projects/') && pathname !== '/fttt-projects/new') return ['FTTT Projects', 'Detail'];
   if (pathname.startsWith('/finance-projects/transfer/') && pathname !== '/finance-projects/transfer/new') {
     return ['Finance Projects', 'Transfer', 'Detail'];
   }

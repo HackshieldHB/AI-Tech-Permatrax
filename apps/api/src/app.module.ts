@@ -73,6 +73,7 @@ import { PoGenerationModule } from './po-generation/po-generation.module';
 import { SupplierInvoiceModule } from './supplier-invoice/supplier-invoice.module';
 import { StockOutModule } from './stock-out/stock-out.module';
 import { PipelineEngineModule } from './pipeline-engine/pipeline-engine.module'; // NEW: Phase 3A
+import { FtttProjectModule } from './fttt-project/fttt-project.module'; // FTTT flow
 import { AppController } from './app.controller'; // FIX: root + live probes
 
 @Module({
@@ -161,6 +162,7 @@ import { AppController } from './app.controller'; // FIX: root + live probes
     PoGenerationModule,
     SupplierInvoiceModule,
     StockOutModule,
+    FtttProjectModule,
     PipelineEngineModule,
   ],
   controllers: [AppController], // FIX: register root GET /api (no 404)

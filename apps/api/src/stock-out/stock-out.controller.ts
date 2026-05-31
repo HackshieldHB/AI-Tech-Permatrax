@@ -10,9 +10,13 @@ import {
   CreateStockOutDto,
   FilterStockOutDto,
   RejectStockOutDto,
+  AdminStockApproveDto,
+  ReturnForRevisionDto,
   type CreateStockOutDtoType,
   type FilterStockOutDtoType,
   type RejectStockOutDtoType,
+  type AdminStockApproveDtoType,
+  type ReturnForRevisionDtoType,
 } from './stock-out.dto';
 
 @ApiTags('Stock Out')
@@ -32,9 +36,9 @@ export class StockOutController {
 
   @Get('inbox-count')
   @Roles(...PERMISSIONS.STOCK_OUT_VIEW)
-  @ApiOperation({ summary: 'Jumlah PENDING (badge Admin Stok)' })
+  @ApiOperation({ summary: 'Jumlah request di inbox role saat ini' })
   async getInboxCount(@CurrentUser() user: AuthUser) {
-    const count = await this.service.getInboxCount(user.role);
+    const count = await this.service.getInboxCount(user.userId, user.role);
     return { count };
   }
 
@@ -47,7 +51,7 @@ export class StockOutController {
 
   @Post()
   @Roles(...PERMISSIONS.STOCK_OUT_REQUEST)
-  @ApiOperation({ summary: 'Buat permintaan ambil barang' })
+  @ApiOperation({ summary: 'Buat permintaan ambil barang (PM)' })
   async create(
     @Body(new ZodValidationPipe(CreateStockOutDto)) dto: CreateStockOutDtoType,
     @CurrentUser() user: AuthUser,
@@ -55,21 +59,91 @@ export class StockOutController {
     return this.service.create(dto, user.userId);
   }
 
-  @Post(':id/fulfill')
+  @Post(':id/resubmit')
+  @Roles(...PERMISSIONS.STOCK_OUT_REQUEST)
+  @ApiOperation({ summary: 'Revisi dan kirim ulang request DRAFT (PM)' })
+  async resubmit(
+    @Param('id') id: string,
+    @Body(new ZodValidationPipe(CreateStockOutDto)) dto: CreateStockOutDtoType,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.service.resubmit(id, dto, user.userId);
+  }
+
+  @Post(':id/admin-approve')
   @Roles(...PERMISSIONS.STOCK_OUT_FULFILL)
-  @ApiOperation({ summary: 'Penuhi permintaan (kurangi stok)' })
-  async fulfill(@Param('id') id: string, @CurrentUser() user: AuthUser) {
-    return this.service.fulfill(id, user.userId);
+  @ApiOperation({ summary: 'Admin Stock approve + isi DO Number' })
+  async adminStockApprove(
+    @Param('id') id: string,
+    @Body(new ZodValidationPipe(AdminStockApproveDto)) dto: AdminStockApproveDtoType,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.service.adminStockApprove(id, dto, user.userId);
+  }
+
+  @Post(':id/admin-return')
+  @Roles(...PERMISSIONS.STOCK_OUT_FULFILL)
+  @ApiOperation({ summary: 'Admin Stock kembalikan ke PM untuk revisi' })
+  async adminStockReturn(
+    @Param('id') id: string,
+    @Body(new ZodValidationPipe(ReturnForRevisionDto)) dto: ReturnForRevisionDtoType,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.service.adminStockReturn(id, dto, user.userId);
+  }
+
+  @Post(':id/pm-confirm')
+  @Roles(...PERMISSIONS.STOCK_OUT_REQUEST)
+  @ApiOperation({ summary: 'PM konfirmasi approval Admin Stock' })
+  async pmConfirm(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    return this.service.pmConfirm(id, user.userId);
+  }
+
+  @Post(':id/pm-return')
+  @Roles(...PERMISSIONS.STOCK_OUT_REQUEST)
+  @ApiOperation({ summary: 'PM kembalikan ke Admin Stock untuk perbaikan' })
+  async pmReturn(
+    @Param('id') id: string,
+    @Body(new ZodValidationPipe(ReturnForRevisionDto)) dto: ReturnForRevisionDtoType,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.service.pmReturn(id, dto, user.userId);
+  }
+
+  @Post(':id/finance-approve')
+  @Roles(...PERMISSIONS.STOCK_OUT_FINANCE)
+  @ApiOperation({ summary: 'Finance approve → kurangi stok + generate Surat Jalan' })
+  async financeApprove(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    return this.service.financeApprove(id, user.userId);
+  }
+
+  @Post(':id/finance-return')
+  @Roles(...PERMISSIONS.STOCK_OUT_FINANCE)
+  @ApiOperation({ summary: 'Finance kembalikan ke PM untuk revisi' })
+  async financeReturn(
+    @Param('id') id: string,
+    @Body(new ZodValidationPipe(ReturnForRevisionDto)) dto: ReturnForRevisionDtoType,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.service.financeReturn(id, dto, user.userId);
   }
 
   @Post(':id/reject')
   @Roles(...PERMISSIONS.STOCK_OUT_FULFILL)
-  @ApiOperation({ summary: 'Tolak permintaan' })
+  @ApiOperation({ summary: 'Hard reject (admin override)' })
   async reject(
     @Param('id') id: string,
     @Body(new ZodValidationPipe(RejectStockOutDto)) dto: RejectStockOutDtoType,
     @CurrentUser() user: AuthUser,
   ) {
     return this.service.reject(id, dto, user.userId);
+  }
+
+  // Legacy endpoint — kept for backward compat, now routes to adminStockApprove
+  @Post(':id/fulfill')
+  @Roles(...PERMISSIONS.STOCK_OUT_FULFILL)
+  @ApiOperation({ summary: 'Legacy: Admin Stock approve (redirects to admin-approve without DO#)' })
+  async fulfill(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    return this.service.adminStockApprove(id, { doNumber: 'LEGACY' }, user.userId);
   }
 }

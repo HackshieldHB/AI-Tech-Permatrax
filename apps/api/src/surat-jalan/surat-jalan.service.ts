@@ -314,6 +314,275 @@ export class SuratJalanService {
     return { pdfUrl };
   }
 
+  // Generate Surat Jalan for StockOut flow (4-sig: Admin Stock, PM, Finance, Diterima Oleh manual)
+  async generateForStockOut(stockOutId: string, actorId: string) {
+    const stockOut = await this.prisma.stockOut.findUniqueOrThrow({
+      where: { id: stockOutId },
+      include: {
+        requestedBy:        { select: { id: true, name: true } },
+        adminStockApprover: { select: { id: true, name: true, signatureUrl: true } },
+        pmConfirmer:        { select: { id: true, name: true, signatureUrl: true } },
+        financeApprover:    { select: { id: true, name: true, signatureUrl: true } },
+        permitCluster:      { select: { clusterCode: true } },
+      },
+    });
+
+    const year = new Date().getFullYear();
+    const countThisYear = await this.prisma.suratJalan.count({
+      where: { type: 'OUT', createdAt: { gte: new Date(`${year}-01-01`) } },
+    });
+    const seq            = String(countThisYear + 1).padStart(4, '0');
+    const documentNumber = `SJ-OUT-${year}-${seq}`;
+
+    const sj = await this.prisma.suratJalan.create({
+      data: {
+        documentNumber,
+        type:        'OUT',
+        generatedBy: actorId,
+        status:      'GENERATED',
+        notes:       stockOut.notes ?? null,
+      },
+    });
+
+    const items = (stockOut.items as Array<{ stockItemId: string; qty: number; itemName?: string; notes?: string }>);
+
+    const pdfBuffer = await this.buildStockOutSuratJalanPdf({
+      documentNumber,
+      date:           new Date(),
+      doNumber:       stockOut.doNumber ?? '-',
+      recipient:      stockOut.recipient ?? '-',
+      project:        stockOut.permitCluster?.clusterCode ?? stockOut.notes ?? '-',
+      from:           'PT Integra Lintas Teknologi',
+      fromPerson:     stockOut.adminStockApprover?.name ?? '-',
+      fromPhone:      '085899287026',
+      items,
+      notes:          stockOut.notes ?? '',
+      adminStock:     stockOut.adminStockApprover,
+      pm:             stockOut.pmConfirmer,
+      finance:        stockOut.financeApprover,
+    });
+
+    const s3Key = `surat-jalan/${year}/${documentNumber}.pdf`;
+    const pdfUrl = await this.storage.uploadBuffer(s3Key, pdfBuffer, 'application/pdf');
+
+    return this.prisma.suratJalan.update({ where: { id: sj.id }, data: { pdfUrl } });
+  }
+
+  private async buildStockOutSuratJalanPdf(params: {
+    documentNumber: string;
+    date:           Date;
+    doNumber:       string;
+    recipient:      string;   // Up./Penerima (person)
+    recipientCompany?: string; // Company/Name of recipient
+    recipientAddress?: string;
+    recipientTelp?: string;
+    project:        string;
+    from:           string;
+    fromPerson:     string;   // Admin Stock name
+    fromPhone:      string;
+    items:          Array<{ stockItemId: string; qty: number; itemName?: string; notes?: string }>;
+    notes:          string;
+    adminStock:     { name: string; signatureUrl?: string | null } | null;
+    pm:             { name: string; signatureUrl?: string | null } | null;
+    finance:        { name: string; signatureUrl?: string | null } | null;
+  }): Promise<Buffer> {
+    const loadSig = async (url: string | null | undefined): Promise<Buffer | null> => {
+      if (!url) return null;
+      try {
+        const key = this.storage.extractKeyFromUploadedUrl(url);
+        if (key && this.storage.fileExists(key)) {
+          return require('fs').readFileSync(this.storage.absolutePathForKey(key)) as Buffer;
+        }
+      } catch { /* skip */ }
+      return null;
+    };
+
+    const [adminSig, pmSig, financeSig] = await Promise.all([
+      loadSig(params.adminStock?.signatureUrl),
+      loadSig(params.pm?.signatureUrl),
+      loadSig(params.finance?.signatureUrl),
+    ]);
+
+    // Indonesian month names for "Jakarta, DD MMMM YYYY" date format
+    const ID_MONTHS = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'];
+    const d = params.date;
+    const dateStr = `Jakarta, ${d.getDate()} ${ID_MONTHS[d.getMonth()]} ${d.getFullYear()}`;
+
+    return new Promise((resolve, reject) => {
+      const doc    = new PDFDocument({ margin: 40, size: 'A4' });
+      const chunks: Buffer[] = [];
+      doc.on('data', (c) => chunks.push(c));
+      doc.on('end',  () => resolve(Buffer.concat(chunks)));
+      doc.on('error', reject);
+
+      const L = 40, R = 555, W = R - L;
+
+      // ── Header ──────────────────────────────────────────────────────────────
+      // Company name (left) — no logo file available, so left-aligned only
+      doc.fontSize(15).font('Helvetica-Bold').text('PT. INTEGRA LINTAS TEKNOLOGI', L, 40, { width: 320 });
+      doc.moveDown(2.2);
+
+      // "DELIVERY ORDER" centered, bold, underlined
+      const doTitleY = doc.y;
+      doc.fontSize(13).font('Helvetica-Bold')
+        .text('DELIVERY ORDER', L, doTitleY, { width: W, align: 'center', underline: true });
+      doc.moveDown(0.8);
+
+      // ── Info block — two-column grid ────────────────────────────────────────
+      const infoY   = doc.y;
+      const lw      = 90;   // label width
+      const sep     = 8;    // colon column
+      const col1X   = L;
+      const col2X   = L + 260;
+      const rowH    = 16;
+      doc.fontSize(9).font('Helvetica');
+
+      const drawRow = (x: number, y: number, label: string, value: string, labelW = lw) => {
+        doc.font('Helvetica-Bold').text(label, x, y, { width: labelW, lineBreak: false });
+        doc.font('Helvetica').text(` :  ${value}`, x + labelW, y, { width: 220, lineBreak: false });
+      };
+
+      // Left column
+      drawRow(col1X, infoY + rowH * 0, 'Company/ Name', params.recipientCompany ?? '-');
+      drawRow(col1X, infoY + rowH * 1, 'Address',       params.recipientAddress ?? '-');
+      drawRow(col1X, infoY + rowH * 3, 'Telp',          params.recipientTelp ?? '-');
+      drawRow(col1X, infoY + rowH * 4, 'Up',            params.recipient);
+      drawRow(col1X, infoY + rowH * 5, 'PO No.',        '');
+      drawRow(col1X, infoY + rowH * 6, 'PO Date',       '');
+
+      // Right column
+      drawRow(col2X, infoY + rowH * 0, 'DO No.',  params.doNumber, 55);
+      // "From" spans two lines: company + person
+      doc.font('Helvetica-Bold').text('From', col2X, infoY + rowH * 1, { width: 55, lineBreak: false });
+      doc.font('Helvetica').text(` :  ${params.from}`, col2X + 55, infoY + rowH * 1, { width: 200, lineBreak: false });
+      doc.font('Helvetica').text(`     ${params.fromPerson}`, col2X + 55, infoY + rowH * 2, { width: 200, lineBreak: false });
+      drawRow(col2X, infoY + rowH * 4, 'Tel/Fax', params.fromPhone, 55);
+
+      doc.y = infoY + rowH * 7 + 6;
+      doc.moveDown(0.3);
+
+      // ── Items table ─────────────────────────────────────────────────────────
+      // Column widths: NO(30) | ITEM(80) | DESCRIPTION(200) | SERIAL NUMBER(120) | QTY(65)
+      const tblX   = L;
+      const colNo  = 30;
+      const colItem= 80;
+      const colDesc= 200;
+      const colSer = 120;
+      const colQty = W - colNo - colItem - colDesc - colSer; // remainder ~65
+      const colXNo   = tblX;
+      const colXItem = colXNo   + colNo;
+      const colXDesc = colXItem + colItem;
+      const colXSer  = colXDesc + colDesc;
+      const colXQty  = colXSer  + colSer;
+
+      const drawTableBorder = (y: number) => {
+        doc.moveTo(L, y).lineTo(R, y).lineWidth(0.5).stroke();
+      };
+
+      const drawVerticals = (y1: number, y2: number) => {
+        [colXNo, colXItem, colXDesc, colXSer, colXQty, R].forEach((x) => {
+          doc.moveTo(x, y1).lineTo(x, y2).lineWidth(0.5).stroke();
+        });
+      };
+
+      // Table header
+      const tblHeaderY = doc.y;
+      const tblRowH    = 16;
+      drawTableBorder(tblHeaderY);
+      doc.font('Helvetica-Bold').fontSize(9);
+      doc.text('NO',            colXNo   + 4, tblHeaderY + 3, { width: colNo   - 6, align: 'center', lineBreak: false });
+      doc.text('ITEM',          colXItem + 4, tblHeaderY + 3, { width: colItem - 6, align: 'center', lineBreak: false });
+      doc.text('DESCRIPTION',   colXDesc + 4, tblHeaderY + 3, { width: colDesc - 6, align: 'center', lineBreak: false });
+      doc.text('SERIAL NUMBER', colXSer  + 4, tblHeaderY + 3, { width: colSer  - 6, align: 'center', lineBreak: false });
+      doc.text('QTY',           colXQty  + 4, tblHeaderY + 3, { width: colQty  - 6, align: 'center', lineBreak: false });
+      drawTableBorder(tblHeaderY + tblRowH);
+      drawVerticals(tblHeaderY, tblHeaderY + tblRowH);
+
+      // Table rows
+      doc.font('Helvetica').fontSize(9);
+      let rowY = tblHeaderY + tblRowH;
+      params.items.forEach((item, idx) => {
+        doc.text(String(idx + 1),       colXNo   + 4, rowY + 3, { width: colNo   - 6, align: 'center', lineBreak: false });
+        // ITEM = short label (use first word of itemName as category stand-in)
+        const shortItem = (item.itemName ?? '-').split(' ')[0] ?? '-';
+        doc.text(shortItem,             colXItem + 4, rowY + 3, { width: colItem - 6, lineBreak: false });
+        doc.text(item.itemName ?? '-',  colXDesc + 4, rowY + 3, { width: colDesc - 6, lineBreak: false });
+        doc.text('-',                   colXSer  + 4, rowY + 3, { width: colSer  - 6, align: 'center', lineBreak: false });
+        doc.text(String(item.qty),      colXQty  + 4, rowY + 3, { width: colQty  - 6, align: 'center', lineBreak: false });
+        rowY += tblRowH;
+        drawTableBorder(rowY);
+        drawVerticals(rowY - tblRowH, rowY);
+      });
+
+      if (params.items.length === 0) {
+        doc.text('-', colXNo + 4, rowY + 3, { width: W - 8, align: 'center', lineBreak: false });
+        rowY += tblRowH;
+        drawTableBorder(rowY);
+        drawVerticals(rowY - tblRowH, rowY);
+      }
+
+      doc.y = rowY + 6;
+
+      // Note
+      if (params.notes) {
+        doc.fontSize(9).font('Helvetica-Bold').text('Note :', L, doc.y, { continued: true });
+        doc.font('Helvetica').text(` ${params.notes}`);
+      }
+
+      // ── Date (right-aligned) ─────────────────────────────────────────────────
+      doc.moveDown(3);
+      doc.fontSize(9).font('Helvetica').text(dateStr, L, doc.y, { width: W, align: 'right' });
+      doc.moveDown(0.6);
+
+      // ── 4-column signature block ──────────────────────────────────────────────
+      const sigW   = Math.floor(W / 4);
+      const sigX   = [L, L + sigW, L + sigW * 2, L + sigW * 3];
+      const labels = ['Dibuat Oleh,', 'Disetujui,', 'Diterima Oleh,', 'Diketahui Oleh,'];
+      const names  = [
+        params.adminStock?.name ?? '',
+        params.pm?.name ?? '',
+        '',                               // manual — filled on paper
+        params.finance?.name ?? '',
+      ];
+      const sigs   = [adminSig, pmSig, null, financeSig];
+      const sigImgH = 45;
+      const sigImgY = doc.y + 14;
+
+      doc.font('Helvetica').fontSize(9);
+      labels.forEach((lbl, i) => {
+        doc.text(lbl, sigX[i], doc.y, { width: sigW - 4, lineBreak: false });
+      });
+
+      // Signature images (Admin Stock, PM, Finance)
+      sigs.forEach((img, i) => {
+        if (img) {
+          try { doc.image(img, sigX[i], sigImgY, { height: sigImgH, fit: [sigW - 8, sigImgH] }); }
+          catch { /* skip */ }
+        }
+      });
+
+      // Underline for each sig block
+      const sigLineY = sigImgY + sigImgH + 2;
+      sigX.forEach((x) => {
+        doc.moveTo(x, sigLineY).lineTo(x + sigW - 8, sigLineY).lineWidth(0.5).stroke();
+      });
+
+      // Names below line
+      const nameY = sigLineY + 3;
+      doc.fontSize(9).font('Helvetica');
+      names.forEach((name, i) => {
+        if (i === 2) {
+          // Diterima Oleh — blank manual area
+          doc.text('(                            )', sigX[i], nameY, { width: sigW - 4, align: 'center', lineBreak: false });
+        } else {
+          doc.text(`(${name})`, sigX[i], nameY, { width: sigW - 4, align: 'center', lineBreak: false });
+        }
+      });
+
+      doc.end();
+    });
+  }
+
   // NEW: Build Surat Jalan PDF using PDFKit — same pattern as BaOpenService
   private async buildSuratJalanPdf(params: {
     documentNumber: string;
@@ -337,7 +606,7 @@ export class SuratJalanService {
       const typeLabel = params.type === 'OUT' ? 'BARANG KELUAR' : 'BARANG MASUK';
 
       // Header
-      doc.fontSize(18).font('Helvetica-Bold').text('PT. PERMATRACK INDONESIA', { align: 'center' });
+      doc.fontSize(18).font('Helvetica-Bold').text('PT. Integra Lintas Teknologi', { align: 'center' });
       doc.fontSize(14).text(`SURAT JALAN — ${typeLabel}`, { align: 'center' });
       doc.fontSize(11).font('Helvetica').text(`No: ${params.documentNumber}`, { align: 'center' });
       doc.moveDown(0.5);

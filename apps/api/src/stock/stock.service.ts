@@ -136,6 +136,7 @@ export class StockService {
         code:        dto.code,
         category:    dto.category,
         unit:        dto.unit,
+        mitra:       dto.mitra,
         currentQty:  dto.currentQty ?? 0,
         minStockQty: dto.minStockQty ?? 0,
         description: dto.description,

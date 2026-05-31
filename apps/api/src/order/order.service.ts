@@ -1000,6 +1000,7 @@ export class OrderService {
                     code: `AUTO-${randomUUID().replace(/-/g, '').substring(0, 12).toUpperCase()}`,
                     category: line.category || 'UNCATEGORIZED',
                     unit: line.unit ?? 'pcs',
+                    mitra: 'Lainnya',
                     currentQty: 0,
                     minStockQty: 0,
                     createdBy: userId,

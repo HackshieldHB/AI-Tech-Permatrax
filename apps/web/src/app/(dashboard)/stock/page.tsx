@@ -12,6 +12,8 @@ import { toast } from 'sonner';
 import { usePagination } from '../../../hooks/usePagination';
 import { Pagination } from '../../../components/Pagination';
 
+const MITRA_OPTIONS = ['FiberStar', 'iForte', 'Lintasarta', 'Icon+', 'Lainnya'] as const;
+
 const CATEGORY_FILTER = ['All', 'KABEL', 'PERANGKAT', 'AKSESORI', 'LAINNYA'] as const;
 
 const CATEGORY_OPTIONS: { value: string; label: string; disabled?: boolean }[] = [
@@ -57,7 +59,7 @@ function StockPageInner() {
 
   const [showAdd, setShowAdd] = useState(false);
   const [addForm, setAddForm] = useState({
-    name: '', code: '', category: '', unit: 'Pcs', currentQty: 0, minStockQty: 0, description: '',
+    name: '', code: '', category: '', unit: 'Pcs', mitra: '', currentQty: 0, minStockQty: 0, description: '',
   });
   const [adjust, setAdjust] = useState<{ id: string; name: string; current: number } | null>(null);
   const [adjQty, setAdjQty] = useState(0);
@@ -130,6 +132,10 @@ function StockPageInner() {
       toast.error('Pilih kategori barang terlebih dahulu');
       return;
     }
+    if (!addForm.mitra) {
+      toast.error('Pilih mitra terlebih dahulu');
+      return;
+    }
     try {
       const res = await apiFetch('/stock', {
         method: 'POST',
@@ -146,7 +152,7 @@ function StockPageInner() {
       }
       toast.success('Barang ditambahkan');
       setShowAdd(false);
-      setAddForm({ name: '', code: '', category: '', unit: 'Pcs', currentQty: 0, minStockQty: 0, description: '' });
+      setAddForm({ name: '', code: '', category: '', unit: 'Pcs', mitra: '', currentQty: 0, minStockQty: 0, description: '' });
       fetchList();
       fetchSummary();
     } catch (e: any) {
@@ -294,6 +300,7 @@ function StockPageInner() {
               <tr>
                 <th className="px-4 py-3 font-semibold">Kode</th>
                 <th className="px-4 py-3 font-semibold">Nama</th>
+                <th className="px-4 py-3 font-semibold">Mitra</th>
                 <th className="px-4 py-3 font-semibold">Kategori</th>
                 <th className="px-4 py-3 font-semibold">Satuan</th>
                 <th className="px-4 py-3 font-semibold">Stok</th>
@@ -304,9 +311,9 @@ function StockPageInner() {
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={canManage ? 8 : 7} className="px-4 py-12 text-center text-slate-500">Memuat…</td></tr>
+                <tr><td colSpan={canManage ? 9 : 8} className="px-4 py-12 text-center text-slate-500">Memuat…</td></tr>
               ) : list.length === 0 ? (
-                <tr><td colSpan={canManage ? 8 : 7} className="px-4 py-12 text-center text-slate-500">Tidak ada data</td></tr>
+                <tr><td colSpan={canManage ? 9 : 8} className="px-4 py-12 text-center text-slate-500">Tidak ada data</td></tr>
               ) : (
                 list.map((row) => {
                   const oos = row.currentQty === 0;
@@ -328,6 +335,11 @@ function StockPageInner() {
                               row.name
                             )}
                           </button>
+                        </td>
+                        <td className="px-4 py-3 text-slate-600">
+                          <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-sky-100 text-sky-800">
+                            {row.mitra ?? '—'}
+                          </span>
                         </td>
                         <td className="px-4 py-3 text-slate-600">
                           {editRow === row.id ? (
@@ -380,7 +392,7 @@ function StockPageInner() {
                       </tr>
                       {expanded === row.id && detail && (
                         <tr className="bg-slate-50/80">
-                          <td colSpan={canManage ? 8 : 7} className="px-4 py-4">
+                          <td colSpan={canManage ? 9 : 8} className="px-4 py-4">
                             <p className="text-xs font-bold text-slate-500 mb-3">Riwayat mutasi (10 terakhir)</p>
                             <div className="space-y-2">
                               {(detail.stockLogs ?? []).map((log: any) => (
@@ -463,6 +475,25 @@ function StockPageInner() {
                 </select>
                 {!addForm.category ? (
                   <p className="text-[11px] text-red-600 mt-1">Pilih kategori terlebih dahulu</p>
+                ) : null}
+              </div>
+              <div>
+                <label className="text-xs font-bold text-slate-500 uppercase">Mitra *</label>
+                <select
+                  required
+                  value={addForm.mitra}
+                  onChange={(e) => setAddForm({ ...addForm, mitra: e.target.value })}
+                  className={`mt-1 w-full rounded-xl border px-3 py-2 text-sm outline-none ${
+                    !addForm.mitra ? 'border-red-300/80' : 'border-slate-200'
+                  }`}
+                >
+                  <option value="" disabled>-- Pilih Mitra --</option>
+                  {MITRA_OPTIONS.map((m) => (
+                    <option key={m} value={m}>{m}</option>
+                  ))}
+                </select>
+                {!addForm.mitra ? (
+                  <p className="text-[11px] text-red-600 mt-1">Pilih mitra terlebih dahulu</p>
                 ) : null}
               </div>
               <div className="grid grid-cols-2 gap-3">

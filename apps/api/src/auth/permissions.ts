@@ -265,14 +265,16 @@ export const PERMISSIONS = {
 
   STOCK_OUT_REQUEST: [Role.PM_FTTH, Role.PM_FTTB, Role.PM_FTTT, Role.PM_SENIOR, Role.ADMIN_STOCK],
   STOCK_OUT_FULFILL: [Role.ADMIN_STOCK],
+  STOCK_OUT_FINANCE: [Role.FINANCE],
 
-  /** Stock out list/detail + inbox count (PM/Admin Stock/oversight) */
+  /** Stock out list/detail + inbox count (PM/Admin Stock/Finance/oversight) */
   STOCK_OUT_VIEW: [
     Role.PM_FTTH,
     Role.PM_FTTB,
     Role.PM_FTTT,
     Role.PM_SENIOR,
     Role.ADMIN_STOCK,
+    Role.FINANCE,
     Role.ADMIN,
     Role.GENERAL_MANAGER,
   ],

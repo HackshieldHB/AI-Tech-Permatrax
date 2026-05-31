@@ -901,12 +901,19 @@ export interface SupplierInvoice {
   updatedAt: string;
 }
 
-export type StockOutStatus = 'PENDING' | 'FULFILLED' | 'REJECTED';
+export type StockOutStatus =
+  | 'DRAFT'
+  | 'PENDING'
+  | 'PENDING_PM_CONFIRM'
+  | 'PENDING_FINANCE'
+  | 'FULFILLED'
+  | 'REJECTED';
 
 export interface StockOutItem {
   stockItemId: string;
   qty: number;
   notes?: string;
+  itemName?: string;
 }
 
 export interface StockOut {
@@ -916,12 +923,28 @@ export interface StockOut {
   permitClusterId: string | null;
   items: StockOutItem[];
   status: StockOutStatus;
+  recipient: string | null;
+  doNumber: string | null;
+  adminStockApprovedById: string | null;
+  adminStockApprovedAt: string | null;
+  pmConfirmedById: string | null;
+  pmConfirmedAt: string | null;
+  financeApprovedById: string | null;
+  financeApprovedAt: string | null;
+  revisionNotes: string | null;
+  suratJalanId: string | null;
   fulfilledById: string | null;
   fulfilledAt: string | null;
   rejectionReason: string | null;
   notes: string | null;
   createdAt: string;
   updatedAt: string;
+  // relations (optional — included in detail view)
+  requestedBy?: { id: string; name: string };
+  adminStockApprover?: { id: string; name: string } | null;
+  pmConfirmer?: { id: string; name: string } | null;
+  financeApprover?: { id: string; name: string } | null;
+  suratJalan?: { id: string; documentNumber: string; pdfUrl: string | null; status: string } | null;
 }
 
 /** Order trigger (Phase 3 procurement + restock) */
@@ -935,9 +958,12 @@ export const SUPPLIER_INVOICE_STATUS_LABELS: Record<SupplierInvoiceStatus, { lab
 };
 
 export const STOCK_OUT_STATUS_LABELS: Record<StockOutStatus, { label: string; color: string }> = {
-  PENDING: { label: 'Menunggu', color: 'amber' },
-  FULFILLED: { label: 'Dipenuhi', color: 'green' },
-  REJECTED: { label: 'Ditolak', color: 'red' },
+  DRAFT:              { label: 'Perlu Revisi', color: 'orange' },
+  PENDING:            { label: 'Menunggu Admin Stock', color: 'amber' },
+  PENDING_PM_CONFIRM: { label: 'Menunggu Konfirmasi PM', color: 'blue' },
+  PENDING_FINANCE:    { label: 'Menunggu Finance', color: 'purple' },
+  FULFILLED:          { label: 'Selesai', color: 'green' },
+  REJECTED:           { label: 'Ditolak', color: 'red' },
 };
 
 export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
@@ -945,3 +971,151 @@ export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
   COD: 'Cash On Delivery',
   TERMIN: 'Termin (Tempo)',
 };
+
+// ─── FTTT Project Flow ────────────────────────────────────────────────────────
+
+export type FtttCompany = 'TELKOM_INFRA' | 'IFORTE' | 'PST';
+export type FtttPhase =
+  | 'INITIATION' | 'SURVEY' | 'PREPARATION' | 'IMPLEMENTATION'
+  | 'DOCUMENTATION' | 'RECONCILIATION' | 'CLOSING';
+export type FtttPhaseStatus = 'LOCKED' | 'ACTIVE' | 'COMPLETED' | 'SKIPPED';
+export type FtttProjectStatus = 'ACTIVE' | 'COMPLETED' | 'ON_HOLD' | 'CANCELLED';
+export type FtttDocType = 'PO_CONTRACT' | 'SITELIST' | 'BOQ_TOS';
+export type FtttApprovalStatus = 'PENDING_PM' | 'PENDING_ADMIN' | 'APPROVED' | 'REJECTED';
+export type FtttSanggahStatus = 'SUBMITTED' | 'ACCEPTED' | 'REJECTED';
+export type FtttJaminanType = 'JAMINAN_UANG_MUKA' | 'JAMINAN_PELAKSANAAN';
+export type FtttDocumentType = 'ATP' | 'BAUT' | 'SUPPORTING' | 'EVIDENCE';
+
+export const FTTT_COMPANY_LABELS: Record<FtttCompany, string> = {
+  TELKOM_INFRA: 'Telkom Infra',
+  IFORTE:       'iForte',
+  PST:          'PST',
+};
+
+export const FTTT_PHASE_LABELS: Record<FtttPhase, string> = {
+  INITIATION:     'Project Initiation',
+  SURVEY:         'Validation & Survey',
+  PREPARATION:    'Project Preparation',
+  IMPLEMENTATION: 'Implementation',
+  DOCUMENTATION:  'Documentation & Acceptance',
+  RECONCILIATION: 'Reconciliation & Billing',
+  CLOSING:        'Project Closing',
+};
+
+export const FTTT_DOC_TYPE_LABELS: Record<FtttDocType, string> = {
+  PO_CONTRACT: 'PO / Contract (PDF)',
+  SITELIST:    'Sitelist (Excel)',
+  BOQ_TOS:     'BOQ & TOS (Excel)',
+};
+
+export const FTTT_PROJECT_STATUS_LABELS: Record<FtttProjectStatus, { label: string; color: string }> = {
+  ACTIVE:    { label: 'Aktif', color: 'blue' },
+  COMPLETED: { label: 'Selesai', color: 'green' },
+  ON_HOLD:   { label: 'Ditunda', color: 'orange' },
+  CANCELLED: { label: 'Dibatalkan', color: 'red' },
+};
+
+export interface FtttPhaseProgress {
+  id:            string;
+  phase:         FtttPhase;
+  status:        FtttPhaseStatus;
+  unlockedAt:    string | null;
+  completedAt:   string | null;
+  completedById: string | null;
+  notes:         string | null;
+}
+
+export interface FtttProject {
+  id:             string;
+  ftttCompany:    FtttCompany;
+  triggerDocUrl:  string;
+  triggerDocType: FtttDocType;
+  currentPhase:   FtttPhase;
+  status:         FtttProjectStatus;
+  projectName:    string | null;
+  notes:          string | null;
+  pmId:           string;
+  createdAt:      string;
+  updatedAt:      string;
+  pm:             { id: string; name: string; email: string };
+  cleanList:      { id: string; rwCode: string; kelurahan: string } | null;
+  phaseProgresses: FtttPhaseProgress[];
+  surveyUploads:  FtttSurveyUpload[];
+  drmDocuments:   FtttDrmDoc[];
+  sanggahs:       FtttSanggah[];
+  jaminans:       FtttJaminan[];
+  documents:      FtttDoc[];
+}
+
+export interface FtttSurveyUpload {
+  id:           string;
+  fileUrl:      string;
+  fileType:     string;
+  caption:      string | null;
+  createdAt:    string;
+  uploadedBy:   { id: string; name: string };
+}
+
+export interface FtttDrmDoc {
+  id:          string;
+  docType:     string;
+  version:     number;
+  fileUrl:     string;
+  notes:       string | null;
+  uploadedAt:  string;
+  uploadedBy:  { id: string; name: string };
+}
+
+export interface FtttSanggah {
+  id:            string;
+  attemptNumber: number;
+  reason:        string;
+  fileUrl:       string | null;
+  status:        FtttSanggahStatus;
+  submittedAt:   string;
+  resolvedAt:    string | null;
+  responseNotes: string | null;
+  submittedBy:   { id: string; name: string };
+}
+
+export interface FtttJaminan {
+  id:          string;
+  jaminanType: FtttJaminanType;
+  amount:      string | null;
+  issuer:      string | null;
+  issueDate:   string | null;
+  expiryDate:  string | null;
+  fileUrl:     string | null;
+  notes:       string | null;
+  createdAt:   string;
+  uploadedBy:  { id: string; name: string };
+}
+
+export interface FtttDoc {
+  id:              string;
+  docType:         FtttDocumentType;
+  fileUrl:         string;
+  notes:           string | null;
+  approvalStatus:  FtttApprovalStatus;
+  pmApprovedAt:    string | null;
+  adminApprovedAt: string | null;
+  createdAt:       string;
+  uploadedBy:      { id: string; name: string };
+}
+
+export interface FtttProgressSummary {
+  projectId:       string;
+  company:         FtttCompany;
+  currentPhase:    FtttPhase;
+  status:          FtttProjectStatus;
+  progressPct:     number;
+  completedPhases: number;
+  totalPhases:     number;
+  phases:          FtttPhaseProgress[];
+  counts: {
+    surveyUploads: number;
+    drmDocuments:  number;
+    sanggahs:      number;
+    documents:     number;
+  };
+}

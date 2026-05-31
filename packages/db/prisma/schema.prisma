@@ -331,11 +331,22 @@ model User {
   supplierInvoicesApproved    SupplierInvoice[]  @relation("SupplierInvoiceApprovedBy")
   stockOutsRequested         StockOut[]         @relation("StockOutRequestedBy")
   stockOutsFulfilled         StockOut[]         @relation("StockOutFulfilledBy")
+  stockOutsAdminApproved     StockOut[]         @relation("StockOutAdminApprover")
+  stockOutsPMConfirmed       StockOut[]         @relation("StockOutPMConfirmer")
+  stockOutsFinanceApproved   StockOut[]         @relation("StockOutFinanceApprover")
   ordersPurchasingSubmitted   Order[]            @relation("OrderPurchasingSubmittedBy")
   ordersCancelled            Order[]            @relation("OrderCancelledBy")
   ordersPoEmailSent           Order[]            @relation("OrderPoEmailSentBy")
 
   networkDesignsCreated NetworkDesign[]
+
+  // FTTT back-relations
+  ftttProjectsAsPM      FtttProject[]      @relation("FtttProjectPM")
+  ftttSurveyUploads     FtttSurveyUpload[] @relation("FtttSurveyUploader")
+  ftttDrmUploads        FtttDrmDocument[]  @relation("FtttDrmUploader")
+  ftttSanggahs          FtttSanggah[]      @relation("FtttSanggahSubmitter")
+  ftttJaminans          FtttJaminan[]      @relation("FtttJaminanUploader")
+  ftttDocuments         FtttDocument[]     @relation("FtttDocUploader")
 }
 
 // Phase 4 — GM-controlled feature visibility per role
@@ -526,6 +537,7 @@ model CleanList {
 
   importer          User            @relation("CleanListImporter", fields: [importedBy], references: [id])
   visitRequests     VisitRequest[]
+  ftttProjects      FtttProject[]   @relation("FtttProjectCleanList")
 
   @@index([ispCustomer])
   @@index([fiberType])
@@ -701,6 +713,7 @@ model StockItem {
   code          String    @unique
   category      String
   unit          String
+  mitra         String
   currentQty    Int       @default(0)
   minStockQty   Int       @default(0)
   description   String?
@@ -716,6 +729,7 @@ model StockItem {
   @@index([name])
   @@index([category])
   @@index([code])
+  @@index([mitra])
 }
 
 // NEW: STOCK LOG — every quantity change recorded
@@ -759,9 +773,12 @@ enum SupplierInvoiceStatus {
 }
 
 enum StockOutStatus {
-  PENDING
-  FULFILLED
-  REJECTED
+  DRAFT              // returned to PM for revision
+  PENDING            // submitted, waiting Admin Stock
+  PENDING_PM_CONFIRM // Admin Stock approved with DO#, waiting PM confirmation
+  PENDING_FINANCE    // PM confirmed, waiting Finance approval
+  FULFILLED          // Finance approved, Surat Jalan generated
+  REJECTED           // hard-cancelled (legacy / manual override)
 }
 
 // FIX: OrderStatus — alur stok katalog (Surat Jalan) + alur approval pembelian (satu model Order)
@@ -958,20 +975,44 @@ model StockOut {
   permitClusterId String?
   items           Json
   status          StockOutStatus @default(PENDING)
+  recipient       String?        // Up./Penerima — siapa yang menerima barang
 
+  // Admin Stock approval step
+  doNumber              String?
+  adminStockApprovedById String?
+  adminStockApprovedAt   DateTime?
+
+  // PM confirmation step
+  pmConfirmedById String?
+  pmConfirmedAt   DateTime?
+
+  // Finance approval step
+  financeApprovedById String?
+  financeApprovedAt   DateTime?
+
+  // Shared
+  revisionNotes   String?        // reason when sent back for revision
+  notes           String?
+  suratJalanId    String?  @unique
+
+  // Legacy fields kept for backward compatibility with old PENDING→FULFILLED flow
   fulfilledById   String?
   fulfilledAt     DateTime?
   rejectionReason String?
-  notes           String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  requestedBy   User            @relation("StockOutRequestedBy", fields: [requestedById], references: [id], onDelete: Restrict)
-  fulfilledBy   User?           @relation("StockOutFulfilledBy", fields: [fulfilledById], references: [id], onDelete: SetNull)
-  permitCluster PermitCluster?  @relation(fields: [permitClusterId], references: [id], onDelete: SetNull)
+  requestedBy        User            @relation("StockOutRequestedBy", fields: [requestedById], references: [id], onDelete: Restrict)
+  fulfilledBy        User?           @relation("StockOutFulfilledBy", fields: [fulfilledById], references: [id], onDelete: SetNull)
+  adminStockApprover User?           @relation("StockOutAdminApprover", fields: [adminStockApprovedById], references: [id], onDelete: SetNull)
+  pmConfirmer        User?           @relation("StockOutPMConfirmer", fields: [pmConfirmedById], references: [id], onDelete: SetNull)
+  financeApprover    User?           @relation("StockOutFinanceApprover", fields: [financeApprovedById], references: [id], onDelete: SetNull)
+  permitCluster      PermitCluster?  @relation(fields: [permitClusterId], references: [id], onDelete: SetNull)
+  suratJalan         SuratJalan?     @relation("StockOutSuratJalan", fields: [suratJalanId], references: [id], onDelete: SetNull)
 
   @@index([status, requestedById])
+  @@index([status])
 }
 
 // NEW: SuratJalanType enum
@@ -1005,6 +1046,7 @@ model SuratJalan {
   generator      User             @relation("SuratJalanGenerator", fields: [generatedBy], references: [id])
   confirmer      User?            @relation("SuratJalanConfirmer", fields: [confirmedBy], references: [id])
   order          Order?           @relation("OrderSuratJalan")
+  stockOut       StockOut?        @relation("StockOutSuratJalan")
 
   @@index([type])
   @@index([status])
@@ -2848,4 +2890,202 @@ model BudgetTransfer {
   @@index([sourceFinanceProjectId])
   @@index([targetFinanceProjectId])
   @@index([submittedById])
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// FTTT PROJECT FLOW — Phase-gated lifecycle for Tower Fiber projects
+// 3 companies: Telkom Infra (skips survey), iForte (Sanggah), PST (DRM)
+// ═══════════════════════════════════════════════════════════════════════════
+
+enum FtttCompany {
+  TELKOM_INFRA
+  IFORTE
+  PST
+}
+
+enum FtttPhase {
+  INITIATION
+  SURVEY
+  PREPARATION
+  IMPLEMENTATION
+  DOCUMENTATION
+  RECONCILIATION
+  CLOSING
+}
+
+enum FtttProjectStatus {
+  ACTIVE
+  COMPLETED
+  ON_HOLD
+  CANCELLED
+}
+
+enum FtttPhaseStatus {
+  LOCKED
+  ACTIVE
+  COMPLETED
+  SKIPPED
+}
+
+enum FtttDocType {
+  PO_CONTRACT
+  SITELIST
+  BOQ_TOS
+}
+
+enum FtttSanggahStatus {
+  SUBMITTED
+  ACCEPTED
+  REJECTED
+}
+
+enum FtttJaminanType {
+  JAMINAN_UANG_MUKA
+  JAMINAN_PELAKSANAAN
+}
+
+enum FtttDocumentType {
+  ATP
+  BAUT
+  SUPPORTING
+  EVIDENCE
+}
+
+enum FtttApprovalStatus {
+  PENDING_PM
+  PENDING_ADMIN
+  APPROVED
+  REJECTED
+}
+
+model FtttProject {
+  id             String            @id @default(cuid())
+  cleanListId    String?
+  ftttCompany    FtttCompany
+  triggerDocUrl  String
+  triggerDocType FtttDocType
+  currentPhase   FtttPhase         @default(INITIATION)
+  status         FtttProjectStatus @default(ACTIVE)
+  pmId           String
+  projectName    String?
+  notes          String?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  cleanList       CleanList?          @relation("FtttProjectCleanList", fields: [cleanListId], references: [id])
+  pm              User                @relation("FtttProjectPM", fields: [pmId], references: [id])
+
+  phaseProgresses FtttPhaseProgress[]
+  surveyUploads   FtttSurveyUpload[]
+  drmDocuments    FtttDrmDocument[]
+  sanggahs        FtttSanggah[]
+  jaminans        FtttJaminan[]
+  documents       FtttDocument[]
+
+  @@index([ftttCompany])
+  @@index([currentPhase])
+  @@index([pmId])
+  @@index([status])
+}
+
+model FtttPhaseProgress {
+  id            String          @id @default(cuid())
+  projectId     String
+  project       FtttProject     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  phase         FtttPhase
+  status        FtttPhaseStatus @default(LOCKED)
+  unlockedAt    DateTime?
+  completedAt   DateTime?
+  completedById String?
+  notes         String?
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  @@unique([projectId, phase])
+}
+
+model FtttSurveyUpload {
+  id           String      @id @default(cuid())
+  projectId    String
+  project      FtttProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  uploadedById String
+  uploadedBy   User        @relation("FtttSurveyUploader", fields: [uploadedById], references: [id])
+  fileUrl      String
+  fileType     String      // photo | supporting_file | survey_evidence | operational_notes
+  caption      String?
+  createdAt    DateTime    @default(now())
+
+  @@index([projectId])
+}
+
+model FtttDrmDocument {
+  id           String      @id @default(cuid())
+  projectId    String
+  project      FtttProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  docType      String      // BOQ_INITIAL | TOS_INITIAL | DRM_RESULT | ACTUAL
+  version      Int         @default(1)
+  fileUrl      String
+  notes        String?
+  uploadedById String
+  uploadedBy   User        @relation("FtttDrmUploader", fields: [uploadedById], references: [id])
+  uploadedAt   DateTime    @default(now())
+
+  @@index([projectId, docType])
+}
+
+model FtttSanggah {
+  id            String            @id @default(cuid())
+  projectId     String
+  project       FtttProject       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  attemptNumber Int
+  reason        String
+  fileUrl       String?
+  status        FtttSanggahStatus @default(SUBMITTED)
+  submittedById String
+  submittedBy   User              @relation("FtttSanggahSubmitter", fields: [submittedById], references: [id])
+  submittedAt   DateTime          @default(now())
+  resolvedAt    DateTime?
+  resolvedById  String?
+  responseNotes String?
+
+  @@unique([projectId, attemptNumber])
+  @@index([projectId])
+}
+
+model FtttJaminan {
+  id           String          @id @default(cuid())
+  projectId    String
+  project      FtttProject     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  jaminanType  FtttJaminanType
+  amount       Decimal?        @db.Decimal(15, 2)
+  issuer       String?
+  issueDate    DateTime?
+  expiryDate   DateTime?
+  fileUrl      String?
+  notes        String?
+  uploadedById String
+  uploadedBy   User            @relation("FtttJaminanUploader", fields: [uploadedById], references: [id])
+  createdAt    DateTime        @default(now())
+
+  @@index([projectId])
+}
+
+model FtttDocument {
+  id              String             @id @default(cuid())
+  projectId       String
+  project         FtttProject        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  docType         FtttDocumentType
+  fileUrl         String
+  notes           String?
+  approvalStatus  FtttApprovalStatus @default(PENDING_PM)
+  uploadedById    String
+  uploadedBy      User               @relation("FtttDocUploader", fields: [uploadedById], references: [id])
+  pmApprovedById  String?
+  pmApprovedAt    DateTime?
+  adminApprovedById String?
+  adminApprovedAt   DateTime?
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  @@index([projectId])
 }

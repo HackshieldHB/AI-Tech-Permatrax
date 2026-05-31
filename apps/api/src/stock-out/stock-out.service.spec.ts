@@ -6,12 +6,14 @@ import { PrismaService } from '../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { NotificationsGateway } from '../notifications/notifications.gateway';
 import { StockService } from '../stock/stock.service';
+import { SuratJalanService } from '../surat-jalan/surat-jalan.service';
 import { runSerializableTransaction } from '../budget-ledger/transaction-retry.util';
 import {
   CreateStockOutDto,
   RejectStockOutDto,
   FilterStockOutDto,
   StockOutItemDto,
+  AdminStockApproveDto,
 } from './stock-out.dto';
 
 jest.mock('../budget-ledger/transaction-retry.util', () => ({
@@ -24,6 +26,7 @@ describe('StockOutService', () => {
   const tx = {
     stockItem: { findMany: jest.fn(), findUniqueOrThrow: jest.fn() },
     permitCluster: { findUnique: jest.fn() },
+    user: { findUnique: jest.fn() },
     stockOut: {
       findFirst: jest.fn(),
       create: jest.fn(),
@@ -44,6 +47,7 @@ describe('StockOutService', () => {
       findMany: jest.fn(),
       count: jest.fn(),
     },
+    user: { findUnique: jest.fn() },
   };
 
   const notifications = {
@@ -58,11 +62,16 @@ describe('StockOutService', () => {
     emitLowStockIfNeeded: jest.fn(),
   };
 
+  const suratJalan = {
+    generateForStockOut: jest.fn().mockResolvedValue({ id: 'sj1' }),
+  };
+
   beforeEach(async () => {
     jest.clearAllMocks();
     Object.values(tx.stockOut).forEach((m) => (m as jest.Mock).mockReset());
     Object.values(tx.stockItem).forEach((m) => (m as jest.Mock).mockReset());
     tx.permitCluster.findUnique.mockReset();
+    tx.user.findUnique.mockReset();
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -71,6 +80,7 @@ describe('StockOutService', () => {
         { provide: NotificationsService, useValue: notifications },
         { provide: NotificationsGateway, useValue: gateway },
         { provide: StockService, useValue: stock },
+        { provide: SuratJalanService, useValue: suratJalan },
       ],
     }).compile();
 
@@ -82,19 +92,29 @@ describe('StockOutService', () => {
 
   describe('Zod CreateStockOutDto', () => {
     it('rejects empty items', () => {
-      expect(CreateStockOutDto.safeParse({ items: [] }).success).toBe(false);
+      expect(CreateStockOutDto.safeParse({ items: [], recipient: 'x' }).success).toBe(false);
+    });
+
+    it('rejects missing recipient', () => {
+      expect(
+        CreateStockOutDto.safeParse({ items: [{ stockItemId: 'cid', qty: 1 }] }).success,
+      ).toBe(false);
     });
 
     it('rejects qty <= 0', () => {
-      expect(
-        StockOutItemDto.safeParse({ stockItemId: 'cid', qty: 0 }).success,
-      ).toBe(false);
+      expect(StockOutItemDto.safeParse({ stockItemId: 'cid', qty: 0 }).success).toBe(false);
     });
   });
 
   describe('Zod RejectStockOutDto', () => {
     it('rejects empty reason', () => {
       expect(RejectStockOutDto.safeParse({ reason: '' }).success).toBe(false);
+    });
+  });
+
+  describe('Zod AdminStockApproveDto', () => {
+    it('rejects empty doNumber', () => {
+      expect(AdminStockApproveDto.safeParse({ doNumber: '' }).success).toBe(false);
     });
   });
 
@@ -115,6 +135,7 @@ describe('StockOutService', () => {
   describe('create', () => {
     const dto = {
       items: [{ stockItemId: 's1', qty: 2, notes: 'x' }],
+      recipient: 'Budi Santoso',
       notes: 'n',
     };
 
@@ -132,10 +153,7 @@ describe('StockOutService', () => {
       expect(row.status).toBe(StockOutStatus.PENDING);
       expect(notifications.notifyUsersByRole).toHaveBeenCalledWith(
         Role.ADMIN_STOCK,
-        expect.objectContaining({
-          type: 'STOCK_OUT_REQUESTED',
-          entityId: 'so1',
-        }),
+        expect.objectContaining({ type: 'STOCK_OUT_REQUESTED', entityId: 'so1' }),
       );
     });
 
@@ -153,7 +171,7 @@ describe('StockOutService', () => {
     });
   });
 
-  describe('fulfill', () => {
+  describe('adminStockApprove', () => {
     const pending = {
       id: 'so1',
       status: StockOutStatus.PENDING,
@@ -164,87 +182,32 @@ describe('StockOutService', () => {
     };
 
     beforeEach(() => {
-      tx.stockOut.findUniqueOrThrow.mockResolvedValue(pending);
-      tx.stockItem.findUniqueOrThrow.mockResolvedValue({ id: 's1', name: 'Kabel', currentQty: 10 });
-      stock.deductInsideTransaction.mockResolvedValue({
-        itemId: 's1',
-        itemName: 'Kabel',
-        newQty: 8,
-        minStockQty: 1,
-        unit: 'Meter',
-      });
-      tx.stockOut.update.mockResolvedValue({
+      prisma.stockOut.findUniqueOrThrow.mockResolvedValue(pending);
+      prisma.stockOut.update.mockResolvedValue({
         ...pending,
-        status: StockOutStatus.FULFILLED,
-        fulfilledById: 'admin1',
+        status: StockOutStatus.PENDING_PM_CONFIRM,
+        doNumber: 'DO-001',
+        adminStockApprovedById: 'admin1',
+        requestedBy: { id: 'req1', name: 'Ann' },
       });
     });
 
-    it('happy path → FULFILLED + deduct + notify', async () => {
-      const res = await service.fulfill('so1', 'admin1');
-      expect(res.status).toBe(StockOutStatus.FULFILLED);
-      expect(stock.deductInsideTransaction).toHaveBeenCalledWith(
-        tx,
-        's1',
-        2,
-        'admin1',
-        'StockOut:so1',
-      );
-      expect(stock.emitLowStockIfNeeded).toHaveBeenCalled();
+    it('happy path → PENDING_PM_CONFIRM + notify PM', async () => {
+      const res = await service.adminStockApprove('so1', { doNumber: 'DO-001' }, 'admin1');
+      expect(res.status).toBe(StockOutStatus.PENDING_PM_CONFIRM);
       expect(notifications.createForUser).toHaveBeenCalledWith(
         'req1',
-        expect.objectContaining({ type: 'STOCK_OUT_FULFILLED' }),
+        expect.objectContaining({ type: 'STOCK_OUT_REQUESTED' }),
       );
     });
 
     it('wrong status → 400', async () => {
-      tx.stockOut.findUniqueOrThrow.mockResolvedValue({ ...pending, status: StockOutStatus.FULFILLED });
-      await expect(service.fulfill('so1', 'a')).rejects.toBeInstanceOf(BadRequestException);
-    });
-
-    it('insufficient stock → 400', async () => {
-      tx.stockItem.findUniqueOrThrow.mockResolvedValue({ id: 's1', name: 'Kabel', currentQty: 1 });
-      await expect(service.fulfill('so1', 'a')).rejects.toBeInstanceOf(BadRequestException);
-    });
-
-    it('multiple items — deduct each', async () => {
-      tx.stockOut.findUniqueOrThrow.mockResolvedValue({
-        ...pending,
-        items: [
-          { stockItemId: 's1', qty: 1 },
-          { stockItemId: 's2', qty: 3 },
-        ],
-      });
-      tx.stockItem.findUniqueOrThrow
-        .mockResolvedValueOnce({ id: 's1', name: 'A', currentQty: 10 })
-        .mockResolvedValueOnce({ id: 's2', name: 'B', currentQty: 10 });
-      stock.deductInsideTransaction
-        .mockResolvedValueOnce({
-          itemId: 's1',
-          itemName: 'A',
-          newQty: 9,
-          minStockQty: 0,
-          unit: 'Pcs',
-        })
-        .mockResolvedValueOnce({
-          itemId: 's2',
-          itemName: 'B',
-          newQty: 7,
-          minStockQty: 0,
-          unit: 'Pcs',
-        });
-
-      tx.stockOut.update.mockResolvedValue({
-        ...pending,
-        status: StockOutStatus.FULFILLED,
-      });
-
-      await service.fulfill('so1', 'admin1');
-      expect(stock.deductInsideTransaction).toHaveBeenCalledTimes(2);
+      prisma.stockOut.findUniqueOrThrow.mockResolvedValue({ ...pending, status: StockOutStatus.FULFILLED });
+      await expect(service.adminStockApprove('so1', { doNumber: 'DO-001' }, 'a')).rejects.toBeInstanceOf(BadRequestException);
     });
   });
 
-  describe('reject', () => {
+  describe('reject (hard reject)', () => {
     const pending = {
       id: 'so1',
       status: StockOutStatus.PENDING,
@@ -265,16 +228,6 @@ describe('StockOutService', () => {
       expect(notifications.createForUser).toHaveBeenCalledWith(
         'req1',
         expect.objectContaining({ type: 'STOCK_OUT_REJECTED' }),
-      );
-    });
-
-    it('wrong status → 400', async () => {
-      prisma.stockOut.findUniqueOrThrow.mockResolvedValue({
-        ...pending,
-        status: StockOutStatus.FULFILLED,
-      });
-      await expect(service.reject('so1', { reason: 'x' }, 'a')).rejects.toBeInstanceOf(
-        BadRequestException,
       );
     });
   });
@@ -307,24 +260,20 @@ describe('StockOutService', () => {
       );
     });
 
-    it('scope inbox non–Admin Stock → fallback own', async () => {
-      await service.findAll(FilterStockOutDto.parse({ scope: 'inbox' }), 'u1', Role.PM_FTTH);
+    it('scope inbox FINANCE → PENDING_FINANCE', async () => {
+      await service.findAll(FilterStockOutDto.parse({ scope: 'inbox' }), 'u99', Role.FINANCE);
       expect(prisma.stockOut.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: expect.objectContaining({ requestedById: 'u1' }),
+          where: expect.objectContaining({ status: StockOutStatus.PENDING_FINANCE }),
         }),
       );
     });
 
-    it('filter status', async () => {
-      await service.findAll(
-        FilterStockOutDto.parse({ scope: 'mine', status: 'FULFILLED' }),
-        'u1',
-        Role.PM_FTTH,
-      );
+    it('scope inbox PM_FTTH → PENDING_PM_CONFIRM or DRAFT for own requests', async () => {
+      await service.findAll(FilterStockOutDto.parse({ scope: 'inbox' }), 'u1', Role.PM_FTTH);
       expect(prisma.stockOut.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: expect.objectContaining({ status: StockOutStatus.FULFILLED }),
+          where: expect.objectContaining({ requestedById: 'u1' }),
         }),
       );
     });
@@ -357,7 +306,11 @@ describe('StockOutService', () => {
         ...base,
         requestedBy: {},
         fulfilledBy: null,
+        adminStockApprover: null,
+        pmConfirmer: null,
+        financeApprover: null,
         permitCluster: null,
+        suratJalan: null,
       });
       await expect(service.findOne('so1', 'u1', Role.PM_FTTH)).resolves.toBeDefined();
     });
@@ -368,7 +321,11 @@ describe('StockOutService', () => {
         requestedById: 'other',
         requestedBy: {},
         fulfilledBy: null,
+        adminStockApprover: null,
+        pmConfirmer: null,
+        financeApprover: null,
         permitCluster: null,
+        suratJalan: null,
       });
       await expect(service.findOne('so1', 'u9', Role.ADMIN_STOCK)).resolves.toBeDefined();
     });
@@ -379,7 +336,11 @@ describe('StockOutService', () => {
         requestedById: 'other',
         requestedBy: {},
         fulfilledBy: null,
+        adminStockApprover: null,
+        pmConfirmer: null,
+        financeApprover: null,
         permitCluster: null,
+        suratJalan: null,
       });
       await expect(service.findOne('so1', 'u9', Role.SURVEYOR_FTTH)).rejects.toBeInstanceOf(
         ForbiddenException,
@@ -388,13 +349,23 @@ describe('StockOutService', () => {
   });
 
   describe('getInboxCount', () => {
-    it('non–Admin Stock → 0', async () => {
-      await expect(service.getInboxCount(Role.PM_FTTH)).resolves.toBe(0);
+    it('non-tracked role → 0', async () => {
+      await expect(service.getInboxCount('u1', Role.SURVEYOR_FTTH)).resolves.toBe(0);
     });
 
-    it('ADMIN_STOCK → count', async () => {
+    it('ADMIN_STOCK → PENDING count', async () => {
       prisma.stockOut.count.mockResolvedValue(4);
-      await expect(service.getInboxCount(Role.ADMIN_STOCK)).resolves.toBe(4);
+      await expect(service.getInboxCount('u99', Role.ADMIN_STOCK)).resolves.toBe(4);
+    });
+
+    it('FINANCE → PENDING_FINANCE count', async () => {
+      prisma.stockOut.count.mockResolvedValue(2);
+      await expect(service.getInboxCount('u99', Role.FINANCE)).resolves.toBe(2);
+    });
+
+    it('PM_FTTH → own PENDING_PM_CONFIRM + DRAFT count', async () => {
+      prisma.stockOut.count.mockResolvedValue(3);
+      await expect(service.getInboxCount('u1', Role.PM_FTTH)).resolves.toBe(3);
     });
   });
 });
