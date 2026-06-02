@@ -975,7 +975,10 @@ model StockOut {
   permitClusterId String?
   items           Json
   status          StockOutStatus @default(PENDING)
-  recipient       String?        // Up./Penerima — siapa yang menerima barang
+  recipient         String?        // Up./Penerima — siapa yang menerima barang
+  recipientCompany  String?        // Nama perusahaan tujuan pengiriman
+  recipientAddress  String?        // Alamat pengiriman
+  recipientTelp     String?        // Nomor telepon tujuan
 
   // Admin Stock approval step
   doNumber              String?

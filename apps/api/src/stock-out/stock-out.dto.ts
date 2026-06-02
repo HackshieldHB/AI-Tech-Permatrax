@@ -10,6 +10,9 @@ export const CreateStockOutDto = z.object({
   items: z.array(StockOutItemDto).min(1, 'Minimal satu item'),
   permitClusterId: z.string().optional(),
   recipient: z.string().min(1, 'Penerima wajib diisi'),
+  recipientCompany: z.string().optional(),
+  recipientAddress: z.string().optional(),
+  recipientTelp: z.string().optional(),
   notes: z.string().optional(),
 });
 

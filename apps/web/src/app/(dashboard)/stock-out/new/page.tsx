@@ -42,6 +42,9 @@ const FormSchema = z.object({
   items: z.array(ItemSchema).min(1, 'Minimal satu item'),
   permitClusterId: z.string().optional(),
   recipient: z.string().min(1, 'Penerima wajib diisi'),
+  recipientCompany: z.string().optional(),
+  recipientAddress: z.string().optional(),
+  recipientTelp: z.string().optional(),
   notes: z.string().optional(),
 });
 
@@ -63,6 +66,9 @@ export default function NewStockOutPage() {
   const [submitting, setSubmitting] = useState(false);
   const [permitClusterId, setPermitClusterId] = useState('');
   const [recipient, setRecipient] = useState('');
+  const [recipientCompany, setRecipientCompany] = useState('');
+  const [recipientAddress, setRecipientAddress] = useState('');
+  const [recipientTelp, setRecipientTelp] = useState('');
   const [notes, setNotes] = useState('');
   const [rows, setRows] = useState<ItemRowUi[]>(() => [emptyRow()]);
   const searchTimers = useRef<Record<number, ReturnType<typeof setTimeout>>>({});
@@ -139,6 +145,9 @@ export default function NewStockOutPage() {
       })),
       permitClusterId: permitClusterId || undefined,
       recipient: recipient.trim(),
+      recipientCompany: recipientCompany.trim() || undefined,
+      recipientAddress: recipientAddress.trim() || undefined,
+      recipientTelp: recipientTelp.trim() || undefined,
       notes: notes.trim() || undefined,
     });
     if (parsed.success === false) {
@@ -187,7 +196,7 @@ export default function NewStockOutPage() {
           </label>
         </div>
 
-        <div style={{ background: '#fff', borderRadius: 12, border: '1px solid #D0D7DE', padding: 16 }}>
+        <div style={{ background: '#fff', borderRadius: 12, border: '1px solid #D0D7DE', padding: 16, display: 'flex', flexDirection: 'column', gap: 14 }}>
           <label style={{ fontSize: 13, display: 'flex', flexDirection: 'column', gap: 6 }}>
             <span style={{ fontWeight: 600 }}>Up./Penerima <span style={{ color: '#CF222E' }}>*</span></span>
             <span style={{ fontSize: 12, color: '#57606a' }}>Nama orang/unit yang akan menerima barang</span>
@@ -196,6 +205,36 @@ export default function NewStockOutPage() {
               value={recipient}
               onChange={(e) => setRecipient(e.target.value)}
               placeholder="Nama penerima barang…"
+              style={{ padding: 10, borderRadius: 8, border: '1px solid #D0D7DE' }}
+            />
+          </label>
+          <label style={{ fontSize: 13, display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <span style={{ fontWeight: 600 }}>Company Name</span>
+            <span style={{ fontSize: 12, color: '#57606a' }}>Nama perusahaan tujuan pengiriman</span>
+            <input
+              value={recipientCompany}
+              onChange={(e) => setRecipientCompany(e.target.value)}
+              placeholder="Contoh: PT Mitra Konstruksi…"
+              style={{ padding: 10, borderRadius: 8, border: '1px solid #D0D7DE' }}
+            />
+          </label>
+          <label style={{ fontSize: 13, display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <span style={{ fontWeight: 600 }}>Address</span>
+            <span style={{ fontSize: 12, color: '#57606a' }}>Alamat pengiriman yang dituju</span>
+            <input
+              value={recipientAddress}
+              onChange={(e) => setRecipientAddress(e.target.value)}
+              placeholder="Alamat lengkap tujuan…"
+              style={{ padding: 10, borderRadius: 8, border: '1px solid #D0D7DE' }}
+            />
+          </label>
+          <label style={{ fontSize: 13, display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <span style={{ fontWeight: 600 }}>Telp</span>
+            <span style={{ fontSize: 12, color: '#57606a' }}>Nomor telepon yang dituju</span>
+            <input
+              value={recipientTelp}
+              onChange={(e) => setRecipientTelp(e.target.value)}
+              placeholder="Contoh: 0812-xxxx-xxxx…"
               style={{ padding: 10, borderRadius: 8, border: '1px solid #D0D7DE' }}
             />
           </label>
