@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { z } from 'zod';
 import { ArrowLeft, CheckCircle, XCircle, RotateCcw, Download } from 'lucide-react';
-import { apiGet, apiPost } from '../../../../lib/api';
+import { apiGet, apiPost, fixFileUrl } from '../../../../lib/api';
 import { toast } from 'sonner';
 import { useAuthStore } from '../../../../store/authStore';
 import type { StockOut } from '../../../../types/api.types';
@@ -91,9 +91,13 @@ export default function StockOutDetailPage() {
   const statusLabel   = STOCK_OUT_STATUS_LABELS[row.status];
   const step          = STEP_STATUS_MAP[row.status] ?? 0;
 
-  const downloadSJ = () => {
-    if (row.suratJalan?.id) {
-      window.open(`/api/surat-jalan/${row.suratJalan.id}/download-file`, '_blank');
+  const downloadSJ = async () => {
+    if (!row.suratJalan?.id) return;
+    try {
+      const result = await apiGet<{ url: string }>(`/surat-jalan/${row.suratJalan.id}/download-url`);
+      window.open(fixFileUrl(result.url), '_blank', 'noopener,noreferrer');
+    } catch {
+      toast.error('Gagal mendapat link unduhan');
     }
   };
 
@@ -213,7 +217,7 @@ export default function StockOutDetailPage() {
           </div>
           <button
             type="button"
-            onClick={downloadSJ}
+            onClick={() => { void downloadSJ(); }}
             style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 14px', borderRadius: 8, border: 'none', background: '#2DA44E', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 13 }}
           >
             <Download size={15} /> Unduh PDF

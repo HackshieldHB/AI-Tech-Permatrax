@@ -352,6 +352,7 @@ export class SuratJalanService {
       doNumber:       stockOut.doNumber ?? '-',
       recipient:      stockOut.recipient ?? '-',
       project:        stockOut.permitCluster?.clusterCode ?? stockOut.notes ?? '-',
+      recipientCompany: 'PT Integra Lintas Teknologi',
       from:           'PT Integra Lintas Teknologi',
       fromPerson:     stockOut.adminStockApprover?.name ?? '-',
       fromPhone:      '085899287026',
@@ -419,7 +420,7 @@ export class SuratJalanService {
 
       // ── Header ──────────────────────────────────────────────────────────────
       // Company name (left) — no logo file available, so left-aligned only
-      doc.fontSize(15).font('Helvetica-Bold').text('PT. INTEGRA LINTAS TEKNOLOGI', L, 40, { width: 320 });
+      doc.fontSize(15).font('Helvetica-Bold').text('PT Integra Lintas Teknologi', L, 40, { width: 320 });
       doc.moveDown(2.2);
 
       // "DELIVERY ORDER" centered, bold, underlined
@@ -537,7 +538,7 @@ export class SuratJalanService {
       // ── 4-column signature block ──────────────────────────────────────────────
       const sigW   = Math.floor(W / 4);
       const sigX   = [L, L + sigW, L + sigW * 2, L + sigW * 3];
-      const labels = ['Dibuat Oleh,', 'Disetujui,', 'Diterima Oleh,', 'Diketahui Oleh,'];
+      const labels = ['Dibuat Oleh,', 'Disetujui Oleh,', 'Diterima Oleh,', 'Diketahui Oleh,'];
       const names  = [
         params.adminStock?.name ?? '',
         params.pm?.name ?? '',
@@ -572,8 +573,13 @@ export class SuratJalanService {
       doc.fontSize(9).font('Helvetica');
       names.forEach((name, i) => {
         if (i === 2) {
-          // Diterima Oleh — blank manual area
+          // Diterima Oleh — blank area for manual wet signature
           doc.text('(                            )', sigX[i], nameY, { width: sigW - 4, align: 'center', lineBreak: false });
+          doc.fontSize(7).font('Helvetica').fillColor('#888888')
+            .text('Nama  : ________________', sigX[i], nameY + 14, { width: sigW - 4, lineBreak: false });
+          doc.text('Jabatan: ________________', sigX[i], nameY + 22, { width: sigW - 4, lineBreak: false });
+          doc.text('Tgl    : ________________', sigX[i], nameY + 30, { width: sigW - 4, lineBreak: false });
+          doc.fontSize(9).fillColor('black');
         } else {
           doc.text(`(${name})`, sigX[i], nameY, { width: sigW - 4, align: 'center', lineBreak: false });
         }
