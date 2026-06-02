@@ -128,8 +128,10 @@ export const apiFetch = async (
   }
 
   const token = getAccessToken();
+  const isFormData = typeof FormData !== 'undefined' && options.body instanceof FormData;
   const headers = {
-    'Content-Type': 'application/json',
+    // Don't set Content-Type for FormData — browser must set it with the multipart boundary
+    ...(!isFormData && { 'Content-Type': 'application/json' }),
     'ngrok-skip-browser-warning': 'true', // FIX 4: bypass ngrok browser interstitial on API calls
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
     ...options.headers,
