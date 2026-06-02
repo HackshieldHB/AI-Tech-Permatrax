@@ -58,10 +58,13 @@ export class FtttProjectService {
         ftttCompany:    dto.ftttCompany,
         triggerDocUrl,
         triggerDocType: dto.triggerDocType,
-        cleanListId:    dto.cleanListId ?? null,
+        // Use checked relation form (pm: { connect }) instead of scalar pmId,
+        // because mixing scalar pmId with nested createMany causes Prisma to
+        // switch to checked mode and then complain pm is missing. (#fttt-500-fix)
+        pm:             { connect: { id: pmId } },
+        cleanList:      dto.cleanListId ? { connect: { id: dto.cleanListId } } : undefined,
         projectName:    dto.projectName ?? null,
         notes:          dto.notes ?? null,
-        pmId,
         currentPhase:   FtttPhase.INITIATION,
         status:         FtttProjectStatus.ACTIVE,
         phaseProgresses: {
