@@ -14,6 +14,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { AuthUser } from '../auth/types/auth-user.types';
 import { FtttProjectService } from './fttt-project.service';
 import {
   AdvancePhaseDto,
@@ -28,7 +29,7 @@ import {
   UploadSurveyDto,
 } from './fttt-project.dto';
 import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe';
-import { Role } from '@prisma/client';
+import { Role } from '@prisma/client'; // kept for approveDocument role check
 
 const upload = { storage: memoryStorage() };
 
@@ -43,28 +44,28 @@ export class FtttProjectController {
   async create(
     @UploadedFile() file: Express.Multer.File,
     @Body('data') rawData: string,
-    @CurrentUser() user: { id: string; role: Role },
+    @CurrentUser() user: AuthUser,
   ) {
     const dto = CreateFtttProjectDto.parse(JSON.parse(rawData));
-    return this.service.create(dto, file, user.id);
+    return this.service.create(dto, file, user.userId);
   }
 
   // GET /fttt-projects
   @Get()
   async findAll(
     @Query(new ZodValidationPipe(FtttProjectFilterDto)) filters: any,
-    @CurrentUser() user: { id: string; role: Role },
+    @CurrentUser() user: AuthUser,
   ) {
-    return this.service.findAll(filters, user.id, user.role);
+    return this.service.findAll(filters, user.userId, user.role);
   }
 
   // GET /fttt-projects/:id
   @Get(':id')
   async findOne(
     @Param('id') id: string,
-    @CurrentUser() user: { id: string; role: Role },
+    @CurrentUser() user: AuthUser,
   ) {
-    return this.service.findOne(id, user.id, user.role);
+    return this.service.findOne(id, user.userId, user.role);
   }
 
   // GET /fttt-projects/:id/progress  — live progress bar data
@@ -84,9 +85,9 @@ export class FtttProjectController {
   advancePhase(
     @Param('id') id: string,
     @Body(new ZodValidationPipe(AdvancePhaseDto)) dto: any,
-    @CurrentUser() user: { id: string; role: Role },
+    @CurrentUser() user: AuthUser,
   ) {
-    return this.service.advancePhase(id, dto, user.id);
+    return this.service.advancePhase(id, dto, user.userId);
   }
 
   // POST /fttt-projects/:id/survey-uploads
@@ -96,9 +97,9 @@ export class FtttProjectController {
     @Param('id') id: string,
     @UploadedFile() file: Express.Multer.File,
     @Body(new ZodValidationPipe(UploadSurveyDto)) dto: any,
-    @CurrentUser() user: { id: string; role: Role },
+    @CurrentUser() user: AuthUser,
   ) {
-    return this.service.uploadSurveyEvidence(id, file, dto, user.id);
+    return this.service.uploadSurveyEvidence(id, file, dto, user.userId);
   }
 
   // POST /fttt-projects/:id/drm-documents
@@ -108,9 +109,9 @@ export class FtttProjectController {
     @Param('id') id: string,
     @UploadedFile() file: Express.Multer.File,
     @Body(new ZodValidationPipe(UploadDrmDocDto)) dto: any,
-    @CurrentUser() user: { id: string; role: Role },
+    @CurrentUser() user: AuthUser,
   ) {
-    return this.service.uploadDrmDocument(id, file, dto, user.id);
+    return this.service.uploadDrmDocument(id, file, dto, user.userId);
   }
 
   // GET /fttt-projects/:id/drm-documents
@@ -126,9 +127,9 @@ export class FtttProjectController {
     @Param('id') id: string,
     @UploadedFile() file: Express.Multer.File | undefined,
     @Body(new ZodValidationPipe(SubmitSanggahDto)) dto: any,
-    @CurrentUser() user: { id: string; role: Role },
+    @CurrentUser() user: AuthUser,
   ) {
-    return this.service.submitSanggah(id, dto, file, user.id);
+    return this.service.submitSanggah(id, dto, file, user.userId);
   }
 
   // PUT /fttt-projects/sanggah/:sanggahId/resolve
@@ -136,9 +137,9 @@ export class FtttProjectController {
   resolveSanggah(
     @Param('sanggahId') sanggahId: string,
     @Body(new ZodValidationPipe(ResolveSanggahDto)) dto: any,
-    @CurrentUser() user: { id: string; role: Role },
+    @CurrentUser() user: AuthUser,
   ) {
-    return this.service.resolveSanggah(sanggahId, dto, user.id);
+    return this.service.resolveSanggah(sanggahId, dto, user.userId);
   }
 
   // POST /fttt-projects/:id/jaminan
@@ -148,9 +149,9 @@ export class FtttProjectController {
     @Param('id') id: string,
     @UploadedFile() file: Express.Multer.File | undefined,
     @Body(new ZodValidationPipe(AddJaminanDto)) dto: any,
-    @CurrentUser() user: { id: string; role: Role },
+    @CurrentUser() user: AuthUser,
   ) {
-    return this.service.addJaminan(id, dto, file, user.id);
+    return this.service.addJaminan(id, dto, file, user.userId);
   }
 
   // POST /fttt-projects/:id/documents
@@ -160,9 +161,9 @@ export class FtttProjectController {
     @Param('id') id: string,
     @UploadedFile() file: Express.Multer.File,
     @Body(new ZodValidationPipe(UploadDocumentDto)) dto: any,
-    @CurrentUser() user: { id: string; role: Role },
+    @CurrentUser() user: AuthUser,
   ) {
-    return this.service.uploadDocument(id, file, dto, user.id);
+    return this.service.uploadDocument(id, file, dto, user.userId);
   }
 
   // PUT /fttt-projects/documents/:docId/approve
@@ -170,8 +171,8 @@ export class FtttProjectController {
   approveDocument(
     @Param('docId') docId: string,
     @Body(new ZodValidationPipe(ApproveDocumentDto)) dto: any,
-    @CurrentUser() user: { id: string; role: Role },
+    @CurrentUser() user: AuthUser,
   ) {
-    return this.service.approveDocument(docId, dto, user.id, user.role);
+    return this.service.approveDocument(docId, dto, user.userId, user.role);
   }
 }
