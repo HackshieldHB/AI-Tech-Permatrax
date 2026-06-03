@@ -7,6 +7,7 @@ import {
 import {
   FtttCompany,
   FtttDocumentType,
+  FtttImplLogType,
   FtttPhase,
   FtttPhaseStatus,
   FtttProjectStatus,
@@ -18,6 +19,7 @@ import { NotificationsGateway } from '../notifications/notifications.gateway';
 import { NotificationsService } from '../notifications/notifications.service';
 import { paginate } from '../common/dto/pagination.dto';
 import {
+  AddImplLogDtoType,
   AddJaminanDtoType,
   AdvancePhaseDtoType,
   ApproveDocumentDtoType,
@@ -411,14 +413,37 @@ export class FtttProjectService {
       throw new ForbiddenException('Hanya Finance yang dapat mengunggah dokumen Jaminan');
     }
 
-    const project = await this.prisma.ftttProject.findUniqueOrThrow({ where: { id } });
+    const project = await this.prisma.ftttProject.findUniqueOrThrow({
+      where: { id },
+      include: { jaminans: true },
+    });
     if (project.ftttCompany !== FtttCompany.TELKOM_INFRA) {
       throw new BadRequestException('Jaminan hanya tersedia untuk project Telkom Infra');
     }
 
+    // Issue #3: Check if this jaminanType already exists — if so, replace (upsert)
+    const existing = project.jaminans.find((j) => j.jaminanType === dto.jaminanType);
+
     let fileUrl: string | undefined;
     if (file) {
       fileUrl = await this.storage.uploadMulterFile(file, 'fttt-jaminan', id);
+    }
+
+    if (existing) {
+      // Replace existing document of same type
+      return this.prisma.ftttJaminan.update({
+        where: { id: existing.id },
+        data: {
+          amount:      dto.amount ?? null,
+          issuer:      dto.issuer ?? null,
+          issueDate:   dto.issueDate ?? null,
+          expiryDate:  dto.expiryDate ?? null,
+          fileUrl:     fileUrl ?? existing.fileUrl,  // keep old file if no new one provided
+          notes:       dto.notes ?? null,
+          uploadedById: userId,
+        },
+        include: { uploadedBy: { select: { id: true, name: true } } },
+      });
     }
 
     return this.prisma.ftttJaminan.create({
@@ -443,7 +468,14 @@ export class FtttProjectService {
     file: Express.Multer.File,
     dto: UploadDocumentDtoType,
     userId: string,
+    userRole: Role,
   ) {
+    // Issue #5 & #7: Only Surveyor FTTT (and Admin) can upload docs in Documentation phase
+    const docUploaderRoles: Role[] = [Role.SURVEYOR_FTTT, Role.ADMIN, Role.GENERAL_MANAGER];
+    if (!docUploaderRoles.includes(userRole)) {
+      throw new ForbiddenException('Hanya Surveyor FTTT yang dapat mengunggah dokumen pada fase Documentation and Acceptance');
+    }
+
     const fileUrl = await this.storage.uploadMulterFile(file, 'fttt-docs', id);
     return this.prisma.ftttDocument.create({
       data: {
@@ -492,6 +524,83 @@ export class FtttProjectService {
     throw new ForbiddenException('Anda tidak berwenang menyetujui dokumen ini');
   }
 
+  // ─── Issue #6: Surveyor replaces a REJECTED document ─────────────────────
+  async replaceDocument(
+    docId: string,
+    file: Express.Multer.File,
+    userId: string,
+    userRole: Role,
+    notes?: string,
+  ) {
+    // Only Surveyor and Admin can replace
+    const allowedRoles: Role[] = [Role.SURVEYOR_FTTT, Role.ADMIN, Role.GENERAL_MANAGER];
+    if (!allowedRoles.includes(userRole)) {
+      throw new ForbiddenException('Hanya Surveyor FTTT yang dapat mengganti dokumen');
+    }
+
+    const doc = await this.prisma.ftttDocument.findUniqueOrThrow({ where: { id: docId } });
+
+    // Can only replace REJECTED documents
+    if (doc.approvalStatus !== 'REJECTED') {
+      throw new BadRequestException('Hanya dokumen yang ditolak yang dapat diganti');
+    }
+
+    const fileUrl = await this.storage.uploadMulterFile(file, 'fttt-docs', doc.projectId);
+
+    return this.prisma.ftttDocument.update({
+      where: { id: docId },
+      data: {
+        fileUrl,
+        notes:          notes ?? doc.notes,
+        approvalStatus: 'PENDING_PM',   // reset to pending review
+        uploadedById:   userId,
+        pmApprovedById: null,
+        pmApprovedAt:   null,
+        adminApprovedById: null,
+        adminApprovedAt:   null,
+        updatedAt:      new Date(),
+      },
+      include: { uploadedBy: { select: { id: true, name: true } } },
+    });
+  }
+
+  // ─── Issue #4: Implementation phase — add log entry (photo/doc/note) ──────
+  async addImplementationLog(
+    id: string,
+    dto: AddImplLogDtoType,
+    file: Express.Multer.File | undefined,
+    userId: string,
+    userRole: Role,
+  ) {
+    // Surveyor FTTT, PM FTTT (as observer), Admin can add logs
+    const allowedRoles: Role[] = [Role.SURVEYOR_FTTT, Role.PM_FTTT, Role.ADMIN, Role.GENERAL_MANAGER];
+    if (!allowedRoles.includes(userRole)) {
+      throw new ForbiddenException('Tidak memiliki akses untuk menambahkan log implementasi');
+    }
+
+    // File required for PHOTO and MONITORING_DOC
+    if ((dto.logType === FtttImplLogType.PHOTO || dto.logType === FtttImplLogType.MONITORING_DOC) && !file) {
+      throw new BadRequestException('File wajib untuk tipe log ini');
+    }
+
+    let fileUrl: string | undefined;
+    if (file) {
+      fileUrl = await this.storage.uploadMulterFile(file, 'fttt-impl', id);
+    }
+
+    return this.prisma.ftttImplementationLog.create({
+      data: {
+        projectId:   id,
+        uploadedById: userId,
+        logType:     dto.logType,
+        fileUrl:     fileUrl ?? null,
+        caption:     dto.caption ?? null,
+        notes:       dto.notes ?? null,
+      },
+      include: { uploadedBy: { select: { id: true, name: true } } },
+    });
+  }
+
   // ─── Live progress summary (for WebSocket / polling) ──────────────────────
   async getProgress(id: string) {
     const project = await this.prisma.ftttProject.findUnique({
@@ -536,8 +645,9 @@ export class FtttProjectService {
       surveyUploads:  { include: { uploadedBy: { select: { id: true, name: true } } }, orderBy: { createdAt: 'desc' as const } },
       drmDocuments:   { include: { uploadedBy: { select: { id: true, name: true } } }, orderBy: { version: 'asc' as const } },
       sanggahs:       { include: { submittedBy: { select: { id: true, name: true } } }, orderBy: { attemptNumber: 'asc' as const } },
-      jaminans:       { include: { uploadedBy: { select: { id: true, name: true } } } },
-      documents:      { include: { uploadedBy: { select: { id: true, name: true } } }, orderBy: { createdAt: 'desc' as const } },
+      jaminans:           { include: { uploadedBy: { select: { id: true, name: true } } }, orderBy: { createdAt: 'asc' as const } },
+      documents:          { include: { uploadedBy: { select: { id: true, name: true } } }, orderBy: { createdAt: 'desc' as const } },
+      implementationLogs: { include: { uploadedBy: { select: { id: true, name: true } } }, orderBy: { createdAt: 'asc' as const } },
     } as const;
   }
 }

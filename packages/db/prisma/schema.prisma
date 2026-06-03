@@ -345,8 +345,9 @@ model User {
   ftttSurveyUploads     FtttSurveyUpload[] @relation("FtttSurveyUploader")
   ftttDrmUploads        FtttDrmDocument[]  @relation("FtttDrmUploader")
   ftttSanggahs          FtttSanggah[]      @relation("FtttSanggahSubmitter")
-  ftttJaminans          FtttJaminan[]      @relation("FtttJaminanUploader")
-  ftttDocuments         FtttDocument[]     @relation("FtttDocUploader")
+  ftttJaminans          FtttJaminan[]             @relation("FtttJaminanUploader")
+  ftttDocuments         FtttDocument[]            @relation("FtttDocUploader")
+  ftttImplementationLogs FtttImplementationLog[]  @relation("FtttImplLogUploader")
 }
 
 // Phase 4 — GM-controlled feature visibility per role
@@ -2979,11 +2980,12 @@ model FtttProject {
   pm              User                @relation("FtttProjectPM", fields: [pmId], references: [id])
 
   phaseProgresses FtttPhaseProgress[]
-  surveyUploads   FtttSurveyUpload[]
-  drmDocuments    FtttDrmDocument[]
-  sanggahs        FtttSanggah[]
-  jaminans        FtttJaminan[]
-  documents       FtttDocument[]
+  surveyUploads      FtttSurveyUpload[]
+  drmDocuments       FtttDrmDocument[]
+  sanggahs           FtttSanggah[]
+  jaminans           FtttJaminan[]
+  documents          FtttDocument[]
+  implementationLogs FtttImplementationLog[]
 
   @@index([ftttCompany])
   @@index([currentPhase])
@@ -3089,6 +3091,28 @@ model FtttDocument {
   adminApprovedAt   DateTime?
   createdAt       DateTime           @default(now())
   updatedAt       DateTime           @updatedAt
+
+  @@index([projectId])
+}
+
+enum FtttImplLogType {
+  PHOTO
+  MONITORING_DOC
+  NOTE
+}
+
+model FtttImplementationLog {
+  id           String           @id @default(cuid())
+  projectId    String
+  project      FtttProject      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  uploadedById String
+  uploadedBy   User             @relation("FtttImplLogUploader", fields: [uploadedById], references: [id])
+  logType      FtttImplLogType
+  fileUrl      String?
+  caption      String?
+  notes        String?
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
 
   @@index([projectId])
 }

@@ -318,19 +318,32 @@ function SanggahSection({ project, onRefresh, isAdmin }: { project: FtttProject;
 }
 
 // ─── Jaminan section (Telkom Infra only, upload restricted to Finance) ────────
+// Issue #3: prevent duplicates — show Replace for existing, only show types not yet uploaded
 function JaminanSection({ project, onRefresh }: { project: FtttProject; onRefresh: () => void }) {
   const { user } = useAuthStore();
   const isFinance = user?.role === 'FINANCE' || user?.role === 'ADMIN' || user?.role === 'GENERAL_MANAGER';
-  const [jaminanType, setJaminanType] = useState<'JAMINAN_UANG_MUKA' | 'JAMINAN_PELAKSANAAN'>('JAMINAN_UANG_MUKA');
+
+  const ALL_TYPES = ['JAMINAN_UANG_MUKA', 'JAMINAN_PELAKSANAAN'] as const;
+  type JType = typeof ALL_TYPES[number];
+  const JAMINAN_LABELS: Record<JType, string> = { JAMINAN_UANG_MUKA: 'Jaminan Uang Muka', JAMINAN_PELAKSANAAN: 'Jaminan Pelaksanaan' };
+
+  // Already uploaded types
+  const uploadedTypes = new Set(project.jaminans.map((j) => j.jaminanType as JType));
+  const missingTypes = ALL_TYPES.filter((t) => !uploadedTypes.has(t));
+  const allUploaded = missingTypes.length === 0;
+
+  const [activeType, setActiveType] = useState<JType>(missingTypes[0] ?? ALL_TYPES[0]);
+  const [replaceFor, setReplaceFor] = useState<JType | null>(null);  // which type we're replacing
   const [issuer, setIssuer] = useState('');
   const [notes, setNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
 
-  const handleAdd = async () => {
+  const handleUpload = async (typeOverride?: JType) => {
+    const type = typeOverride ?? activeType;
     const fd = new FormData();
-    fd.append('jaminanType', jaminanType);
+    fd.append('jaminanType', type);
     if (issuer) fd.append('issuer', issuer);
     if (notes) fd.append('notes', notes);
     if (selectedFile) fd.append('file', selectedFile);
@@ -338,8 +351,9 @@ function JaminanSection({ project, onRefresh }: { project: FtttProject; onRefres
     try {
       const res = await apiFetch(`/fttt-projects/${project.id}/jaminan`, { method: 'POST', body: fd }, user?.id);
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
-      toast.success('Jaminan berhasil ditambahkan');
-      setIssuer(''); setNotes(''); setSelectedFile(null);
+      const isReplace = uploadedTypes.has(type);
+      toast.success(isReplace ? 'Dokumen berhasil diganti' : 'Jaminan berhasil diunggah');
+      setIssuer(''); setNotes(''); setSelectedFile(null); setReplaceFor(null);
       onRefresh();
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : 'Gagal');
@@ -348,66 +362,105 @@ function JaminanSection({ project, onRefresh }: { project: FtttProject; onRefres
     }
   };
 
-  const JAMINAN_LABELS: Record<string, string> = { JAMINAN_UANG_MUKA: 'Jaminan Uang Muka', JAMINAN_PELAKSANAAN: 'Jaminan Pelaksanaan' };
-
   return (
     <div>
-      <p style={{ fontWeight: 600, fontSize: 13, marginBottom: 8 }}>Dokumen Jaminan ({project.jaminans.length})</p>
+      <p style={{ fontWeight: 600, fontSize: 13, marginBottom: 8 }}>
+        Dokumen Jaminan ({project.jaminans.length}/2)
+        {allUploaded && <span style={{ marginLeft: 8, fontSize: 11, color: '#1a7f37', fontWeight: 600 }}>✓ Lengkap</span>}
+      </p>
+
+      {/* Show uploaded jaminans */}
       {project.jaminans.map((j) => (
-        <div key={j.id} style={{ background: '#FFF8C5', borderRadius: 8, padding: 10, marginBottom: 6, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div key={j.id} style={{ background: '#F0FFF8', border: '1px solid #2DA44E', borderRadius: 8, padding: 10, marginBottom: 6, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div>
-            <p style={{ margin: 0, fontWeight: 600, fontSize: 12 }}>{JAMINAN_LABELS[j.jaminanType] ?? j.jaminanType}</p>
+            <p style={{ margin: 0, fontWeight: 600, fontSize: 12 }}>✓ {JAMINAN_LABELS[j.jaminanType as JType] ?? j.jaminanType}</p>
             {j.issuer && <p style={{ margin: '2px 0 0', fontSize: 11, color: '#57606a' }}>{j.issuer}</p>}
+            <p style={{ margin: '2px 0 0', fontSize: 10, color: '#57606a' }}>oleh {j.uploadedBy.name}</p>
           </div>
-          {j.fileUrl && (
-            <a href={fixFileUrl(j.fileUrl)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: '#0969DA' }}>Dokumen →</a>
-          )}
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            {j.fileUrl && <a href={fixFileUrl(j.fileUrl)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: '#0969DA' }}>Lihat</a>}
+            {/* Issue #3: Finance can replace existing doc */}
+            {isFinance && (
+              <button type="button" onClick={() => { setReplaceFor(j.jaminanType as JType); setActiveType(j.jaminanType as JType); setSelectedFile(null); setIssuer(''); setNotes(''); }}
+                style={{ fontSize: 10, padding: '3px 8px', borderRadius: 4, border: '1px solid #D0D7DE', background: '#fff', cursor: 'pointer' }}>
+                Ganti
+              </button>
+            )}
+          </div>
         </div>
       ))}
 
-      {/* Upload form — Finance only */}
-      {isFinance ? (
-        <div style={{ border: '1px solid #D0D7DE', borderRadius: 8, padding: 12, marginTop: 8 }}>
-          <p style={{ fontSize: 12, fontWeight: 600, margin: '0 0 8px' }}>Upload Jaminan</p>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
-            <select value={jaminanType} onChange={(e) => setJaminanType(e.target.value as 'JAMINAN_UANG_MUKA' | 'JAMINAN_PELAKSANAAN')} style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12 }}>
-              <option value="JAMINAN_UANG_MUKA">Jaminan Uang Muka</option>
-              <option value="JAMINAN_PELAKSANAAN">Jaminan Pelaksanaan</option>
-            </select>
-            <input value={issuer} onChange={(e) => setIssuer(e.target.value)} placeholder="Penerbit (bank/lembaga)" style={{ flex: 1, padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12, minWidth: 120 }} />
-          </div>
-          <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Catatan (opsional)" style={{ width: '100%', padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12, marginBottom: 8, boxSizing: 'border-box' }} />
-          <div style={{ display: 'flex', gap: 8 }}>
-            <input ref={fileRef} type="file" style={{ display: 'none' }} onChange={(e) => setSelectedFile(e.target.files?.[0] ?? null)} />
-            <button type="button" onClick={() => fileRef.current?.click()} style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 11, cursor: 'pointer', background: '#F6F8FA' }}>
-              {selectedFile ? selectedFile.name.slice(0, 20) + '…' : '+ Dokumen'}
-            </button>
-            <button type="button" onClick={() => { void handleAdd(); }} disabled={submitting} style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: '#0969DA', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 12 }}>
-              {submitting ? 'Menyimpan…' : 'Upload'}
-            </button>
-          </div>
+      {/* Show missing types as pending */}
+      {missingTypes.map((t) => (
+        <div key={t} style={{ background: '#FFF8F0', border: '1px solid #FFA500', borderRadius: 8, padding: 10, marginBottom: 6 }}>
+          <p style={{ margin: 0, fontSize: 12, color: '#7d5a00' }}>⏳ {JAMINAN_LABELS[t]} — belum diunggah</p>
         </div>
-      ) : (
-        /* Non-Finance users see status info only — no upload form */
-        project.jaminans.length === 0 && (
-          <div style={{ background: '#FFF8F0', border: '1px solid #FFA500', borderRadius: 8, padding: 10, marginTop: 8, fontSize: 12, color: '#7d5a00' }}>
-            ⏳ Menunggu Finance mengunggah dokumen Jaminan Uang Muka dan Jaminan Pelaksanaan.
-          </div>
-        )
+      ))}
+
+      {/* Upload / Replace form — Finance only */}
+      {isFinance && (
+        <>
+          {/* Upload form: show when there are missing types OR user clicked Replace */}
+          {(missingTypes.length > 0 || replaceFor !== null) && (
+            <div style={{ border: `1px solid ${replaceFor ? '#FFA500' : '#D0D7DE'}`, borderRadius: 8, padding: 12, marginTop: 8, background: replaceFor ? '#FFFBF0' : '#fff' }}>
+              <p style={{ fontSize: 12, fontWeight: 600, margin: '0 0 8px' }}>
+                {replaceFor ? `Ganti Dokumen: ${JAMINAN_LABELS[replaceFor]}` : 'Upload Jaminan'}
+              </p>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+                {!replaceFor && (
+                  <select value={activeType} onChange={(e) => setActiveType(e.target.value as JType)}
+                    style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12 }}>
+                    {missingTypes.map((t) => <option key={t} value={t}>{JAMINAN_LABELS[t]}</option>)}
+                  </select>
+                )}
+                <input value={issuer} onChange={(e) => setIssuer(e.target.value)} placeholder="Penerbit (bank/lembaga)"
+                  style={{ flex: 1, padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12, minWidth: 120 }} />
+              </div>
+              <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Catatan (opsional)"
+                style={{ width: '100%', padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12, marginBottom: 8, boxSizing: 'border-box' }} />
+              <div style={{ display: 'flex', gap: 8 }}>
+                <input ref={fileRef} type="file" style={{ display: 'none' }} onChange={(e) => setSelectedFile(e.target.files?.[0] ?? null)} />
+                <button type="button" onClick={() => fileRef.current?.click()}
+                  style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 11, cursor: 'pointer', background: '#F6F8FA' }}>
+                  {selectedFile ? selectedFile.name.slice(0, 18) + '…' : '+ Pilih File'}
+                </button>
+                <button type="button" onClick={() => { void handleUpload(replaceFor ?? undefined); }} disabled={submitting}
+                  style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: replaceFor ? '#FFA500' : '#0969DA', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 12 }}>
+                  {submitting ? 'Menyimpan…' : replaceFor ? 'Ganti Dokumen' : 'Upload'}
+                </button>
+                {replaceFor && (
+                  <button type="button" onClick={() => { setReplaceFor(null); setSelectedFile(null); }}
+                    style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', background: '#fff', fontSize: 12, cursor: 'pointer' }}>Batal</button>
+                )}
+              </div>
+            </div>
+          )}
+          {allUploaded && !replaceFor && (
+            <p style={{ fontSize: 11, color: '#57606a', marginTop: 8 }}>Kedua dokumen sudah diunggah. Klik "Ganti" untuk mengganti dokumen yang salah.</p>
+          )}
+        </>
       )}
     </div>
   );
 }
 
-// ─── Documentation section ────────────────────────────────────────────────────
+// ─── Documentation section (Issues #5, #6, #7) ───────────────────────────────
+// #5 & #7: Only Surveyor can upload; PM only reviews
+// #6: Surveyor can replace REJECTED docs
 function DocumentationSection({ project, onRefresh, userRole }: { project: FtttProject; onRefresh: () => void; userRole: string }) {
   const { user } = useAuthStore();
+  const isSurveyor  = userRole === 'SURVEYOR_FTTT' || userRole === 'ADMIN' || userRole === 'GENERAL_MANAGER';
+  const canPmApprove    = userRole === 'PM_FTTT';
+  const canAdminApprove = userRole === 'ADMIN';
+
   const [docType, setDocType] = useState<'ATP' | 'BAUT' | 'SUPPORTING' | 'EVIDENCE'>('ATP');
   const [notes, setNotes] = useState('');
   const [uploading, setUploading] = useState(false);
-  const fileRef = useRef<HTMLInputElement>(null);
+  const fileRef    = useRef<HTMLInputElement>(null);
+  const replaceRef = useRef<HTMLInputElement>(null);
+  const [replacingId, setReplacingId] = useState<string | null>(null);
 
-  const DOC_LABELS = { ATP: 'ATP', BAUT: 'BAUT', SUPPORTING: 'Supporting Doc', EVIDENCE: 'Project Evidence' };
+  const DOC_LABELS: Record<string, string> = { ATP: 'ATP', BAUT: 'BAUT', SUPPORTING: 'Supporting Doc', EVIDENCE: 'Project Evidence' };
   const STATUS_COLORS: Record<string, string> = { PENDING_PM: '#9a6700', PENDING_ADMIN: '#0969DA', APPROVED: '#1a7f37', REJECTED: '#cf222e' };
   const STATUS_LABELS: Record<string, string> = { PENDING_PM: 'Menunggu PM', PENDING_ADMIN: 'Menunggu Admin', APPROVED: 'Disetujui', REJECTED: 'Ditolak' };
 
@@ -420,74 +473,214 @@ function DocumentationSection({ project, onRefresh, userRole }: { project: FtttP
     try {
       const res = await apiFetch(`/fttt-projects/${project.id}/documents`, { method: 'POST', body: fd }, user?.id);
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
-      toast.success('Dokumen berhasil diunggah');
-      onRefresh(); setNotes('');
-    } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : 'Gagal');
-    } finally {
-      setUploading(false);
-    }
+      toast.success('Dokumen berhasil diunggah'); onRefresh(); setNotes('');
+    } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
+    finally { setUploading(false); }
+  };
+
+  // Issue #6: replace a REJECTED doc
+  const handleReplace = async (docId: string, file: File) => {
+    const fd = new FormData();
+    fd.append('file', file);
+    setUploading(true);
+    try {
+      const res = await apiFetch(`/fttt-projects/documents/${docId}/replace`, { method: 'PUT', body: fd }, user?.id);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
+      toast.success('Dokumen berhasil diganti — menunggu review PM'); onRefresh(); setReplacingId(null);
+    } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
+    finally { setUploading(false); }
   };
 
   const handleApprove = async (docId: string, approved: boolean) => {
     const res = await apiFetch(`/fttt-projects/documents/${docId}/approve`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ approved }),
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ approved }),
     }, user?.id);
     if (res.ok) { toast.success(approved ? 'Dokumen disetujui' : 'Dokumen ditolak'); onRefresh(); }
-    else toast.error('Gagal memperbarui');
+    else toast.error('Gagal memperbarui status');
   };
-
-  const canPmApprove = userRole === 'PM_FTTT';
-  const canAdminApprove = userRole === 'ADMIN';
 
   return (
     <div>
       <p style={{ fontWeight: 600, fontSize: 13, marginBottom: 8 }}>Dokumen Acceptance ({project.documents.length})</p>
       {project.documents.map((d) => (
-        <div key={d.id} style={{ background: '#F6F8FA', borderRadius: 8, padding: 10, marginBottom: 6, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-          <div>
-            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-              <span style={{ fontSize: 12, fontWeight: 600 }}>{DOC_LABELS[d.docType] ?? d.docType}</span>
-              <span style={{ fontSize: 10, fontWeight: 700, color: STATUS_COLORS[d.approvalStatus] }}>{STATUS_LABELS[d.approvalStatus]}</span>
+        <div key={d.id} style={{ background: '#F6F8FA', borderRadius: 8, padding: 10, marginBottom: 6 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+            <div>
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                <span style={{ fontSize: 12, fontWeight: 600 }}>{DOC_LABELS[d.docType] ?? d.docType}</span>
+                <span style={{ fontSize: 10, fontWeight: 700, color: STATUS_COLORS[d.approvalStatus] }}>{STATUS_LABELS[d.approvalStatus]}</span>
+              </div>
+              {d.notes && <p style={{ fontSize: 11, color: '#57606a', margin: '2px 0 0' }}>{d.notes}</p>}
+              <p style={{ fontSize: 10, color: '#8c959f', margin: '2px 0 0' }}>oleh {d.uploadedBy.name}</p>
             </div>
-            {d.notes && <p style={{ fontSize: 11, color: '#57606a', margin: '2px 0 0' }}>{d.notes}</p>}
-            <p style={{ fontSize: 10, color: '#8c959f', margin: '2px 0 0' }}>oleh {d.uploadedBy.name}</p>
-          </div>
-          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-            <a href={fixFileUrl(d.fileUrl)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: '#0969DA' }}>Lihat</a>
-            {canPmApprove && d.approvalStatus === 'PENDING_PM' && (
-              <>
-                <button onClick={() => void handleApprove(d.id, true)} style={{ padding: '3px 8px', borderRadius: 4, border: 'none', background: '#DAFBE1', color: '#1a7f37', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>✓</button>
-                <button onClick={() => void handleApprove(d.id, false)} style={{ padding: '3px 8px', borderRadius: 4, border: 'none', background: '#FFEBE9', color: '#cf222e', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>✗</button>
-              </>
-            )}
-            {canAdminApprove && d.approvalStatus === 'PENDING_ADMIN' && (
-              <>
-                <button onClick={() => void handleApprove(d.id, true)} style={{ padding: '3px 8px', borderRadius: 4, border: 'none', background: '#DAFBE1', color: '#1a7f37', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>✓ Setujui</button>
-                <button onClick={() => void handleApprove(d.id, false)} style={{ padding: '3px 8px', borderRadius: 4, border: 'none', background: '#FFEBE9', color: '#cf222e', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>✗ Tolak</button>
-              </>
-            )}
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+              <a href={fixFileUrl(d.fileUrl)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: '#0969DA' }}>Lihat</a>
+
+              {/* Issue #6: Surveyor can replace REJECTED docs */}
+              {isSurveyor && d.approvalStatus === 'REJECTED' && (
+                <>
+                  <button type="button" onClick={() => { setReplacingId(d.id); setTimeout(() => replaceRef.current?.click(), 50); }}
+                    style={{ padding: '3px 8px', borderRadius: 4, border: '1px solid #FFA500', background: '#FFF8F0', color: '#7d5a00', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>
+                    🔄 Ganti
+                  </button>
+                  {replacingId === d.id && (
+                    <input ref={replaceRef} type="file" accept=".pdf,.xlsx,.xls,.jpg,.jpeg,.png" style={{ display: 'none' }}
+                      onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleReplace(d.id, f); }} />
+                  )}
+                </>
+              )}
+
+              {/* PM approves/rejects */}
+              {canPmApprove && d.approvalStatus === 'PENDING_PM' && (
+                <>
+                  <button type="button" onClick={() => void handleApprove(d.id, true)}
+                    style={{ padding: '3px 8px', borderRadius: 4, border: 'none', background: '#DAFBE1', color: '#1a7f37', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>✓</button>
+                  <button type="button" onClick={() => void handleApprove(d.id, false)}
+                    style={{ padding: '3px 8px', borderRadius: 4, border: 'none', background: '#FFEBE9', color: '#cf222e', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>✗</button>
+                </>
+              )}
+
+              {/* Admin approves/rejects */}
+              {canAdminApprove && d.approvalStatus === 'PENDING_ADMIN' && (
+                <>
+                  <button type="button" onClick={() => void handleApprove(d.id, true)}
+                    style={{ padding: '3px 8px', borderRadius: 4, border: 'none', background: '#DAFBE1', color: '#1a7f37', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>✓ Setujui</button>
+                  <button type="button" onClick={() => void handleApprove(d.id, false)}
+                    style={{ padding: '3px 8px', borderRadius: 4, border: 'none', background: '#FFEBE9', color: '#cf222e', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>✗ Tolak</button>
+                </>
+              )}
+            </div>
           </div>
         </div>
       ))}
-      <div style={{ border: '1px solid #D0D7DE', borderRadius: 8, padding: 12, marginTop: 8 }}>
-        <p style={{ fontSize: 12, fontWeight: 600, margin: '0 0 8px' }}>Upload Dokumen Baru</p>
-        <div style={{ display: 'flex', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
-          <select value={docType} onChange={(e) => setDocType(e.target.value as any)} style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12 }}>
-            <option value="ATP">ATP</option>
-            <option value="BAUT">BAUT</option>
-            <option value="SUPPORTING">Supporting Doc</option>
-            <option value="EVIDENCE">Project Evidence</option>
-          </select>
-          <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Catatan (opsional)" style={{ flex: 1, padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12, minWidth: 100 }} />
+
+      {/* Issue #5 & #7: Only Surveyor FTTT can upload new docs */}
+      {isSurveyor ? (
+        <div style={{ border: '1px solid #D0D7DE', borderRadius: 8, padding: 12, marginTop: 8 }}>
+          <p style={{ fontSize: 12, fontWeight: 600, margin: '0 0 8px' }}>Upload Dokumen Baru</p>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
+            <select value={docType} onChange={(e) => setDocType(e.target.value as 'ATP' | 'BAUT' | 'SUPPORTING' | 'EVIDENCE')}
+              style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12 }}>
+              <option value="ATP">ATP</option>
+              <option value="BAUT">BAUT</option>
+              <option value="SUPPORTING">Supporting Doc</option>
+              <option value="EVIDENCE">Project Evidence</option>
+            </select>
+            <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Catatan (opsional)"
+              style={{ flex: 1, padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12, minWidth: 100 }} />
+          </div>
+          <input ref={fileRef} type="file" accept=".pdf,.xlsx,.xls,.jpg,.jpeg,.png" style={{ display: 'none' }}
+            onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleUpload(f); }} />
+          <button type="button" onClick={() => fileRef.current?.click()} disabled={uploading}
+            style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: '#0969DA', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 12 }}>
+            {uploading ? 'Mengunggah…' : '+ Upload'}
+          </button>
         </div>
-        <input ref={fileRef} type="file" accept=".pdf,.xlsx,.xls,.jpg,.jpeg,.png" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleUpload(f); }} />
-        <button onClick={() => fileRef.current?.click()} disabled={uploading} style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: '#0969DA', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 12 }}>
-          {uploading ? 'Mengunggah…' : '+ Upload'}
-        </button>
-      </div>
+      ) : canPmApprove ? (
+        <div style={{ background: '#F0F8FF', border: '1px solid #0969DA', borderRadius: 8, padding: 10, marginTop: 8, fontSize: 12, color: '#0969DA' }}>
+          ℹ️ Sebagai PM, Anda hanya dapat mereview dokumen yang diunggah oleh Surveyor FTTT. Upload dokumen hanya dapat dilakukan oleh Surveyor FTTT.
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+// ─── Implementation phase section (Issue #4) ──────────────────────────────────
+// Surveyor uploads photos, monitoring docs, and notes during Implementation phase
+function ImplementationSection({ project, onRefresh, userRole }: { project: FtttProject; onRefresh: () => void; userRole: string }) {
+  const { user } = useAuthStore();
+  const canUpload = userRole === 'SURVEYOR_FTTT' || userRole === 'ADMIN' || userRole === 'GENERAL_MANAGER';
+  const canNote   = canUpload || userRole === 'PM_FTTT'; // PM can add notes too
+
+  const [logType, setLogType] = useState<'PHOTO' | 'MONITORING_DOC' | 'NOTE'>('PHOTO');
+  const [caption, setCaption] = useState('');
+  const [notes, setNotes]   = useState('');
+  const [uploading, setUploading] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const LOG_LABELS = { PHOTO: '📷 Foto Progress', MONITORING_DOC: '📊 Dokumen Monitoring', NOTE: '📝 Catatan Progress' };
+
+  const handleAdd = async (file?: File) => {
+    const fd = new FormData();
+    fd.append('logType', logType);
+    if (caption) fd.append('caption', caption);
+    if (notes)   fd.append('notes', notes);
+    if (file)    fd.append('file', file);
+    setUploading(true);
+    try {
+      const res = await apiFetch(`/fttt-projects/${project.id}/implementation-logs`, { method: 'POST', body: fd }, user?.id);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
+      toast.success('Log implementasi berhasil disimpan');
+      setCaption(''); setNotes(''); onRefresh();
+    } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
+    finally { setUploading(false); }
+  };
+
+  const logs = project.implementationLogs ?? [];
+
+  return (
+    <div>
+      <p style={{ fontWeight: 600, fontSize: 13, marginBottom: 8 }}>Log Implementasi ({logs.length})</p>
+
+      {/* List existing logs */}
+      {logs.length === 0 && (
+        <p style={{ fontSize: 12, color: '#57606a', marginBottom: 8 }}>Belum ada log implementasi. Tambahkan foto progress, dokumen monitoring, atau catatan.</p>
+      )}
+      {logs.map((log) => (
+        <div key={log.id} style={{ background: '#F6F8FA', borderRadius: 8, padding: 10, marginBottom: 6, display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+          <span style={{ fontSize: 18 }}>{log.logType === 'PHOTO' ? '📷' : log.logType === 'MONITORING_DOC' ? '📊' : '📝'}</span>
+          <div style={{ flex: 1 }}>
+            <p style={{ margin: 0, fontSize: 12, fontWeight: 600 }}>{LOG_LABELS[log.logType]}</p>
+            {log.caption && <p style={{ margin: '2px 0 0', fontSize: 12 }}>{log.caption}</p>}
+            {log.notes   && <p style={{ margin: '2px 0 0', fontSize: 11, color: '#57606a' }}>{log.notes}</p>}
+            <p style={{ margin: '3px 0 0', fontSize: 10, color: '#8c959f' }}>oleh {log.uploadedBy.name}</p>
+          </div>
+          {log.fileUrl && (
+            <a href={fixFileUrl(log.fileUrl)} target="_blank" rel="noopener noreferrer"
+              style={{ fontSize: 11, color: '#0969DA', whiteSpace: 'nowrap' }}>
+              {log.logType === 'PHOTO' ? 'Lihat Foto' : 'Download'}
+            </a>
+          )}
+        </div>
+      ))}
+
+      {/* Add log form */}
+      {(canUpload || canNote) && (
+        <div style={{ border: '1px solid #D0D7DE', borderRadius: 8, padding: 12, marginTop: 8 }}>
+          <p style={{ fontSize: 12, fontWeight: 600, margin: '0 0 8px' }}>Tambah Log Implementasi</p>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+            <select value={logType} onChange={(e) => setLogType(e.target.value as typeof logType)}
+              style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12 }}>
+              {canUpload && <option value="PHOTO">📷 Foto Progress</option>}
+              {canUpload && <option value="MONITORING_DOC">📊 Dokumen Monitoring (Excel/PDF)</option>}
+              <option value="NOTE">📝 Catatan Progress</option>
+            </select>
+          </div>
+          <input value={caption} onChange={(e) => setCaption(e.target.value)} placeholder={logType === 'NOTE' ? 'Judul catatan…' : 'Keterangan / caption…'}
+            style={{ width: '100%', padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12, marginBottom: 6, boxSizing: 'border-box' }} />
+          <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2}
+            placeholder="Detail catatan / keterangan tambahan (opsional)…"
+            style={{ width: '100%', padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12, marginBottom: 8, boxSizing: 'border-box', resize: 'vertical' }} />
+
+          {logType === 'NOTE' ? (
+            <button type="button" onClick={() => { void handleAdd(); }} disabled={uploading || !caption.trim()}
+              style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: '#0969DA', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 12 }}>
+              {uploading ? 'Menyimpan…' : '+ Simpan Catatan'}
+            </button>
+          ) : (
+            <>
+              <input ref={fileRef} type="file"
+                accept={logType === 'PHOTO' ? '.jpg,.jpeg,.png,.webp' : '.xlsx,.xls,.pdf'}
+                style={{ display: 'none' }}
+                onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleAdd(f); }} />
+              <button type="button" onClick={() => fileRef.current?.click()} disabled={uploading}
+                style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: '#0969DA', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 12 }}>
+                {uploading ? 'Mengunggah…' : logType === 'PHOTO' ? '+ Upload Foto' : '+ Upload Dokumen'}
+              </button>
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -693,10 +886,15 @@ export default function FtttProjectDetailPage() {
             <SanggahSection project={project} onRefresh={load} isAdmin={userRole === 'ADMIN'} />
           )}
 
-          {/* Generic message for phases with no special UI */}
-          {!['SURVEY', 'PREPARATION', 'DOCUMENTATION', 'RECONCILIATION'].includes(project.currentPhase) && (
+          {/* Issue #4: Implementation phase — photo/doc/note logging by Surveyor */}
+          {project.currentPhase === 'IMPLEMENTATION' && (
+            <ImplementationSection project={project} onRefresh={load} userRole={userRole} />
+          )}
+
+          {/* Generic message for other phases with no special UI */}
+          {!['SURVEY', 'PREPARATION', 'DOCUMENTATION', 'RECONCILIATION', 'IMPLEMENTATION'].includes(project.currentPhase) && (
             <p style={{ fontSize: 13, color: '#57606a' }}>
-              Update progres implementasi dan koordinasikan kegiatan di fase ini. Klik tombol "Selesaikan Fase" di atas setelah semua aktivitas selesai.
+              Koordinasikan kegiatan di fase ini. Klik tombol "Selesaikan Fase" di atas setelah semua aktivitas selesai.
             </p>
           )}
 

@@ -1040,11 +1040,12 @@ export interface FtttProject {
   pm:             { id: string; name: string; email: string };
   cleanList:      { id: string; rwCode: string; kelurahan: string } | null;
   phaseProgresses: FtttPhaseProgress[];
-  surveyUploads:  FtttSurveyUpload[];
-  drmDocuments:   FtttDrmDoc[];
-  sanggahs:       FtttSanggah[];
-  jaminans:       FtttJaminan[];
-  documents:      FtttDoc[];
+  surveyUploads:      FtttSurveyUpload[];
+  drmDocuments:       FtttDrmDoc[];
+  sanggahs:           FtttSanggah[];
+  jaminans:           FtttJaminan[];
+  documents:          FtttDoc[];
+  implementationLogs: FtttImplementationLog[];
 }
 
 export interface FtttSurveyUpload {
@@ -1101,6 +1102,18 @@ export interface FtttDoc {
   adminApprovedAt: string | null;
   createdAt:       string;
   uploadedBy:      { id: string; name: string };
+}
+
+export type FtttImplLogType = 'PHOTO' | 'MONITORING_DOC' | 'NOTE';
+
+export interface FtttImplementationLog {
+  id:          string;
+  logType:     FtttImplLogType;
+  fileUrl:     string | null;
+  caption:     string | null;
+  notes:       string | null;
+  createdAt:   string;
+  uploadedBy:  { id: string; name: string };
 }
 
 export interface FtttProgressSummary {

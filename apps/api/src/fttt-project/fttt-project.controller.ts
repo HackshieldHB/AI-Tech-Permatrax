@@ -17,6 +17,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { AuthUser } from '../auth/types/auth-user.types';
 import { FtttProjectService } from './fttt-project.service';
 import {
+  AddImplLogDto,
   AdvancePhaseDto,
   AddJaminanDto,
   ApproveDocumentDto,
@@ -154,7 +155,7 @@ export class FtttProjectController {
     return this.service.addJaminan(id, dto, file, user.userId, user.role);
   }
 
-  // POST /fttt-projects/:id/documents
+  // POST /fttt-projects/:id/documents  (Surveyor FTTT only — enforced in service)
   @Post(':id/documents')
   @UseInterceptors(FileInterceptor('file', upload))
   uploadDocument(
@@ -163,7 +164,7 @@ export class FtttProjectController {
     @Body(new ZodValidationPipe(UploadDocumentDto)) dto: any,
     @CurrentUser() user: AuthUser,
   ) {
-    return this.service.uploadDocument(id, file, dto, user.userId);
+    return this.service.uploadDocument(id, file, dto, user.userId, user.role);
   }
 
   // PUT /fttt-projects/documents/:docId/approve
@@ -174,5 +175,29 @@ export class FtttProjectController {
     @CurrentUser() user: AuthUser,
   ) {
     return this.service.approveDocument(docId, dto, user.userId, user.role);
+  }
+
+  // PUT /fttt-projects/documents/:docId/replace  (Issue #6 — Surveyor replaces rejected doc)
+  @Put('documents/:docId/replace')
+  @UseInterceptors(FileInterceptor('file', upload))
+  replaceDocument(
+    @Param('docId') docId: string,
+    @UploadedFile() file: Express.Multer.File,
+    @Body('notes') notes: string | undefined,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.service.replaceDocument(docId, file, user.userId, user.role, notes);
+  }
+
+  // POST /fttt-projects/:id/implementation-logs  (Issue #4 — Implementation phase logs)
+  @Post(':id/implementation-logs')
+  @UseInterceptors(FileInterceptor('file', upload))
+  addImplementationLog(
+    @Param('id') id: string,
+    @UploadedFile() file: Express.Multer.File | undefined,
+    @Body(new ZodValidationPipe(AddImplLogDto)) dto: any,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.service.addImplementationLog(id, dto, file, user.userId, user.role);
   }
 }
