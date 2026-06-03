@@ -317,9 +317,10 @@ function SanggahSection({ project, onRefresh, isAdmin }: { project: FtttProject;
   );
 }
 
-// ─── Jaminan section (Telkom Infra only) ─────────────────────────────────────
+// ─── Jaminan section (Telkom Infra only, upload restricted to Finance) ────────
 function JaminanSection({ project, onRefresh }: { project: FtttProject; onRefresh: () => void }) {
   const { user } = useAuthStore();
+  const isFinance = user?.role === 'FINANCE' || user?.role === 'ADMIN' || user?.role === 'GENERAL_MANAGER';
   const [jaminanType, setJaminanType] = useState<'JAMINAN_UANG_MUKA' | 'JAMINAN_PELAKSANAAN'>('JAMINAN_UANG_MUKA');
   const [issuer, setIssuer] = useState('');
   const [notes, setNotes] = useState('');
@@ -347,11 +348,11 @@ function JaminanSection({ project, onRefresh }: { project: FtttProject; onRefres
     }
   };
 
-  const JAMINAN_LABELS = { JAMINAN_UANG_MUKA: 'Jaminan Uang Muka', JAMINAN_PELAKSANAAN: 'Jaminan Pelaksanaan' };
+  const JAMINAN_LABELS: Record<string, string> = { JAMINAN_UANG_MUKA: 'Jaminan Uang Muka', JAMINAN_PELAKSANAAN: 'Jaminan Pelaksanaan' };
 
   return (
     <div>
-      <p style={{ fontWeight: 600, fontSize: 13, marginBottom: 8 }}>Jaminan ({project.jaminans.length})</p>
+      <p style={{ fontWeight: 600, fontSize: 13, marginBottom: 8 }}>Dokumen Jaminan ({project.jaminans.length})</p>
       {project.jaminans.map((j) => (
         <div key={j.id} style={{ background: '#FFF8C5', borderRadius: 8, padding: 10, marginBottom: 6, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div>
@@ -363,26 +364,37 @@ function JaminanSection({ project, onRefresh }: { project: FtttProject; onRefres
           )}
         </div>
       ))}
-      <div style={{ border: '1px solid #D0D7DE', borderRadius: 8, padding: 12, marginTop: 8 }}>
-        <p style={{ fontSize: 12, fontWeight: 600, margin: '0 0 8px' }}>Tambah Jaminan</p>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
-          <select value={jaminanType} onChange={(e) => setJaminanType(e.target.value as any)} style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12 }}>
-            <option value="JAMINAN_UANG_MUKA">Jaminan Uang Muka</option>
-            <option value="JAMINAN_PELAKSANAAN">Jaminan Pelaksanaan</option>
-          </select>
-          <input value={issuer} onChange={(e) => setIssuer(e.target.value)} placeholder="Penerbit (bank/lembaga)" style={{ flex: 1, padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12, minWidth: 120 }} />
+
+      {/* Upload form — Finance only */}
+      {isFinance ? (
+        <div style={{ border: '1px solid #D0D7DE', borderRadius: 8, padding: 12, marginTop: 8 }}>
+          <p style={{ fontSize: 12, fontWeight: 600, margin: '0 0 8px' }}>Upload Jaminan</p>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+            <select value={jaminanType} onChange={(e) => setJaminanType(e.target.value as 'JAMINAN_UANG_MUKA' | 'JAMINAN_PELAKSANAAN')} style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12 }}>
+              <option value="JAMINAN_UANG_MUKA">Jaminan Uang Muka</option>
+              <option value="JAMINAN_PELAKSANAAN">Jaminan Pelaksanaan</option>
+            </select>
+            <input value={issuer} onChange={(e) => setIssuer(e.target.value)} placeholder="Penerbit (bank/lembaga)" style={{ flex: 1, padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12, minWidth: 120 }} />
+          </div>
+          <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Catatan (opsional)" style={{ width: '100%', padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12, marginBottom: 8, boxSizing: 'border-box' }} />
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input ref={fileRef} type="file" style={{ display: 'none' }} onChange={(e) => setSelectedFile(e.target.files?.[0] ?? null)} />
+            <button type="button" onClick={() => fileRef.current?.click()} style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 11, cursor: 'pointer', background: '#F6F8FA' }}>
+              {selectedFile ? selectedFile.name.slice(0, 20) + '…' : '+ Dokumen'}
+            </button>
+            <button type="button" onClick={() => { void handleAdd(); }} disabled={submitting} style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: '#0969DA', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 12 }}>
+              {submitting ? 'Menyimpan…' : 'Upload'}
+            </button>
+          </div>
         </div>
-        <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Catatan (opsional)" style={{ width: '100%', padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12, marginBottom: 8, boxSizing: 'border-box' }} />
-        <div style={{ display: 'flex', gap: 8 }}>
-          <input ref={fileRef} type="file" style={{ display: 'none' }} onChange={(e) => setSelectedFile(e.target.files?.[0] ?? null)} />
-          <button onClick={() => fileRef.current?.click()} style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 11, cursor: 'pointer', background: '#F6F8FA' }}>
-            {selectedFile ? selectedFile.name.slice(0, 20) + '…' : '+ Dokumen'}
-          </button>
-          <button onClick={handleAdd} disabled={submitting} style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: '#0969DA', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 12 }}>
-            {submitting ? 'Menyimpan…' : 'Tambah'}
-          </button>
-        </div>
-      </div>
+      ) : (
+        /* Non-Finance users see status info only — no upload form */
+        project.jaminans.length === 0 && (
+          <div style={{ background: '#FFF8F0', border: '1px solid #FFA500', borderRadius: 8, padding: 10, marginTop: 8, fontSize: 12, color: '#7d5a00' }}>
+            ⏳ Menunggu Finance mengunggah dokumen Jaminan Uang Muka dan Jaminan Pelaksanaan.
+          </div>
+        )
+      )}
     </div>
   );
 }

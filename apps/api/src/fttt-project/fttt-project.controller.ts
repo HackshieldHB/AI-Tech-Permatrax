@@ -142,7 +142,7 @@ export class FtttProjectController {
     return this.service.resolveSanggah(sanggahId, dto, user.userId);
   }
 
-  // POST /fttt-projects/:id/jaminan
+  // POST /fttt-projects/:id/jaminan  (Finance only — enforced in service)
   @Post(':id/jaminan')
   @UseInterceptors(FileInterceptor('file', upload))
   addJaminan(
@@ -151,7 +151,7 @@ export class FtttProjectController {
     @Body(new ZodValidationPipe(AddJaminanDto)) dto: any,
     @CurrentUser() user: AuthUser,
   ) {
-    return this.service.addJaminan(id, dto, file, user.userId);
+    return this.service.addJaminan(id, dto, file, user.userId, user.role);
   }
 
   // POST /fttt-projects/:id/documents

@@ -117,7 +117,7 @@ const NAV_ITEMS: NavItem[] = [
     label: 'FTTT Projects',
     icon: Database,
     section: 'OPERASIONAL',
-    roles: ['PM_FTTT', 'SURVEYOR_FTTT', 'ADMIN', 'GENERAL_MANAGER', 'ADMIN_STOCK'],
+    roles: ['PM_FTTT', 'SURVEYOR_FTTT', 'ADMIN', 'GENERAL_MANAGER', 'ADMIN_STOCK', 'FINANCE'],
   },
   { href: '/ba-open', label: 'BA Open', icon: FileText, featureKey: 'BA_OPEN', section: 'OPERASIONAL' },
   { href: '/cash-operation', label: 'Cash Operation', icon: Wallet, featureKey: 'CASH_OPERATION', section: 'OPERASIONAL', badge: 'cashOp' },

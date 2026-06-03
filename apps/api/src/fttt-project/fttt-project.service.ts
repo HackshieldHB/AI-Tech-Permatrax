@@ -15,6 +15,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { StorageService } from '../storage/storage.service';
 import { NotificationsGateway } from '../notifications/notifications.gateway';
+import { NotificationsService } from '../notifications/notifications.service';
 import { paginate } from '../common/dto/pagination.dto';
 import {
   AddJaminanDtoType,
@@ -36,6 +37,7 @@ export class FtttProjectService {
     private readonly prisma: PrismaService,
     private readonly storage: StorageService,
     private readonly gateway: NotificationsGateway,
+    private readonly notifications: NotificationsService,
   ) {}
 
   // ─── Create project (PM uploads trigger doc + selects company) ────────────
@@ -107,8 +109,12 @@ export class FtttProjectService {
     if (phase)   where.currentPhase = phase;
     if (status && status !== 'all') where.status = status;
 
-    // PM_FTTT only sees their own projects; Admin/GM see all
-    const managingRoles: Role[] = [Role.ADMIN, Role.GENERAL_MANAGER, Role.ADMIN_STOCK];
+    // PM_FTTT only sees their own projects; Admin/GM/Finance/Surveyor see all
+    const managingRoles: Role[] = [
+      Role.ADMIN, Role.GENERAL_MANAGER, Role.ADMIN_STOCK,
+      Role.FINANCE,         // Finance uploads Jaminan — needs to see all projects
+      Role.SURVEYOR_FTTT,   // Surveyor needs to see projects they're working on
+    ];
     if (!managingRoles.includes(userRole)) {
       where.pmId = userId;
     }
@@ -146,7 +152,12 @@ export class FtttProjectService {
     });
     if (!project) throw new NotFoundException('FTTT project tidak ditemukan');
 
-    const managingRoles: Role[] = [Role.ADMIN, Role.GENERAL_MANAGER];
+    // Roles that can view any project regardless of pmId
+    const managingRoles: Role[] = [
+      Role.ADMIN, Role.GENERAL_MANAGER,
+      Role.FINANCE,         // Finance uploads Jaminan for TELKOM_INFRA projects
+      Role.SURVEYOR_FTTT,   // Surveyor uploads survey evidence for iForte/PST projects
+    ];
     if (!managingRoles.includes(userRole) && project.pmId !== userId) {
       throw new ForbiddenException('Anda tidak memiliki akses ke project ini');
     }
@@ -268,6 +279,22 @@ export class FtttProjectService {
       phases:        updated.phaseProgresses,
     });
 
+    // Notify Finance when Telkom Infra project enters PREPARATION phase
+    // — Finance must upload Jaminan Uang Muka & Jaminan Pelaksanaan
+    if (
+      project.currentPhase === FtttPhase.INITIATION &&
+      updated.currentPhase === FtttPhase.PREPARATION &&
+      project.ftttCompany === FtttCompany.TELKOM_INFRA
+    ) {
+      await this.notifications.notifyUsersByRole(Role.FINANCE, {
+        title:    'FTTT Project — Upload Dokumen Jaminan Diperlukan',
+        message:  `Project ${updated.projectName ?? updated.id} (Telkom Infra) telah memasuki fase Project Preparation. Silakan upload dokumen Jaminan Uang Muka dan Jaminan Pelaksanaan.`,
+        type:     'FTTT_JAMINAN_REQUIRED',
+        link:     `/fttt-projects/${id}`,
+        entityId: id,
+      });
+    }
+
     return updated;
   }
 
@@ -370,13 +397,20 @@ export class FtttProjectService {
     });
   }
 
-  // ─── Jaminan (Telkom Infra only) ───────────────────────────────────────────
+  // ─── Jaminan (Telkom Infra only, Finance role only) ───────────────────────
   async addJaminan(
     id: string,
     dto: AddJaminanDtoType,
     file: Express.Multer.File | undefined,
     userId: string,
+    userRole: Role,
   ) {
+    // Only Finance (and Admin/GM for oversight) can upload jaminan documents
+    const allowedRoles: Role[] = [Role.FINANCE, Role.ADMIN, Role.GENERAL_MANAGER];
+    if (!allowedRoles.includes(userRole)) {
+      throw new ForbiddenException('Hanya Finance yang dapat mengunggah dokumen Jaminan');
+    }
+
     const project = await this.prisma.ftttProject.findUniqueOrThrow({ where: { id } });
     if (project.ftttCompany !== FtttCompany.TELKOM_INFRA) {
       throw new BadRequestException('Jaminan hanya tersedia untuk project Telkom Infra');
