@@ -21,6 +21,7 @@ import { paginate } from '../common/dto/pagination.dto';
 import {
   AddImplLogDtoType,
   AddJaminanDtoType,
+  AddReconDocDtoType,
   AdvancePhaseDtoType,
   ApproveDocumentDtoType,
   CreateFtttProjectDtoType,
@@ -42,8 +43,12 @@ export class FtttProjectService {
     private readonly notifications: NotificationsService,
   ) {}
 
-  // ─── Create project (PM uploads trigger doc + selects company) ────────────
-  async create(dto: CreateFtttProjectDtoType, triggerDocFile: Express.Multer.File, pmId: string) {
+  // ─── Create project (PM_FTTT only — Issue #5) ─────────────────────────────
+  async create(dto: CreateFtttProjectDtoType, triggerDocFile: Express.Multer.File, pmId: string, userRole: Role) {
+    // Issue #5: Only PM_FTTT can initiate a project
+    if (userRole !== Role.PM_FTTT) {
+      throw new ForbiddenException('Hanya PM FTTT yang dapat membuat Project Initiation');
+    }
     const triggerDocUrl = await this.storage.uploadMulterFile(triggerDocFile, 'fttt-trigger', dto.ftttCompany);
 
     const phases = FTTT_PHASES_BY_COMPANY[dto.ftttCompany];
@@ -497,15 +502,19 @@ export class FtttProjectService {
       if (doc.approvalStatus !== 'PENDING_PM') {
         throw new BadRequestException('Dokumen tidak dalam status menunggu PM');
       }
+      // Issue #2: rejection reason is mandatory
       if (!dto.approved) {
+        if (!dto.rejectionNotes?.trim()) {
+          throw new BadRequestException('Alasan penolakan wajib diisi');
+        }
         return this.prisma.ftttDocument.update({
           where: { id: docId },
-          data: { approvalStatus: 'REJECTED' },
+          data: { approvalStatus: 'REJECTED', rejectionNotes: dto.rejectionNotes.trim() },
         });
       }
       return this.prisma.ftttDocument.update({
         where: { id: docId },
-        data: { approvalStatus: 'PENDING_ADMIN', pmApprovedById: userId, pmApprovedAt: new Date() },
+        data: { approvalStatus: 'PENDING_ADMIN', pmApprovedById: userId, pmApprovedAt: new Date(), rejectionNotes: null },
       });
     }
 
@@ -513,11 +522,15 @@ export class FtttProjectService {
       if (doc.approvalStatus !== 'PENDING_ADMIN') {
         throw new BadRequestException('Dokumen tidak dalam status menunggu Admin');
       }
+      // Issue #2: rejection reason is mandatory for Admin too
+      if (!dto.approved && !dto.rejectionNotes?.trim()) {
+        throw new BadRequestException('Alasan penolakan wajib diisi');
+      }
       return this.prisma.ftttDocument.update({
         where: { id: docId },
         data: dto.approved
-          ? { approvalStatus: 'APPROVED', adminApprovedById: userId, adminApprovedAt: new Date() }
-          : { approvalStatus: 'REJECTED' },
+          ? { approvalStatus: 'APPROVED', adminApprovedById: userId, adminApprovedAt: new Date(), rejectionNotes: null }
+          : { approvalStatus: 'REJECTED', rejectionNotes: dto.rejectionNotes!.trim() },
       });
     }
 
@@ -532,8 +545,8 @@ export class FtttProjectService {
     userRole: Role,
     notes?: string,
   ) {
-    // Only Surveyor and Admin can replace
-    const allowedRoles: Role[] = [Role.SURVEYOR_FTTT, Role.ADMIN, Role.GENERAL_MANAGER];
+    // Issue #3: Only Surveyor FTTT can replace rejected docs (not Admin — Admin only approves/rejects)
+    const allowedRoles: Role[] = [Role.SURVEYOR_FTTT];
     if (!allowedRoles.includes(userRole)) {
       throw new ForbiddenException('Hanya Surveyor FTTT yang dapat mengganti dokumen');
     }
@@ -648,6 +661,89 @@ export class FtttProjectService {
       jaminans:           { include: { uploadedBy: { select: { id: true, name: true } } }, orderBy: { createdAt: 'asc' as const } },
       documents:          { include: { uploadedBy: { select: { id: true, name: true } } }, orderBy: { createdAt: 'desc' as const } },
       implementationLogs: { include: { uploadedBy: { select: { id: true, name: true } } }, orderBy: { createdAt: 'asc' as const } },
+      reconDocs:          { include: { uploadedBy: { select: { id: true, name: true } } }, orderBy: { createdAt: 'asc' as const } },
     } as const;
+  }
+
+  // ─── Issue #4: Reconciliation & Billing — upload/replace doc ─────────────
+  async upsertReconDoc(
+    projectId: string,
+    dto: AddReconDocDtoType,
+    file: Express.Multer.File | undefined,
+    userId: string,
+    userRole: Role,
+  ) {
+    // All authenticated project members can upload recon docs
+    const allowed: Role[] = [Role.SURVEYOR_FTTT, Role.PM_FTTT, Role.ADMIN, Role.GENERAL_MANAGER, Role.FINANCE];
+    if (!allowed.includes(userRole)) {
+      throw new ForbiddenException('Tidak memiliki akses untuk mengunggah dokumen rekonsiliasi');
+    }
+
+    const existing = await this.prisma.ftttReconDoc.findUnique({
+      where: { projectId_docKey: { projectId, docKey: dto.docKey } },
+    });
+
+    let fileUrl = existing?.fileUrl ?? undefined;
+    if (file) {
+      fileUrl = await this.storage.uploadMulterFile(file, 'fttt-recon', projectId);
+    }
+
+    if (existing) {
+      return this.prisma.ftttReconDoc.update({
+        where: { id: existing.id },
+        data: {
+          fileUrl:        fileUrl ?? null,
+          notes:          dto.notes ?? null,
+          uploadedById:   userId,
+          approvalStatus: 'PENDING_PM',  // reset to re-review when replaced
+          rejectionNotes: null,
+          pmApprovedById: null, pmApprovedAt: null,
+          adminApprovedById: null, adminApprovedAt: null,
+        },
+        include: { uploadedBy: { select: { id: true, name: true } } },
+      });
+    }
+
+    return this.prisma.ftttReconDoc.create({
+      data: {
+        projectId,
+        docKey:       dto.docKey,
+        fileUrl:      fileUrl ?? null,
+        notes:        dto.notes ?? null,
+        uploadedById: userId,
+        approvalStatus: 'PENDING_PM',
+      },
+      include: { uploadedBy: { select: { id: true, name: true } } },
+    });
+  }
+
+  async approveReconDoc(docId: string, approved: boolean, rejectionNotes: string | undefined, userId: string, userRole: Role) {
+    const doc = await this.prisma.ftttReconDoc.findUniqueOrThrow({ where: { id: docId } });
+
+    if (!approved && !rejectionNotes?.trim()) {
+      throw new BadRequestException('Alasan penolakan wajib diisi');
+    }
+
+    if (userRole === Role.PM_FTTT) {
+      if (doc.approvalStatus !== 'PENDING_PM') throw new BadRequestException('Dokumen tidak dalam status menunggu PM');
+      return this.prisma.ftttReconDoc.update({
+        where: { id: docId },
+        data: approved
+          ? { approvalStatus: 'PENDING_ADMIN', pmApprovedById: userId, pmApprovedAt: new Date(), rejectionNotes: null }
+          : { approvalStatus: 'REJECTED', rejectionNotes: rejectionNotes!.trim() },
+      });
+    }
+
+    if (userRole === Role.ADMIN || userRole === Role.GENERAL_MANAGER) {
+      if (doc.approvalStatus !== 'PENDING_ADMIN') throw new BadRequestException('Dokumen tidak dalam status menunggu Admin');
+      return this.prisma.ftttReconDoc.update({
+        where: { id: docId },
+        data: approved
+          ? { approvalStatus: 'APPROVED', adminApprovedById: userId, adminApprovedAt: new Date(), rejectionNotes: null }
+          : { approvalStatus: 'REJECTED', rejectionNotes: rejectionNotes!.trim() },
+      });
+    }
+
+    throw new ForbiddenException('Tidak berwenang menyetujui dokumen ini');
   }
 }

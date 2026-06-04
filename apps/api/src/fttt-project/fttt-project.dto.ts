@@ -106,10 +106,18 @@ export const UploadDocumentDto = z.object({
 export type UploadDocumentDtoType = z.infer<typeof UploadDocumentDto>;
 
 export const ApproveDocumentDto = z.object({
-  approved: z.boolean(),
-  notes:    z.string().max(500).optional(),
+  approved:       z.boolean(),
+  notes:          z.string().max(500).optional(),
+  rejectionNotes: z.string().min(1).max(1000).optional(),  // mandatory when approved=false
 });
 export type ApproveDocumentDtoType = z.infer<typeof ApproveDocumentDto>;
+
+// Reconciliation & Billing document upload
+export const AddReconDocDto = z.object({
+  docKey: z.string().min(1).max(100),
+  notes:  z.string().max(2000).optional(),
+});
+export type AddReconDocDtoType = z.infer<typeof AddReconDocDto>;
 
 // Implementation phase log (photo/doc/note)
 export const AddImplLogDto = z.object({

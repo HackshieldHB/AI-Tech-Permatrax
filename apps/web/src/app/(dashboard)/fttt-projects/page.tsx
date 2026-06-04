@@ -144,12 +144,15 @@ export default function FtttProjectsPage() {
           >
             <RefreshCw size={14} /> Refresh
           </button>
-          <Link
-            href="/fttt-projects/new"
-            style={{ padding: '8px 16px', borderRadius: 8, border: 'none', background: '#0969DA', color: '#fff', fontWeight: 600, textDecoration: 'none', display: 'flex', alignItems: 'center', gap: 6 }}
-          >
-            <Plus size={14} /> Buat Project
-          </Link>
+          {/* Issue #5: Only PM_FTTT can create project */}
+          {user?.role === 'PM_FTTT' && (
+            <Link
+              href="/fttt-projects/new"
+              style={{ padding: '8px 16px', borderRadius: 8, border: 'none', background: '#0969DA', color: '#fff', fontWeight: 600, textDecoration: 'none', display: 'flex', alignItems: 'center', gap: 6 }}
+            >
+              <Plus size={14} /> Buat Project
+            </Link>
+          )}
         </div>
       </div>
 
@@ -158,7 +161,7 @@ export default function FtttProjectsPage() {
       ) : projects.length === 0 ? (
         <div style={{ textAlign: 'center', color: '#57606a', padding: 60 }}>
           <p>Belum ada FTTT project.</p>
-          <Link href="/fttt-projects/new" style={{ color: '#0969DA' }}>Buat yang pertama →</Link>
+          {user?.role === 'PM_FTTT' && <Link href="/fttt-projects/new" style={{ color: '#0969DA' }}>Buat yang pertama →</Link>}
         </div>
       ) : (
         <div style={{ display: 'grid', gap: 12 }}>

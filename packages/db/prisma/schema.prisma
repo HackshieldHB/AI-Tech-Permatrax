@@ -348,6 +348,7 @@ model User {
   ftttJaminans          FtttJaminan[]             @relation("FtttJaminanUploader")
   ftttDocuments         FtttDocument[]            @relation("FtttDocUploader")
   ftttImplementationLogs FtttImplementationLog[]  @relation("FtttImplLogUploader")
+  ftttReconDocs          FtttReconDoc[]           @relation("FtttReconDocUploader")
 }
 
 // Phase 4 — GM-controlled feature visibility per role
@@ -2986,6 +2987,7 @@ model FtttProject {
   jaminans           FtttJaminan[]
   documents          FtttDocument[]
   implementationLogs FtttImplementationLog[]
+  reconDocs          FtttReconDoc[]
 
   @@index([ftttCompany])
   @@index([currentPhase])
@@ -3085,13 +3087,37 @@ model FtttDocument {
   approvalStatus  FtttApprovalStatus @default(PENDING_PM)
   uploadedById    String
   uploadedBy      User               @relation("FtttDocUploader", fields: [uploadedById], references: [id])
-  pmApprovedById  String?
-  pmApprovedAt    DateTime?
+  pmApprovedById    String?
+  pmApprovedAt      DateTime?
   adminApprovedById String?
   adminApprovedAt   DateTime?
-  createdAt       DateTime           @default(now())
-  updatedAt       DateTime           @updatedAt
+  rejectionNotes    String?  // mandatory reason filled by PM/Admin when rejecting
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
 
+  @@index([projectId])
+}
+
+// Reconciliation & Billing phase documents
+model FtttReconDoc {
+  id              String             @id @default(cuid())
+  projectId       String
+  project         FtttProject        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  docKey          String             // e.g. 'BAPP', 'BAST_BAPWPP', 'GOOD_RECEIPT' etc.
+  fileUrl         String?
+  notes           String?
+  approvalStatus  FtttApprovalStatus @default(PENDING_PM)
+  uploadedById    String
+  uploadedBy      User               @relation("FtttReconDocUploader", fields: [uploadedById], references: [id])
+  pmApprovedById    String?
+  pmApprovedAt      DateTime?
+  adminApprovedById String?
+  adminApprovedAt   DateTime?
+  rejectionNotes    String?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  @@unique([projectId, docKey])
   @@index([projectId])
 }
 

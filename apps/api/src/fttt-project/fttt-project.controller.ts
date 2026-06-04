@@ -18,8 +18,9 @@ import { AuthUser } from '../auth/types/auth-user.types';
 import { FtttProjectService } from './fttt-project.service';
 import {
   AddImplLogDto,
-  AdvancePhaseDto,
   AddJaminanDto,
+  AddReconDocDto,
+  AdvancePhaseDto,
   ApproveDocumentDto,
   CreateFtttProjectDto,
   FtttProjectFilterDto,
@@ -48,7 +49,7 @@ export class FtttProjectController {
     @CurrentUser() user: AuthUser,
   ) {
     const dto = CreateFtttProjectDto.parse(JSON.parse(rawData));
-    return this.service.create(dto, file, user.userId);
+    return this.service.create(dto, file, user.userId, user.role);
   }
 
   // GET /fttt-projects
@@ -189,7 +190,7 @@ export class FtttProjectController {
     return this.service.replaceDocument(docId, file, user.userId, user.role, notes);
   }
 
-  // POST /fttt-projects/:id/implementation-logs  (Issue #4 — Implementation phase logs)
+  // POST /fttt-projects/:id/implementation-logs  (Implementation phase logs)
   @Post(':id/implementation-logs')
   @UseInterceptors(FileInterceptor('file', upload))
   addImplementationLog(
@@ -199,5 +200,28 @@ export class FtttProjectController {
     @CurrentUser() user: AuthUser,
   ) {
     return this.service.addImplementationLog(id, dto, file, user.userId, user.role);
+  }
+
+  // POST /fttt-projects/:id/recon-docs  (Issue #4 — Reconciliation & Billing docs)
+  @Post(':id/recon-docs')
+  @UseInterceptors(FileInterceptor('file', upload))
+  upsertReconDoc(
+    @Param('id') id: string,
+    @UploadedFile() file: Express.Multer.File | undefined,
+    @Body(new ZodValidationPipe(AddReconDocDto)) dto: any,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.service.upsertReconDoc(id, dto, file, user.userId, user.role);
+  }
+
+  // PUT /fttt-projects/recon-docs/:docId/approve
+  @Put('recon-docs/:docId/approve')
+  approveReconDoc(
+    @Param('docId') docId: string,
+    @Body('approved') approved: boolean,
+    @Body('rejectionNotes') rejectionNotes: string | undefined,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.service.approveReconDoc(docId, approved, rejectionNotes, user.userId, user.role);
   }
 }

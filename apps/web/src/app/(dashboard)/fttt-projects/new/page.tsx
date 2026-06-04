@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { ArrowLeft, Upload, FileText } from 'lucide-react';
@@ -35,6 +35,13 @@ export default function NewFtttProjectPage() {
   const router = useRouter();
   const { user } = useAuthStore();
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Issue #5: Redirect non-PM_FTTT users — only PM_FTTT can create projects
+  useEffect(() => {
+    if (user && user.role !== 'PM_FTTT') {
+      router.replace('/fttt-projects');
+    }
+  }, [user, router]);
 
   const [company, setCompany] = useState<FtttCompany | ''>('');
   const [file, setFile] = useState<File | null>(null);

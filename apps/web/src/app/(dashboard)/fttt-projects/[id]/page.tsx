@@ -457,10 +457,12 @@ function JaminanSection({ project, onRefresh }: { project: FtttProject; onRefres
 
 // ─── Documentation section (Issues #5, #6, #7) ───────────────────────────────
 // #5 & #7: Only Surveyor can upload; PM only reviews
-// #6: Surveyor can replace REJECTED docs
+// Documentation & Acceptance — Issues #2 (rejection reason), #3 (admin cannot replace)
 function DocumentationSection({ project, onRefresh, userRole }: { project: FtttProject; onRefresh: () => void; userRole: string }) {
   const { user } = useAuthStore();
-  const isSurveyor  = userRole === 'SURVEYOR_FTTT' || userRole === 'ADMIN' || userRole === 'GENERAL_MANAGER';
+  // Issue #3: Only SURVEYOR_FTTT can upload NEW docs and REPLACE rejected docs; Admin/GM can only approve
+  const canUploadDocs  = userRole === 'SURVEYOR_FTTT' || userRole === 'GENERAL_MANAGER';
+  const canReplaceDocs = userRole === 'SURVEYOR_FTTT';  // Issue #3: Admin excluded
   const canPmApprove    = userRole === 'PM_FTTT';
   const canAdminApprove = userRole === 'ADMIN';
 
@@ -470,6 +472,9 @@ function DocumentationSection({ project, onRefresh, userRole }: { project: FtttP
   const fileRef    = useRef<HTMLInputElement>(null);
   const replaceRef = useRef<HTMLInputElement>(null);
   const [replacingId, setReplacingId] = useState<string | null>(null);
+  // Issue #2: rejection reason dialog
+  const [rejectTarget, setRejectTarget] = useState<string | null>(null); // docId to reject
+  const [rejectReason, setRejectReason] = useState('');
 
   const DOC_LABELS: Record<string, string> = { ATP: 'ATP', BAUT: 'BAUT', SUPPORTING: 'Supporting Doc', EVIDENCE: 'Project Evidence' };
   const STATUS_COLORS: Record<string, string> = { PENDING_PM: '#9a6700', PENDING_ADMIN: '#0969DA', APPROVED: '#1a7f37', REJECTED: '#cf222e' };
@@ -502,12 +507,21 @@ function DocumentationSection({ project, onRefresh, userRole }: { project: FtttP
     finally { setUploading(false); }
   };
 
-  const handleApprove = async (docId: string, approved: boolean) => {
+  // Issue #2: approve/reject with mandatory rejection notes
+  const handleApprove = async (docId: string, approved: boolean, rejectionNotes?: string) => {
     const res = await apiFetch(`/fttt-projects/documents/${docId}/approve`, {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ approved }),
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ approved, rejectionNotes }),
     }, user?.id);
     if (res.ok) { toast.success(approved ? 'Dokumen disetujui' : 'Dokumen ditolak'); onRefresh(); }
-    else toast.error('Gagal memperbarui status');
+    else { const e = await res.json().catch(() => ({})); toast.error((e as {message?: string}).message ?? 'Gagal'); }
+  };
+
+  const handleRejectWithReason = async () => {
+    if (!rejectTarget) return;
+    if (!rejectReason.trim()) { toast.error('Alasan penolakan wajib diisi'); return; }
+    await handleApprove(rejectTarget, false, rejectReason.trim());
+    setRejectTarget(null); setRejectReason('');
   };
 
   return (
@@ -516,19 +530,25 @@ function DocumentationSection({ project, onRefresh, userRole }: { project: FtttP
       {project.documents.map((d) => (
         <div key={d.id} style={{ background: '#F6F8FA', borderRadius: 8, padding: 10, marginBottom: 6 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-            <div>
+            <div style={{ flex: 1 }}>
               <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                 <span style={{ fontSize: 12, fontWeight: 600 }}>{DOC_LABELS[d.docType] ?? d.docType}</span>
                 <span style={{ fontSize: 10, fontWeight: 700, color: STATUS_COLORS[d.approvalStatus] }}>{STATUS_LABELS[d.approvalStatus]}</span>
               </div>
               {d.notes && <p style={{ fontSize: 11, color: '#57606a', margin: '2px 0 0' }}>{d.notes}</p>}
+              {/* Issue #2: show rejection reason to Surveyor */}
+              {d.approvalStatus === 'REJECTED' && d.rejectionNotes && (
+                <p style={{ fontSize: 11, color: '#cf222e', margin: '3px 0 0', fontStyle: 'italic' }}>
+                  Alasan ditolak: {d.rejectionNotes}
+                </p>
+              )}
               <p style={{ fontSize: 10, color: '#8c959f', margin: '2px 0 0' }}>oleh {d.uploadedBy.name}</p>
             </div>
-            <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end', marginLeft: 8 }}>
               <a href={fixFileUrl(d.fileUrl)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: '#0969DA' }}>Lihat</a>
 
-              {/* Issue #6: Surveyor can replace REJECTED docs */}
-              {isSurveyor && d.approvalStatus === 'REJECTED' && (
+              {/* Issue #3: Only SURVEYOR_FTTT can replace REJECTED docs */}
+              {canReplaceDocs && d.approvalStatus === 'REJECTED' && (
                 <>
                   <button type="button" onClick={() => { setReplacingId(d.id); setTimeout(() => replaceRef.current?.click(), 50); }}
                     style={{ padding: '3px 8px', borderRadius: 4, border: '1px solid #FFA500', background: '#FFF8F0', color: '#7d5a00', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>
@@ -541,22 +561,22 @@ function DocumentationSection({ project, onRefresh, userRole }: { project: FtttP
                 </>
               )}
 
-              {/* PM approves/rejects */}
+              {/* Issue #2: PM approves / rejects with mandatory reason */}
               {canPmApprove && d.approvalStatus === 'PENDING_PM' && (
                 <>
                   <button type="button" onClick={() => void handleApprove(d.id, true)}
                     style={{ padding: '3px 8px', borderRadius: 4, border: 'none', background: '#DAFBE1', color: '#1a7f37', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>✓</button>
-                  <button type="button" onClick={() => void handleApprove(d.id, false)}
+                  <button type="button" onClick={() => { setRejectTarget(d.id); setRejectReason(''); }}
                     style={{ padding: '3px 8px', borderRadius: 4, border: 'none', background: '#FFEBE9', color: '#cf222e', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>✗</button>
                 </>
               )}
 
-              {/* Admin approves/rejects */}
+              {/* Issue #2: Admin approves / rejects with mandatory reason */}
               {canAdminApprove && d.approvalStatus === 'PENDING_ADMIN' && (
                 <>
                   <button type="button" onClick={() => void handleApprove(d.id, true)}
                     style={{ padding: '3px 8px', borderRadius: 4, border: 'none', background: '#DAFBE1', color: '#1a7f37', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>✓ Setujui</button>
-                  <button type="button" onClick={() => void handleApprove(d.id, false)}
+                  <button type="button" onClick={() => { setRejectTarget(d.id); setRejectReason(''); }}
                     style={{ padding: '3px 8px', borderRadius: 4, border: 'none', background: '#FFEBE9', color: '#cf222e', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>✗ Tolak</button>
                 </>
               )}
@@ -565,8 +585,36 @@ function DocumentationSection({ project, onRefresh, userRole }: { project: FtttP
         </div>
       ))}
 
-      {/* Issue #5 & #7: Only Surveyor FTTT can upload new docs */}
-      {isSurveyor ? (
+      {/* Issue #2: Rejection reason dialog (mandatory) */}
+      {rejectTarget && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+          <div style={{ background: '#fff', borderRadius: 12, padding: 24, maxWidth: 440, width: '100%', boxShadow: '0 8px 32px rgba(0,0,0,0.15)' }}>
+            <h3 style={{ margin: '0 0 8px', fontSize: 16, fontWeight: 700, color: '#cf222e' }}>Alasan Penolakan</h3>
+            <p style={{ margin: '0 0 12px', fontSize: 13, color: '#57606a' }}>
+              Berikan alasan penolakan yang jelas agar Surveyor FTTT dapat melakukan perbaikan yang sesuai.
+            </p>
+            <textarea
+              value={rejectReason}
+              onChange={(e) => setRejectReason(e.target.value)}
+              rows={4}
+              placeholder="Tuliskan alasan penolakan dokumen… (wajib diisi)"
+              style={{ width: '100%', padding: 10, borderRadius: 8, border: `1px solid ${rejectReason.trim() ? '#D0D7DE' : '#cf222e'}`, fontSize: 13, resize: 'vertical', boxSizing: 'border-box' }}
+            />
+            <div style={{ display: 'flex', gap: 8, marginTop: 12, justifyContent: 'flex-end' }}>
+              <button type="button" onClick={() => { setRejectTarget(null); setRejectReason(''); }}
+                style={{ padding: '8px 16px', borderRadius: 8, border: '1px solid #D0D7DE', background: '#fff', cursor: 'pointer', fontSize: 13 }}>Batal</button>
+              <button type="button" onClick={() => { void handleRejectWithReason(); }}
+                disabled={!rejectReason.trim()}
+                style={{ padding: '8px 16px', borderRadius: 8, border: 'none', background: rejectReason.trim() ? '#cf222e' : '#8C959F', color: '#fff', fontWeight: 600, cursor: rejectReason.trim() ? 'pointer' : 'not-allowed', fontSize: 13 }}>
+                Konfirmasi Tolak
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Only Surveyor FTTT (and GM for oversight) can upload new docs */}
+      {canUploadDocs ? (
         <div style={{ border: '1px solid #D0D7DE', borderRadius: 8, padding: 12, marginTop: 8 }}>
           <p style={{ fontSize: 12, fontWeight: 600, margin: '0 0 8px' }}>Upload Dokumen Baru</p>
           <div style={{ display: 'flex', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
@@ -587,17 +635,16 @@ function DocumentationSection({ project, onRefresh, userRole }: { project: FtttP
             {uploading ? 'Mengunggah…' : '+ Upload'}
           </button>
         </div>
-      ) : canPmApprove ? (
+      ) : (canPmApprove || canAdminApprove) ? (
         <div style={{ background: '#F0F8FF', border: '1px solid #0969DA', borderRadius: 8, padding: 10, marginTop: 8, fontSize: 12, color: '#0969DA' }}>
-          ℹ️ Sebagai PM, Anda hanya dapat mereview dokumen yang diunggah oleh Surveyor FTTT. Upload dokumen hanya dapat dilakukan oleh Surveyor FTTT.
+          ℹ️ Anda hanya dapat mereview dan approve/reject dokumen. Upload & penggantian dokumen hanya dapat dilakukan oleh Surveyor FTTT.
         </div>
       ) : null}
     </div>
   );
 }
 
-// ─── Implementation phase section (Issue #4) ──────────────────────────────────
-// Surveyor uploads photos, monitoring docs, and notes during Implementation phase
+// ─── Implementation phase section — Issue #1: multi-photo support ─────────────
 function ImplementationSection({ project, onRefresh, userRole }: { project: FtttProject; onRefresh: () => void; userRole: string }) {
   const { user } = useAuthStore();
   const canUpload = userRole === 'SURVEYOR_FTTT' || userRole === 'ADMIN' || userRole === 'GENERAL_MANAGER';
@@ -607,24 +654,43 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
   const [caption, setCaption] = useState('');
   const [notes, setNotes]   = useState('');
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<string>(''); // e.g. "Mengunggah 2/5..."
   const fileRef = useRef<HTMLInputElement>(null);
 
   const LOG_LABELS = { PHOTO: '📷 Foto Progress', MONITORING_DOC: '📊 Dokumen Monitoring', NOTE: '📝 Catatan Progress' };
 
-  const handleAdd = async (file?: File) => {
-    const fd = new FormData();
-    fd.append('logType', logType);
-    if (caption) fd.append('caption', caption);
-    if (notes)   fd.append('notes', notes);
-    if (file)    fd.append('file', file);
+  // Issue #1: multi-file upload — loop through files for PHOTO type
+  const handleAdd = async (files?: FileList | File[]) => {
+    const fileArray = files ? Array.from(files) : [];
     setUploading(true);
     try {
-      const res = await apiFetch(`/fttt-projects/${project.id}/implementation-logs`, { method: 'POST', body: fd }, user?.id);
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
-      toast.success('Log implementasi berhasil disimpan');
-      setCaption(''); setNotes(''); onRefresh();
+      if (logType === 'NOTE' || fileArray.length === 0) {
+        // Single API call for NOTE or no file
+        const fd = new FormData();
+        fd.append('logType', logType);
+        if (caption) fd.append('caption', caption);
+        if (notes)   fd.append('notes', notes);
+        if (fileArray[0]) fd.append('file', fileArray[0]);
+        const res = await apiFetch(`/fttt-projects/${project.id}/implementation-logs`, { method: 'POST', body: fd }, user?.id);
+        if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
+        toast.success('Log implementasi berhasil disimpan');
+      } else {
+        // Issue #1: multiple files — upload each as a separate log entry
+        for (let i = 0; i < fileArray.length; i++) {
+          setUploadProgress(`Mengunggah ${i + 1}/${fileArray.length}…`);
+          const fd = new FormData();
+          fd.append('logType', logType);
+          fd.append('caption', caption || `Foto ${i + 1}${fileArray.length > 1 ? ` dari ${fileArray.length}` : ''}`);
+          if (notes) fd.append('notes', notes);
+          fd.append('file', fileArray[i]);
+          const res = await apiFetch(`/fttt-projects/${project.id}/implementation-logs`, { method: 'POST', body: fd }, user?.id);
+          if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error((e as {message?: string}).message ?? 'Gagal'); }
+        }
+        toast.success(`${fileArray.length} foto berhasil diunggah`);
+      }
+      setCaption(''); setNotes(''); setUploadProgress(''); onRefresh();
     } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
-    finally { setUploading(false); }
+    finally { setUploading(false); setUploadProgress(''); }
   };
 
   const logs = project.implementationLogs ?? [];
@@ -677,19 +743,189 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
             <button type="button" onClick={() => { void handleAdd(); }} disabled={uploading || !caption.trim()}
               style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: '#0969DA', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 12 }}>
               {uploading ? 'Menyimpan…' : '+ Simpan Catatan'}
+
             </button>
           ) : (
             <>
+              {/* Issue #1: PHOTO supports multiple files (max 20MB each); MONITORING_DOC single file */}
               <input ref={fileRef} type="file"
                 accept={logType === 'PHOTO' ? '.jpg,.jpeg,.png,.webp' : '.xlsx,.xls,.pdf'}
+                multiple={logType === 'PHOTO'}
                 style={{ display: 'none' }}
-                onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleAdd(f); }} />
+                onChange={(e) => { if (e.target.files && e.target.files.length > 0) void handleAdd(e.target.files); }} />
               <button type="button" onClick={() => fileRef.current?.click()} disabled={uploading}
                 style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: '#0969DA', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 12 }}>
-                {uploading ? 'Mengunggah…' : logType === 'PHOTO' ? '+ Upload Foto' : '+ Upload Dokumen'}
+                {uploading ? (uploadProgress || 'Mengunggah…') : logType === 'PHOTO' ? '📷 Upload Foto (dapat pilih banyak)' : '+ Upload Dokumen'}
               </button>
+              {logType === 'PHOTO' && <span style={{ fontSize: 11, color: '#57606a', alignSelf: 'center' }}>Pilih 1 atau lebih foto • maks 20 MB/foto</span>}
             </>
           )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Reconciliation & Billing Section (Issue #4) ─────────────────────────────
+// Company-specific document definitions for Reconciliation phase
+const RECON_DOCS: Record<string, {
+  key: string; label: string; desc: string;
+  uploaderRole: string[]; requiresApproval: boolean;
+}[]> = {
+  TELKOM_INFRA: [
+    { key: 'BAPP',        label: 'BAPP',                  desc: 'Amandemen 2; Surat Waspang No Dinas; Risalah Rapat/MOM',      uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: true },
+    { key: 'BAST_BAPWPP', label: 'BAST & BAPWPP',         desc: 'Amandemen 1; Amandemen 2; PO; BOQ Perhitungan',              uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: true },
+    { key: 'BA_PENUTUPAN',label: 'BA Penutupan',           desc: 'Berita Acara Penutupan Project',                             uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: true },
+    { key: 'GOOD_RECEIPT', label: 'Good Receipt',          desc: 'Diterbitkan Telkom Infra — upload setelah 3 dok. di atas approved', uploaderRole: ['ADMIN'], requiresApproval: false },
+    { key: 'JAMINAN_PEMELIHARAAN', label: 'Jaminan Pemeliharaan', desc: 'Diupload Finance',                                   uploaderRole: ['FINANCE'], requiresApproval: false },
+    { key: 'INVOICE_FINAL', label: 'Invoice Final',        desc: 'Tagihan akhir project — dibuat Finance',                     uploaderRole: ['FINANCE'], requiresApproval: false },
+  ],
+  PST: [
+    { key: 'REKONSILIASI', label: 'Rekonsiliasi',          desc: 'Penyamaan DRM sebelum implementasi vs actual lapangan',      uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: true },
+    { key: 'BAST_1',      label: 'BAST 1',                 desc: 'Jaminan Pemeliharaan & Jaminan Pelaksanaan',                 uploaderRole: ['FINANCE'], requiresApproval: false },
+    { key: 'GOOD_RECEIPT_PST', label: 'Good Receipt',      desc: 'Completion Cert. GERN & Lampiran Smile',                    uploaderRole: ['ADMIN'], requiresApproval: false },
+    { key: 'INVOICE_PST', label: 'Invoice',                desc: 'Tagihan & Jaminan Masa Pemeliharaan',                       uploaderRole: ['FINANCE'], requiresApproval: false },
+  ],
+  IFORTE: [
+    { key: 'PUNCHLIST',   label: 'Punchlist',              desc: 'Minor issue ditemukan — catatan & foto sebelum & sesudah diperbaiki', uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: false },
+    { key: 'ENDORSEMENT', label: 'Endorsement',            desc: 'Rekonsiliasi BOQ versi iFORTE bersama Surveyor',            uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: true },
+    { key: 'PO_FINAL',    label: 'PO Final',               desc: 'Diunggah setelah proses Sanggah clear',                     uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: false },
+    { key: 'PSS',         label: 'PSS',                    desc: 'Upload dokumen ke sistem iFORTE',                           uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: false },
+    { key: 'MCV',         label: 'MCV',                    desc: 'Update progress di sistem iFORTE dengan dokumen pendukung',  uploaderRole: ['ADMIN'], requiresApproval: false },
+    { key: 'INVOICE_IFORTE', label: 'Invoice',             desc: 'Tagihan sesuai termin',                                     uploaderRole: ['FINANCE'], requiresApproval: false },
+  ],
+};
+
+function ReconciliationSection({ project, onRefresh, userRole }: { project: FtttProject; onRefresh: () => void; userRole: string }) {
+  const { user } = useAuthStore();
+  const docs = RECON_DOCS[project.ftttCompany] ?? [];
+  const [uploadingKey, setUploadingKey] = useState<string | null>(null);
+  const [notes, setNotes] = useState<Record<string, string>>({});
+  const [rejectTarget, setRejectTarget] = useState<string | null>(null);
+  const [rejectReason, setRejectReason] = useState('');
+  const fileRefs = useRef<Record<string, HTMLInputElement | null>>({});
+
+  const STATUS_COLORS: Record<string, string> = { PENDING_PM: '#9a6700', PENDING_ADMIN: '#0969DA', APPROVED: '#1a7f37', REJECTED: '#cf222e' };
+  const STATUS_LABELS: Record<string, string> = { PENDING_PM: 'Menunggu PM', PENDING_ADMIN: 'Menunggu Admin', APPROVED: 'Disetujui', REJECTED: 'Ditolak' };
+
+  const existing = (key: string) => project.reconDocs?.find((d) => d.docKey === key) ?? null;
+
+  const canUploadForKey = (uploaderRoles: string[]) =>
+    uploaderRoles.includes(userRole) || userRole === 'GENERAL_MANAGER';
+
+  const handleUpload = async (key: string, file: File) => {
+    setUploadingKey(key);
+    const fd = new FormData();
+    fd.append('docKey', key);
+    fd.append('file', file);
+    if (notes[key]) fd.append('notes', notes[key]);
+    try {
+      const res = await apiFetch(`/fttt-projects/${project.id}/recon-docs`, { method: 'POST', body: fd }, user?.id);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
+      toast.success('Dokumen berhasil diunggah');
+      onRefresh();
+    } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
+    finally { setUploadingKey(null); }
+  };
+
+  const handleApprove = async (docId: string, approved: boolean, rejNotes?: string) => {
+    const res = await apiFetch(`/fttt-projects/recon-docs/${docId}/approve`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ approved, rejectionNotes: rejNotes }),
+    }, user?.id);
+    if (res.ok) { toast.success(approved ? 'Disetujui' : 'Ditolak'); onRefresh(); }
+    else { const e = await res.json().catch(() => ({})); toast.error((e as {message?: string}).message ?? 'Gagal'); }
+  };
+
+  return (
+    <div>
+      <p style={{ fontWeight: 600, fontSize: 13, marginBottom: 12 }}>
+        Dokumen Rekonsiliasi & Billing — {project.ftttCompany === 'TELKOM_INFRA' ? 'Telkom Infra' : project.ftttCompany === 'PST' ? 'PST' : 'iFORTE'}
+      </p>
+
+      {docs.map((doc) => {
+        const rec = existing(doc.key);
+        const canUpload = canUploadForKey(doc.uploaderRole);
+        const isUploading = uploadingKey === doc.key;
+
+        return (
+          <div key={doc.key} style={{ background: '#F6F8FA', borderRadius: 10, padding: 12, marginBottom: 10, border: '1px solid #EAEEF2' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 13, fontWeight: 700 }}>{doc.label}</span>
+                  <span style={{ fontSize: 11, color: '#57606a', background: '#EDF2F4', padding: '2px 6px', borderRadius: 4 }}>
+                    {doc.uploaderRole.join(' / ')}
+                  </span>
+                  {rec && <span style={{ fontSize: 10, fontWeight: 700, color: STATUS_COLORS[rec.approvalStatus] }}>{STATUS_LABELS[rec.approvalStatus]}</span>}
+                  {!rec && <span style={{ fontSize: 10, color: '#8c959f' }}>Belum diunggah</span>}
+                </div>
+                <p style={{ margin: '3px 0 0', fontSize: 11, color: '#57606a' }}>{doc.desc}</p>
+                {rec?.notes && <p style={{ margin: '2px 0 0', fontSize: 11, color: '#57606a' }}>📝 {rec.notes}</p>}
+                {rec?.approvalStatus === 'REJECTED' && rec.rejectionNotes && (
+                  <p style={{ margin: '3px 0 0', fontSize: 11, color: '#cf222e', fontStyle: 'italic' }}>Ditolak: {rec.rejectionNotes}</p>
+                )}
+                {rec?.uploadedBy && <p style={{ margin: '2px 0 0', fontSize: 10, color: '#8c959f' }}>oleh {rec.uploadedBy.name}</p>}
+              </div>
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
+                {rec?.fileUrl && <a href={fixFileUrl(rec.fileUrl)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: '#0969DA' }}>Lihat</a>}
+
+                {/* PM approve/reject with mandatory reason */}
+                {userRole === 'PM_FTTT' && rec && rec.approvalStatus === 'PENDING_PM' && doc.requiresApproval && (
+                  <>
+                    <button type="button" onClick={() => void handleApprove(rec.id, true)}
+                      style={{ padding: '3px 8px', borderRadius: 4, border: 'none', background: '#DAFBE1', color: '#1a7f37', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>✓</button>
+                    <button type="button" onClick={() => { setRejectTarget(rec.id); setRejectReason(''); }}
+                      style={{ padding: '3px 8px', borderRadius: 4, border: 'none', background: '#FFEBE9', color: '#cf222e', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>✗</button>
+                  </>
+                )}
+                {(userRole === 'ADMIN' || userRole === 'GENERAL_MANAGER') && rec && rec.approvalStatus === 'PENDING_ADMIN' && doc.requiresApproval && (
+                  <>
+                    <button type="button" onClick={() => void handleApprove(rec.id, true)}
+                      style={{ padding: '3px 8px', borderRadius: 4, border: 'none', background: '#DAFBE1', color: '#1a7f37', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>✓ Setujui</button>
+                    <button type="button" onClick={() => { setRejectTarget(rec.id); setRejectReason(''); }}
+                      style={{ padding: '3px 8px', borderRadius: 4, border: 'none', background: '#FFEBE9', color: '#cf222e', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>✗ Tolak</button>
+                  </>
+                )}
+
+                {/* Upload/Replace button */}
+                {canUpload && (!rec || rec.approvalStatus === 'REJECTED') && (
+                  <>
+                    <input
+                      ref={(el) => { fileRefs.current[doc.key] = el; }}
+                      type="file" accept=".pdf,.xlsx,.xls,.jpg,.jpeg,.png" style={{ display: 'none' }}
+                      onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleUpload(doc.key, f); }} />
+                    <button type="button"
+                      onClick={() => fileRefs.current[doc.key]?.click()} disabled={isUploading}
+                      style={{ padding: '4px 10px', borderRadius: 6, border: 'none', background: rec ? '#FFA500' : '#0969DA', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 11 }}>
+                      {isUploading ? '…' : rec ? '🔄 Ganti' : '+ Upload'}
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })}
+
+      {/* Rejection reason dialog */}
+      {rejectTarget && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+          <div style={{ background: '#fff', borderRadius: 12, padding: 24, maxWidth: 440, width: '100%' }}>
+            <h3 style={{ margin: '0 0 8px', fontSize: 16, fontWeight: 700, color: '#cf222e' }}>Alasan Penolakan</h3>
+            <textarea value={rejectReason} onChange={(e) => setRejectReason(e.target.value)} rows={4}
+              placeholder="Tuliskan alasan penolakan… (wajib)"
+              style={{ width: '100%', padding: 10, borderRadius: 8, border: '1px solid #D0D7DE', fontSize: 13, resize: 'vertical', boxSizing: 'border-box' }} />
+            <div style={{ display: 'flex', gap: 8, marginTop: 12, justifyContent: 'flex-end' }}>
+              <button type="button" onClick={() => setRejectTarget(null)}
+                style={{ padding: '8px 16px', borderRadius: 8, border: '1px solid #D0D7DE', background: '#fff', cursor: 'pointer' }}>Batal</button>
+              <button type="button" onClick={() => { if (rejectReason.trim()) { void handleApprove(rejectTarget, false, rejectReason.trim()); setRejectTarget(null); setRejectReason(''); } }}
+                disabled={!rejectReason.trim()}
+                style={{ padding: '8px 16px', borderRadius: 8, border: 'none', background: rejectReason.trim() ? '#cf222e' : '#8C959F', color: '#fff', fontWeight: 600, cursor: 'pointer' }}>
+                Konfirmasi Tolak
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
@@ -892,9 +1128,16 @@ export default function FtttProjectDetailPage() {
             <DocumentationSection project={project} onRefresh={load} userRole={userRole} />
           )}
 
-          {/* Sanggah — iForte, available during RECONCILIATION */}
+          {/* Issue #4: Reconciliation & Billing — all companies */}
+          {project.currentPhase === 'RECONCILIATION' && (
+            <ReconciliationSection project={project} onRefresh={load} userRole={userRole} />
+          )}
+
+          {/* Sanggah — iForte, available during RECONCILIATION (existing feature) */}
           {project.currentPhase === 'RECONCILIATION' && project.ftttCompany === 'IFORTE' && (
-            <SanggahSection project={project} onRefresh={load} isAdmin={userRole === 'ADMIN'} />
+            <div style={{ marginTop: 16, borderTop: '1px solid #EAEEF2', paddingTop: 12 }}>
+              <SanggahSection project={project} onRefresh={load} isAdmin={userRole === 'ADMIN'} />
+            </div>
           )}
 
           {/* Issue #4: Implementation phase — photo/doc/note logging by Surveyor */}
@@ -903,7 +1146,7 @@ export default function FtttProjectDetailPage() {
           )}
 
           {/* Generic message for other phases with no special UI */}
-          {!['SURVEY', 'PREPARATION', 'DOCUMENTATION', 'RECONCILIATION', 'IMPLEMENTATION'].includes(project.currentPhase) && (
+          {!['SURVEY', 'PREPARATION', 'DOCUMENTATION', 'RECONCILIATION', 'IMPLEMENTATION', 'CLOSING'].includes(project.currentPhase) && (
             <p style={{ fontSize: 13, color: '#57606a' }}>
               Koordinasikan kegiatan di fase ini. Klik tombol "Selesaikan Fase" di atas setelah semua aktivitas selesai.
             </p>

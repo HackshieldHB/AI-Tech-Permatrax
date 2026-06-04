@@ -1046,6 +1046,7 @@ export interface FtttProject {
   jaminans:           FtttJaminan[];
   documents:          FtttDoc[];
   implementationLogs: FtttImplementationLog[];
+  reconDocs:          FtttReconDoc[];
 }
 
 export interface FtttSurveyUpload {
@@ -1100,6 +1101,20 @@ export interface FtttDoc {
   approvalStatus:  FtttApprovalStatus;
   pmApprovedAt:    string | null;
   adminApprovedAt: string | null;
+  rejectionNotes:  string | null;
+  createdAt:       string;
+  uploadedBy:      { id: string; name: string };
+}
+
+export interface FtttReconDoc {
+  id:              string;
+  docKey:          string;
+  fileUrl:         string | null;
+  notes:           string | null;
+  approvalStatus:  FtttApprovalStatus;
+  pmApprovedAt:    string | null;
+  adminApprovedAt: string | null;
+  rejectionNotes:  string | null;
   createdAt:       string;
   uploadedBy:      { id: string; name: string };
 }
