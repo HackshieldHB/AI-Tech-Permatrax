@@ -340,8 +340,19 @@ function JaminanSection({ project, onRefresh }: { project: FtttProject; onRefres
   const fileRef = useRef<HTMLInputElement>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
 
+  // FIX: sync activeType when jaminans change (e.g., after first upload completes).
+  // Without this, activeType stays stale ('JAMINAN_UANG_MUKA') even after Uang Muka
+  // was successfully uploaded, causing the next upload to overwrite the wrong slot.
+  React.useEffect(() => {
+    if (missingTypes.length > 0 && !missingTypes.includes(activeType)) {
+      setActiveType(missingTypes[0]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project.jaminans.length]);
+
   const handleUpload = async (typeOverride?: JType) => {
-    const type = typeOverride ?? activeType;
+    // Always derive the effective type from current missingTypes to guard against stale state
+    const type = typeOverride ?? (missingTypes.includes(activeType) ? activeType : missingTypes[0] ?? activeType);
     const fd = new FormData();
     fd.append('jaminanType', type);
     if (issuer) fd.append('issuer', issuer);
