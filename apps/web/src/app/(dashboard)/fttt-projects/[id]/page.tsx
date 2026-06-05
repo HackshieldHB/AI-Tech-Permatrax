@@ -12,6 +12,7 @@ import {
   FtttProject,
   FtttPhase,
   FtttPhaseStatus,
+  FtttClosingLog,
   FTTT_COMPANY_LABELS,
   FTTT_PHASE_LABELS,
   FTTT_PROJECT_STATUS_LABELS,
@@ -939,6 +940,209 @@ function ReconciliationSection({ project, onRefresh, userRole }: { project: Fttt
   );
 }
 
+// ─── Project Closing Section ───────────────────────────────────────────────────
+// BAST II (formal handover doc, needs PM approval) + evidence photos + notes
+function ClosingSection({ project, onRefresh, userRole }: { project: FtttProject; onRefresh: () => void; userRole: string }) {
+  const { user } = useAuthStore();
+  const canUpload    = ['SURVEYOR_FTTT', 'PM_FTTT', 'ADMIN', 'GENERAL_MANAGER'].includes(userRole);
+  const canApprove   = ['PM_FTTT', 'ADMIN', 'GENERAL_MANAGER'].includes(userRole);
+
+  const logs: FtttClosingLog[] = project.closingLogs ?? [];
+  const bastII    = logs.find((l) => l.logType === 'BAST_II') ?? null;
+  const evidences = logs.filter((l) => l.logType === 'EVIDENCE');
+  const notes_list= logs.filter((l) => l.logType === 'NOTE');
+
+  const [logType, setLogType] = useState<'BAST_II' | 'EVIDENCE' | 'NOTE'>('BAST_II');
+  const [caption, setCaption] = useState('');
+  const [notes,   setNotes]   = useState('');
+  const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState('');
+  const [rejectTarget, setRejectTarget] = useState<string | null>(null);
+  const [rejectReason, setRejectReason] = useState('');
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const STATUS_COLORS: Record<string, string> = { PENDING_PM: '#9a6700', APPROVED: '#1a7f37', REJECTED: '#cf222e' };
+  const STATUS_LABELS: Record<string, string> = { PENDING_PM: 'Menunggu PM', APPROVED: 'Disetujui', REJECTED: 'Ditolak' };
+
+  const handleUpload = async (files?: FileList | null) => {
+    const fileArr = files ? Array.from(files) : [];
+    setUploading(true);
+    try {
+      if (logType === 'NOTE') {
+        const fd = new FormData();
+        fd.append('logType', 'NOTE');
+        if (caption) fd.append('caption', caption);
+        if (notes)   fd.append('notes', notes);
+        const res = await apiFetch(`/fttt-projects/${project.id}/closing-logs`, { method: 'POST', body: fd }, user?.id);
+        if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
+        toast.success('Catatan berhasil disimpan');
+      } else if (fileArr.length > 0) {
+        for (let i = 0; i < fileArr.length; i++) {
+          if (fileArr.length > 1) setUploadProgress(`Mengunggah ${i + 1}/${fileArr.length}…`);
+          const fd = new FormData();
+          fd.append('logType', logType);
+          fd.append('caption', caption || (logType === 'BAST_II' ? 'BAST II' : `Evidence ${i + 1}`));
+          if (notes) fd.append('notes', notes);
+          fd.append('file', fileArr[i]);
+          const res = await apiFetch(`/fttt-projects/${project.id}/closing-logs`, { method: 'POST', body: fd }, user?.id);
+          if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error((e as {message?: string}).message ?? 'Gagal'); }
+        }
+        toast.success(fileArr.length > 1 ? `${fileArr.length} file berhasil diunggah` : 'Dokumen berhasil diunggah');
+      }
+      setCaption(''); setNotes(''); setUploadProgress(''); onRefresh();
+    } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
+    finally { setUploading(false); setUploadProgress(''); }
+  };
+
+  const handleApprove = async (logId: string, approved: boolean, rejNotes?: string) => {
+    const res = await apiFetch(`/fttt-projects/closing-logs/${logId}/approve`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ approved, rejectionNotes: rejNotes }),
+    }, user?.id);
+    if (res.ok) { toast.success(approved ? 'BAST II disetujui' : 'BAST II ditolak'); onRefresh(); }
+    else { const e = await res.json().catch(() => ({})); toast.error((e as {message?: string}).message ?? 'Gagal'); }
+  };
+
+  return (
+    <div>
+      <p style={{ fontWeight: 600, fontSize: 14, marginBottom: 4 }}>Aktivitas Project Closing</p>
+      <p style={{ fontSize: 12, color: '#57606a', marginBottom: 16 }}>
+        Serah terima project 100% kepada Telkom Infra setelah masa pemeliharaan selesai.
+      </p>
+
+      {/* ── BAST II ── */}
+      <div style={{ background: '#F6F8FA', borderRadius: 10, padding: 12, marginBottom: 10, border: '1px solid #EAEEF2' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 13, fontWeight: 700 }}>📄 BAST II</span>
+              <span style={{ fontSize: 11, color: '#57606a', background: '#EDF2F4', padding: '2px 6px', borderRadius: 4 }}>Surveyor / PM</span>
+              {bastII?.approvalStatus && (
+                <span style={{ fontSize: 10, fontWeight: 700, color: STATUS_COLORS[bastII.approvalStatus] }}>
+                  {STATUS_LABELS[bastII.approvalStatus]}
+                </span>
+              )}
+              {!bastII && <span style={{ fontSize: 10, color: '#8c959f' }}>Belum diunggah</span>}
+            </div>
+            <p style={{ margin: '3px 0 0', fontSize: 11, color: '#57606a' }}>Dokumen Berita Acara Serah Terima II — perlu disetujui PM FTTT</p>
+            {bastII?.notes && <p style={{ margin: '2px 0 0', fontSize: 11, color: '#57606a' }}>📝 {bastII.notes}</p>}
+            {bastII?.approvalStatus === 'REJECTED' && bastII.rejectionNotes && (
+              <p style={{ margin: '3px 0 0', fontSize: 11, color: '#cf222e', fontStyle: 'italic' }}>Ditolak: {bastII.rejectionNotes}</p>
+            )}
+            {bastII?.uploadedBy && <p style={{ margin: '2px 0 0', fontSize: 10, color: '#8c959f' }}>oleh {bastII.uploadedBy.name}</p>}
+          </div>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0, marginLeft: 8 }}>
+            {bastII?.fileUrl && <a href={fixFileUrl(bastII.fileUrl)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: '#0969DA' }}>Lihat</a>}
+            {/* PM approves/rejects BAST II */}
+            {canApprove && bastII?.approvalStatus === 'PENDING_PM' && (
+              <>
+                <button type="button" onClick={() => void handleApprove(bastII.id, true)}
+                  style={{ padding: '3px 8px', borderRadius: 4, border: 'none', background: '#DAFBE1', color: '#1a7f37', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>✓ Setujui</button>
+                <button type="button" onClick={() => { setRejectTarget(bastII.id); setRejectReason(''); }}
+                  style={{ padding: '3px 8px', borderRadius: 4, border: 'none', background: '#FFEBE9', color: '#cf222e', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>✗ Tolak</button>
+              </>
+            )}
+            {/* Surveyor/PM can upload or replace BAST II */}
+            {canUpload && (!bastII || bastII.approvalStatus === 'REJECTED') && (
+              <>
+                <input type="file" accept=".pdf,.xlsx,.xls" style={{ display: 'none' }}
+                  ref={(el) => { if (el) (el as HTMLInputElement & { _bastii?: boolean })._bastii = true; }}
+                  id="bastii-file-input"
+                  onChange={(e) => { setLogType('BAST_II'); void handleUpload(e.target.files); }} />
+                <button type="button"
+                  onClick={() => { setLogType('BAST_II'); document.getElementById('bastii-file-input')?.click(); }}
+                  style={{ padding: '4px 10px', borderRadius: 6, border: 'none', background: bastII ? '#FFA500' : '#0969DA', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 11 }}>
+                  {bastII ? '🔄 Ganti' : '+ Upload BAST II'}
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* ── Evidence Photos ── */}
+      <div style={{ background: '#F6F8FA', borderRadius: 10, padding: 12, marginBottom: 10, border: '1px solid #EAEEF2' }}>
+        <p style={{ margin: '0 0 8px', fontSize: 13, fontWeight: 700 }}>
+          📷 Evidence Serah Terima
+          <span style={{ fontWeight: 400, fontSize: 12, color: '#57606a', marginLeft: 8 }}>({evidences.length} foto)</span>
+          <span style={{ fontWeight: 400, fontSize: 11, color: '#57606a', marginLeft: 4 }}>— Dokumentasi penyerahan project ke Telkom Infra</span>
+        </p>
+        {evidences.map((ev) => (
+          <div key={ev.id} style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '4px 0', borderBottom: '1px solid #EAEEF2', marginBottom: 4 }}>
+            <span style={{ fontSize: 16 }}>📷</span>
+            <div style={{ flex: 1 }}>
+              {ev.caption && <p style={{ margin: 0, fontSize: 12 }}>{ev.caption}</p>}
+              <p style={{ margin: 0, fontSize: 10, color: '#8c959f' }}>oleh {ev.uploadedBy.name}</p>
+            </div>
+            {ev.fileUrl && <a href={fixFileUrl(ev.fileUrl)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: '#0969DA' }}>Lihat</a>}
+          </div>
+        ))}
+        {canUpload && (
+          <>
+            <input type="file" id="evidence-file-input" multiple accept=".jpg,.jpeg,.png,.webp" style={{ display: 'none' }}
+              onChange={(e) => { setLogType('EVIDENCE'); void handleUpload(e.target.files); }} />
+            <button type="button" onClick={() => { setLogType('EVIDENCE'); document.getElementById('evidence-file-input')?.click(); }}
+              disabled={uploading}
+              style={{ marginTop: 8, padding: '6px 14px', borderRadius: 6, border: 'none', background: '#0969DA', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 12 }}>
+              {uploading && logType === 'EVIDENCE' ? (uploadProgress || 'Mengunggah…') : '📷 Upload Evidence (dapat pilih banyak)'}
+            </button>
+          </>
+        )}
+      </div>
+
+      {/* ── Closing Notes ── */}
+      <div style={{ background: '#F6F8FA', borderRadius: 10, padding: 12, marginBottom: 10, border: '1px solid #EAEEF2' }}>
+        <p style={{ margin: '0 0 8px', fontSize: 13, fontWeight: 700 }}>
+          📝 Catatan Penutupan
+          <span style={{ fontWeight: 400, fontSize: 12, color: '#57606a', marginLeft: 8 }}>({notes_list.length} catatan)</span>
+        </p>
+        {notes_list.map((n) => (
+          <div key={n.id} style={{ padding: '6px 8px', background: '#fff', borderRadius: 6, marginBottom: 4, border: '1px solid #EAEEF2' }}>
+            {n.caption && <p style={{ margin: 0, fontSize: 12, fontWeight: 600 }}>{n.caption}</p>}
+            {n.notes && <p style={{ margin: '2px 0 0', fontSize: 12, color: '#57606a' }}>{n.notes}</p>}
+            <p style={{ margin: '2px 0 0', fontSize: 10, color: '#8c959f' }}>oleh {n.uploadedBy.name}</p>
+          </div>
+        ))}
+        {canUpload && (
+          <div style={{ marginTop: 8 }}>
+            <input value={caption} onChange={(e) => setCaption(e.target.value)} placeholder="Judul catatan (opsional)"
+              style={{ width: '100%', padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12, marginBottom: 6, boxSizing: 'border-box' }} />
+            <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={3}
+              placeholder="Validasi masa pemeliharaan selesai, kondisi akhir project, catatan serah terima…"
+              style={{ width: '100%', padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12, marginBottom: 6, boxSizing: 'border-box', resize: 'vertical' }} />
+            <button type="button" onClick={() => { setLogType('NOTE'); void handleUpload(); }} disabled={uploading || (!caption.trim() && !notes.trim())}
+              style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: '#0969DA', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 12 }}>
+              {uploading && logType === 'NOTE' ? 'Menyimpan…' : '+ Simpan Catatan'}
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Rejection reason dialog for BAST II */}
+      {rejectTarget && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+          <div style={{ background: '#fff', borderRadius: 12, padding: 24, maxWidth: 440, width: '100%' }}>
+            <h3 style={{ margin: '0 0 8px', fontSize: 16, fontWeight: 700, color: '#cf222e' }}>Alasan Penolakan BAST II</h3>
+            <textarea value={rejectReason} onChange={(e) => setRejectReason(e.target.value)} rows={4}
+              placeholder="Tuliskan alasan penolakan BAST II… (wajib)"
+              style={{ width: '100%', padding: 10, borderRadius: 8, border: '1px solid #D0D7DE', fontSize: 13, resize: 'vertical', boxSizing: 'border-box' }} />
+            <div style={{ display: 'flex', gap: 8, marginTop: 12, justifyContent: 'flex-end' }}>
+              <button type="button" onClick={() => setRejectTarget(null)}
+                style={{ padding: '8px 16px', borderRadius: 8, border: '1px solid #D0D7DE', background: '#fff', cursor: 'pointer' }}>Batal</button>
+              <button type="button"
+                onClick={() => { if (rejectReason.trim()) { void handleApprove(rejectTarget, false, rejectReason.trim()); setRejectTarget(null); } }}
+                disabled={!rejectReason.trim()}
+                style={{ padding: '8px 16px', borderRadius: 8, border: 'none', background: rejectReason.trim() ? '#cf222e' : '#8C959F', color: '#fff', fontWeight: 600, cursor: 'pointer' }}>
+                Konfirmasi Tolak
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Main Detail Page ─────────────────────────────────────────────────────────
 export default function FtttProjectDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -1153,6 +1357,11 @@ export default function FtttProjectDetailPage() {
           )}
 
           {/* Generic message for other phases with no special UI */}
+          {/* CLOSING phase — BAST II, evidence, notes */}
+          {project.currentPhase === 'CLOSING' && (
+            <ClosingSection project={project} onRefresh={load} userRole={userRole} />
+          )}
+
           {!['SURVEY', 'PREPARATION', 'DOCUMENTATION', 'RECONCILIATION', 'IMPLEMENTATION', 'CLOSING'].includes(project.currentPhase) && (
             <p style={{ fontSize: 13, color: '#57606a' }}>
               Koordinasikan kegiatan di fase ini. Klik tombol "Selesaikan Fase" di atas setelah semua aktivitas selesai.

@@ -1047,6 +1047,7 @@ export interface FtttProject {
   documents:          FtttDoc[];
   implementationLogs: FtttImplementationLog[];
   reconDocs:          FtttReconDoc[];
+  closingLogs:        FtttClosingLog[];
 }
 
 export interface FtttSurveyUpload {
@@ -1119,7 +1120,20 @@ export interface FtttReconDoc {
   uploadedBy:      { id: string; name: string };
 }
 
-export type FtttImplLogType = 'PHOTO' | 'MONITORING_DOC' | 'NOTE';
+export type FtttImplLogType    = 'PHOTO' | 'MONITORING_DOC' | 'NOTE';
+export type FtttClosingLogType = 'BAST_II' | 'EVIDENCE' | 'NOTE';
+
+export interface FtttClosingLog {
+  id:              string;
+  logType:         FtttClosingLogType;
+  fileUrl:         string | null;
+  caption:         string | null;
+  notes:           string | null;
+  approvalStatus:  FtttApprovalStatus | null;
+  rejectionNotes:  string | null;
+  createdAt:       string;
+  uploadedBy:      { id: string; name: string };
+}
 
 export interface FtttImplementationLog {
   id:          string;

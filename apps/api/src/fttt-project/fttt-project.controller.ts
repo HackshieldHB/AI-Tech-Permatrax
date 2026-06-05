@@ -17,6 +17,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { AuthUser } from '../auth/types/auth-user.types';
 import { FtttProjectService } from './fttt-project.service';
 import {
+  AddClosingLogDto,
   AddImplLogDto,
   AddJaminanDto,
   AddReconDocDto,
@@ -223,5 +224,28 @@ export class FtttProjectController {
     @CurrentUser() user: AuthUser,
   ) {
     return this.service.approveReconDoc(docId, approved, rejectionNotes, user.userId, user.role);
+  }
+
+  // POST /fttt-projects/:id/closing-logs  (Project Closing phase)
+  @Post(':id/closing-logs')
+  @UseInterceptors(FileInterceptor('file', upload))
+  addClosingLog(
+    @Param('id') id: string,
+    @UploadedFile() file: Express.Multer.File | undefined,
+    @Body(new ZodValidationPipe(AddClosingLogDto)) dto: any,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.service.addClosingLog(id, dto, file, user.userId, user.role);
+  }
+
+  // PUT /fttt-projects/closing-logs/:logId/approve  (PM approves BAST II)
+  @Put('closing-logs/:logId/approve')
+  approveClosingLog(
+    @Param('logId') logId: string,
+    @Body('approved') approved: boolean,
+    @Body('rejectionNotes') rejectionNotes: string | undefined,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.service.approveClosingLog(logId, approved, rejectionNotes, user.userId, user.role);
   }
 }

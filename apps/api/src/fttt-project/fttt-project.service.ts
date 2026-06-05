@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
+  FtttClosingLogType,
   FtttCompany,
   FtttDocumentType,
   FtttImplLogType,
@@ -54,6 +55,7 @@ import { NotificationsGateway } from '../notifications/notifications.gateway';
 import { NotificationsService } from '../notifications/notifications.service';
 import { paginate } from '../common/dto/pagination.dto';
 import {
+  AddClosingLogDtoType,
   AddImplLogDtoType,
   AddJaminanDtoType,
   AddReconDocDtoType,
@@ -216,7 +218,8 @@ export class FtttProjectService {
         drmDocuments:  true,
         jaminans:      true,
         documents:     { where: { approvalStatus: 'APPROVED' } },
-        reconDocs:     true,  // needed for RECONCILIATION phase check
+        reconDocs:     true,   // needed for RECONCILIATION phase check
+        closingLogs:   true,   // needed for CLOSING phase check
       },
     });
     if (!project) throw new NotFoundException();
@@ -251,6 +254,26 @@ export class FtttProjectService {
     if (phase === FtttPhase.DOCUMENTATION) {
       if (project.documents.length === 0) {
         reasons.push('Minimal satu dokumen (ATP/BAUT) harus sudah disetujui');
+      }
+    }
+
+    // CLOSING phase readiness — BAST II must be approved + at least 1 evidence or note
+    if (phase === FtttPhase.CLOSING) {
+      const closingLogs = (project as typeof project & {
+        closingLogs: { logType: string; approvalStatus: string | null }[];
+      }).closingLogs ?? [];
+
+      const bastII = closingLogs.find((l) => l.logType === 'BAST_II');
+      if (!bastII) {
+        reasons.push('Dokumen BAST II belum diunggah');
+      } else if (bastII.approvalStatus !== 'APPROVED') {
+        reasons.push('Dokumen BAST II belum disetujui PM FTTT');
+      }
+
+      const hasEvidence = closingLogs.some((l) => l.logType === 'EVIDENCE');
+      const hasNote     = closingLogs.some((l) => l.logType === 'NOTE');
+      if (!hasEvidence && !hasNote) {
+        reasons.push('Minimal satu evidence foto atau catatan serah terima wajib diunggah');
       }
     }
 
@@ -716,6 +739,7 @@ export class FtttProjectService {
       documents:          { include: { uploadedBy: { select: { id: true, name: true } } }, orderBy: { createdAt: 'desc' as const } },
       implementationLogs: { include: { uploadedBy: { select: { id: true, name: true } } }, orderBy: { createdAt: 'asc' as const } },
       reconDocs:          { include: { uploadedBy: { select: { id: true, name: true } } }, orderBy: { createdAt: 'asc' as const } },
+      closingLogs:        { include: { uploadedBy: { select: { id: true, name: true } } }, orderBy: { createdAt: 'asc' as const } },
     } as const;
   }
 
@@ -802,5 +826,80 @@ export class FtttProjectService {
     }
 
     throw new ForbiddenException('Tidak berwenang menyetujui dokumen ini');
+  }
+
+  // ─── Project Closing phase ─────────────────────────────────────────────────
+  async addClosingLog(
+    projectId: string,
+    dto: AddClosingLogDtoType,
+    file: Express.Multer.File | undefined,
+    userId: string,
+    userRole: Role,
+  ) {
+    const allowed: Role[] = [Role.SURVEYOR_FTTT, Role.PM_FTTT, Role.ADMIN, Role.GENERAL_MANAGER];
+    if (!allowed.includes(userRole)) {
+      throw new ForbiddenException('Tidak memiliki akses untuk menambahkan log penutupan');
+    }
+
+    // BAST_II and EVIDENCE require a file
+    if ((dto.logType === FtttClosingLogType.BAST_II || dto.logType === FtttClosingLogType.EVIDENCE) && !file) {
+      throw new BadRequestException('File wajib untuk tipe log ini');
+    }
+
+    // Only one BAST_II allowed per project
+    if (dto.logType === FtttClosingLogType.BAST_II) {
+      const existing = await this.prisma.ftttClosingLog.findFirst({
+        where: { projectId, logType: 'BAST_II' },
+      });
+      if (existing) {
+        // Replace existing BAST_II — re-upload resets approval
+        let fileUrl = existing.fileUrl;
+        if (file) fileUrl = await this.storage.uploadMulterFile(file, 'fttt-closing', projectId);
+        return this.prisma.ftttClosingLog.update({
+          where: { id: existing.id },
+          data: { fileUrl, notes: dto.notes ?? null, caption: dto.caption ?? null,
+            uploadedById: userId, approvalStatus: 'PENDING_PM',
+            pmApprovedById: null, pmApprovedAt: null, rejectionNotes: null },
+          include: { uploadedBy: { select: { id: true, name: true } } },
+        });
+      }
+    }
+
+    let fileUrl: string | undefined;
+    if (file) fileUrl = await this.storage.uploadMulterFile(file, 'fttt-closing', projectId);
+
+    return this.prisma.ftttClosingLog.create({
+      data: {
+        projectId,
+        logType:      dto.logType,
+        fileUrl:      fileUrl ?? null,
+        caption:      dto.caption ?? null,
+        notes:        dto.notes ?? null,
+        uploadedById: userId,
+        approvalStatus: dto.logType === FtttClosingLogType.BAST_II ? 'PENDING_PM' : null,
+      },
+      include: { uploadedBy: { select: { id: true, name: true } } },
+    });
+  }
+
+  async approveClosingLog(logId: string, approved: boolean, rejectionNotes: string | undefined, userId: string, userRole: Role) {
+    const log = await this.prisma.ftttClosingLog.findUniqueOrThrow({ where: { id: logId } });
+    if (log.logType !== 'BAST_II') throw new BadRequestException('Hanya dokumen BAST II yang memerlukan approval');
+    if (log.approvalStatus !== 'PENDING_PM') throw new BadRequestException('Dokumen tidak dalam status menunggu PM');
+
+    if (!approved && !rejectionNotes?.trim()) {
+      throw new BadRequestException('Alasan penolakan wajib diisi');
+    }
+
+    if (userRole !== Role.PM_FTTT && userRole !== Role.ADMIN && userRole !== Role.GENERAL_MANAGER) {
+      throw new ForbiddenException('Hanya PM FTTT atau Admin yang dapat menyetujui BAST II');
+    }
+
+    return this.prisma.ftttClosingLog.update({
+      where: { id: logId },
+      data: approved
+        ? { approvalStatus: 'APPROVED', pmApprovedById: userId, pmApprovedAt: new Date(), rejectionNotes: null }
+        : { approvalStatus: 'REJECTED', rejectionNotes: rejectionNotes!.trim() },
+    });
   }
 }

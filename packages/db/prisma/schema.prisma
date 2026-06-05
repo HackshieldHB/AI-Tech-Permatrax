@@ -349,6 +349,7 @@ model User {
   ftttDocuments         FtttDocument[]            @relation("FtttDocUploader")
   ftttImplementationLogs FtttImplementationLog[]  @relation("FtttImplLogUploader")
   ftttReconDocs          FtttReconDoc[]           @relation("FtttReconDocUploader")
+  ftttClosingLogs        FtttClosingLog[]         @relation("FtttClosingLogUploader")
 }
 
 // Phase 4 — GM-controlled feature visibility per role
@@ -2988,6 +2989,7 @@ model FtttProject {
   documents          FtttDocument[]
   implementationLogs FtttImplementationLog[]
   reconDocs          FtttReconDoc[]
+  closingLogs        FtttClosingLog[]
 
   @@index([ftttCompany])
   @@index([currentPhase])
@@ -3139,6 +3141,33 @@ model FtttImplementationLog {
   notes        String?
   createdAt    DateTime         @default(now())
   updatedAt    DateTime         @updatedAt
+
+  @@index([projectId])
+}
+
+// Project Closing phase — BAST II, evidence photos, closing notes
+enum FtttClosingLogType {
+  BAST_II    // formal handover doc — requires PM approval
+  EVIDENCE   // serah terima photo evidence
+  NOTE       // closing notes / catatan
+}
+
+model FtttClosingLog {
+  id              String              @id @default(cuid())
+  projectId       String
+  project         FtttProject         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  logType         FtttClosingLogType
+  fileUrl         String?
+  caption         String?
+  notes           String?
+  approvalStatus  FtttApprovalStatus? // null for EVIDENCE/NOTE; PENDING_PM/APPROVED/REJECTED for BAST_II
+  rejectionNotes  String?
+  uploadedById    String
+  uploadedBy      User                @relation("FtttClosingLogUploader", fields: [uploadedById], references: [id])
+  pmApprovedById  String?
+  pmApprovedAt    DateTime?
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
 
   @@index([projectId])
 }

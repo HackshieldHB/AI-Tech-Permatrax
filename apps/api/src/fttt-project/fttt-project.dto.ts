@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { FtttCompany, FtttDocType, FtttJaminanType, FtttDocumentType, FtttImplLogType } from '@prisma/client';
+import { FtttCompany, FtttDocType, FtttJaminanType, FtttDocumentType, FtttImplLogType, FtttClosingLogType } from '@prisma/client';
 
 // ─── Phase lifecycle config (hardcoded per company) ──────────────────────────
 import { FtttPhase } from '@prisma/client';
@@ -126,6 +126,14 @@ export const AddImplLogDto = z.object({
   notes:   z.string().max(2000).optional(),
 });
 export type AddImplLogDtoType = z.infer<typeof AddImplLogDto>;
+
+// Project Closing log (BAST II / evidence photo / note)
+export const AddClosingLogDto = z.object({
+  logType: z.nativeEnum(FtttClosingLogType),
+  caption: z.string().max(500).optional(),
+  notes:   z.string().max(2000).optional(),
+});
+export type AddClosingLogDtoType = z.infer<typeof AddClosingLogDto>;
 
 export const FtttProjectFilterDto = z.object({
   company:  z.nativeEnum(FtttCompany).optional(),
