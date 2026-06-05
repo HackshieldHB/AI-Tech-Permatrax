@@ -13,6 +13,41 @@ import {
   FtttProjectStatus,
   Role,
 } from '@prisma/client';
+// ─── Reconciliation doc config (mirrors frontend RECON_DOCS) ─────────────────
+// docKeys that do NOT need PM/Admin approval — set to APPROVED on upload
+const RECON_NO_APPROVAL = new Set([
+  'GOOD_RECEIPT', 'JAMINAN_PEMELIHARAAN', 'INVOICE_FINAL',  // Telkom Infra
+  'BAST_1', 'GOOD_RECEIPT_PST', 'INVOICE_PST',              // PST
+  'PUNCHLIST', 'PO_FINAL', 'PSS', 'MCV', 'INVOICE_IFORTE',  // iFORTE
+]);
+
+// Required docs per company for RECONCILIATION phase readiness
+// Tuple: [docKey, needsApproval (true = must be APPROVED, false = just must exist)]
+const RECON_REQUIRED: Record<string, Array<[string, boolean, string]>> = {
+  TELKOM_INFRA: [
+    ['BAPP',              true,  'BAPP (perlu disetujui)'],
+    ['BAST_BAPWPP',       true,  'BAST & BAPWPP (perlu disetujui)'],
+    ['BA_PENUTUPAN',      true,  'BA Penutupan (perlu disetujui)'],
+    ['GOOD_RECEIPT',      false, 'Good Receipt'],
+    ['JAMINAN_PEMELIHARAAN', false, 'Jaminan Pemeliharaan'],
+    ['INVOICE_FINAL',     false, 'Invoice Final'],
+  ],
+  PST: [
+    ['REKONSILIASI',      true,  'Rekonsiliasi (perlu disetujui)'],
+    ['BAST_1',            false, 'BAST 1'],
+    ['GOOD_RECEIPT_PST',  false, 'Good Receipt'],
+    ['INVOICE_PST',       false, 'Invoice'],
+  ],
+  IFORTE: [
+    ['PUNCHLIST',         false, 'Punchlist'],
+    ['ENDORSEMENT',       true,  'Endorsement (perlu disetujui)'],
+    ['PO_FINAL',          false, 'PO Final'],
+    ['PSS',               false, 'PSS'],
+    ['MCV',               false, 'MCV'],
+    ['INVOICE_IFORTE',    false, 'Invoice'],
+  ],
+};
+
 import { PrismaService } from '../prisma/prisma.service';
 import { StorageService } from '../storage/storage.service';
 import { NotificationsGateway } from '../notifications/notifications.gateway';
@@ -181,6 +216,7 @@ export class FtttProjectService {
         drmDocuments:  true,
         jaminans:      true,
         documents:     { where: { approvalStatus: 'APPROVED' } },
+        reconDocs:     true,  // needed for RECONCILIATION phase check
       },
     });
     if (!project) throw new NotFoundException();
@@ -215,6 +251,24 @@ export class FtttProjectService {
     if (phase === FtttPhase.DOCUMENTATION) {
       if (project.documents.length === 0) {
         reasons.push('Minimal satu dokumen (ATP/BAUT) harus sudah disetujui');
+      }
+    }
+
+    // Fix #2: RECONCILIATION phase readiness — all required docs must be uploaded/approved
+    if (phase === FtttPhase.RECONCILIATION) {
+      const required = RECON_REQUIRED[company] ?? [];
+      const reconDocMap = new Map(
+        (project as typeof project & { reconDocs: { docKey: string; approvalStatus: string }[] })
+          .reconDocs.map((d) => [d.docKey, d.approvalStatus]),
+      );
+
+      for (const [docKey, needsApproval, label] of required) {
+        const status = reconDocMap.get(docKey);
+        if (!status) {
+          reasons.push(`${label} belum diunggah`);
+        } else if (needsApproval && status !== 'APPROVED') {
+          reasons.push(`${label} belum disetujui`);
+        }
       }
     }
 
@@ -688,6 +742,9 @@ export class FtttProjectService {
       fileUrl = await this.storage.uploadMulterFile(file, 'fttt-recon', projectId);
     }
 
+    // Fix #1: docs in RECON_NO_APPROVAL list don't go through PM review — set APPROVED directly
+    const initialStatus = RECON_NO_APPROVAL.has(dto.docKey) ? 'APPROVED' : 'PENDING_PM';
+
     if (existing) {
       return this.prisma.ftttReconDoc.update({
         where: { id: existing.id },
@@ -695,7 +752,7 @@ export class FtttProjectService {
           fileUrl:        fileUrl ?? null,
           notes:          dto.notes ?? null,
           uploadedById:   userId,
-          approvalStatus: 'PENDING_PM',  // reset to re-review when replaced
+          approvalStatus: RECON_NO_APPROVAL.has(dto.docKey) ? 'APPROVED' : 'PENDING_PM',
           rejectionNotes: null,
           pmApprovedById: null, pmApprovedAt: null,
           adminApprovedById: null, adminApprovedAt: null,
@@ -707,11 +764,11 @@ export class FtttProjectService {
     return this.prisma.ftttReconDoc.create({
       data: {
         projectId,
-        docKey:       dto.docKey,
-        fileUrl:      fileUrl ?? null,
-        notes:        dto.notes ?? null,
-        uploadedById: userId,
-        approvalStatus: 'PENDING_PM',
+        docKey:         dto.docKey,
+        fileUrl:        fileUrl ?? null,
+        notes:          dto.notes ?? null,
+        uploadedById:   userId,
+        approvalStatus: initialStatus,
       },
       include: { uploadedBy: { select: { id: true, name: true } } },
     });

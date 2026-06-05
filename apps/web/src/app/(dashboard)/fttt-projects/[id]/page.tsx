@@ -857,7 +857,14 @@ function ReconciliationSection({ project, onRefresh, userRole }: { project: Fttt
                   <span style={{ fontSize: 11, color: '#57606a', background: '#EDF2F4', padding: '2px 6px', borderRadius: 4 }}>
                     {doc.uploaderRole.join(' / ')}
                   </span>
-                  {rec && <span style={{ fontSize: 10, fontWeight: 700, color: STATUS_COLORS[rec.approvalStatus] }}>{STATUS_LABELS[rec.approvalStatus]}</span>}
+                  {rec && (
+                    <span style={{ fontSize: 10, fontWeight: 700, color:
+                      // Fix #1: no-approval docs that still show PENDING_PM (legacy data) → treat as uploaded
+                      (!doc.requiresApproval && rec.approvalStatus === 'PENDING_PM') ? '#1a7f37'
+                      : STATUS_COLORS[rec.approvalStatus] }}>
+                      {(!doc.requiresApproval && rec.approvalStatus === 'PENDING_PM') ? '✓ Diunggah' : STATUS_LABELS[rec.approvalStatus]}
+                    </span>
+                  )}
                   {!rec && <span style={{ fontSize: 10, color: '#8c959f' }}>Belum diunggah</span>}
                 </div>
                 <p style={{ margin: '3px 0 0', fontSize: 11, color: '#57606a' }}>{doc.desc}</p>
