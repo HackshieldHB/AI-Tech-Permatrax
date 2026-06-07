@@ -17,21 +17,34 @@ import {
 // ─── Reconciliation doc config (mirrors frontend RECON_DOCS) ─────────────────
 // docKeys that do NOT need PM/Admin approval — set to APPROVED on upload
 const RECON_NO_APPROVAL = new Set([
-  'GOOD_RECEIPT', 'JAMINAN_PEMELIHARAAN', 'INVOICE_FINAL',  // Telkom Infra
-  'BAST_1', 'GOOD_RECEIPT_PST', 'INVOICE_PST',              // PST
-  'PUNCHLIST', 'PO_FINAL', 'PSS', 'MCV', 'INVOICE_IFORTE',  // iFORTE
+  // Telkom Infra — Generate Form docs (auto-approved; no separate PM sign-off needed)
+  'JAMINAN_PEMELIHARAAN', 'INVOICE_FINAL',
+  // Telkom Infra — Upload docs sourced directly from Telkom Infra (already official)
+  'GOOD_RECEIPT',
+  'BAPP_AMANDEMEN_2',
+  'BAST_BAPWPP_AMANDEMEN_1', 'BAST_BAPWPP_AMANDEMEN_2', 'BAST_BAPWPP_PO',
+  // PST
+  'BAST_1', 'GOOD_RECEIPT_PST', 'INVOICE_PST',
+  // iFORTE
+  'PUNCHLIST', 'PO_FINAL', 'PSS', 'MCV', 'INVOICE_IFORTE',
 ]);
 
 // Required docs per company for RECONCILIATION phase readiness
 // Tuple: [docKey, needsApproval (true = must be APPROVED, false = just must exist)]
 const RECON_REQUIRED: Record<string, Array<[string, boolean, string]>> = {
   TELKOM_INFRA: [
-    ['BAPP',              true,  'BAPP (perlu disetujui)'],
-    ['BAST_BAPWPP',       true,  'BAST & BAPWPP (perlu disetujui)'],
-    ['BA_PENUTUPAN',      true,  'BA Penutupan (perlu disetujui)'],
-    ['GOOD_RECEIPT',      false, 'Good Receipt'],
-    ['JAMINAN_PEMELIHARAAN', false, 'Jaminan Pemeliharaan'],
-    ['INVOICE_FINAL',     false, 'Invoice Final'],
+    // Generate Form docs (ILT-created) — need PM/Admin approval
+    ['BAPP_MOM',              true,  'BAPP - Risalah Rapat/MOM (perlu disetujui)'],
+    ['BAST_BAPWPP_BOQ',       true,  'BAST & BAPWPP - BOQ Perhitungan (perlu disetujui)'],
+    ['BA_PENUTUPAN',          true,  'BA Penutupan (perlu disetujui)'],
+    // Upload docs from Telkom Infra — auto-approved on upload
+    ['BAPP_AMANDEMEN_2',         false, 'BAPP - Amandemen 2'],
+    ['BAST_BAPWPP_AMANDEMEN_1',  false, 'BAST & BAPWPP - Amandemen 1'],
+    ['BAST_BAPWPP_AMANDEMEN_2',  false, 'BAST & BAPWPP - Amandemen 2'],
+    ['BAST_BAPWPP_PO',           false, 'BAST & BAPWPP - PO'],
+    ['GOOD_RECEIPT',             false, 'Good Receipt'],
+    ['JAMINAN_PEMELIHARAAN',     false, 'Jaminan Pemeliharaan'],
+    ['INVOICE_FINAL',            false, 'Invoice Final'],
   ],
   PST: [
     ['REKONSILIASI',      true,  'Rekonsiliasi (perlu disetujui)'],
@@ -385,10 +398,11 @@ export class FtttProjectService {
   // ─── Upload survey evidence (iForte / PST only) ───────────────────────────
   async uploadSurveyEvidence(
     id: string,
-    file: Express.Multer.File,
+    file: Express.Multer.File | undefined,
     dto: UploadSurveyDtoType,
     userId: string,
   ) {
+    if (!file) throw new BadRequestException('File foto / dokumen survei wajib diunggah');
     const project = await this.prisma.ftttProject.findUniqueOrThrow({ where: { id } });
     if (project.ftttCompany === FtttCompany.TELKOM_INFRA) {
       throw new BadRequestException('Telkom Infra tidak memerlukan survei');
@@ -547,23 +561,31 @@ export class FtttProjectService {
   // ─── Documentation upload ──────────────────────────────────────────────────
   async uploadDocument(
     id: string,
-    file: Express.Multer.File,
+    file: Express.Multer.File | undefined,
     dto: UploadDocumentDtoType,
     userId: string,
     userRole: Role,
   ) {
-    // Issue #5 & #7: Only Surveyor FTTT (and Admin) can upload docs in Documentation phase
+    // Only Surveyor FTTT (and Admin/GM) can upload/generate docs in Documentation phase
     const docUploaderRoles: Role[] = [Role.SURVEYOR_FTTT, Role.ADMIN, Role.GENERAL_MANAGER];
     if (!docUploaderRoles.includes(userRole)) {
       throw new ForbiddenException('Hanya Surveyor FTTT yang dapat mengunggah dokumen pada fase Documentation and Acceptance');
     }
 
-    const fileUrl = await this.storage.uploadMulterFile(file, 'fttt-docs', id);
+    // Either a file or formContent must be provided
+    if (!file && !dto.formContent?.trim()) {
+      throw new BadRequestException('Dokumen harus berupa file upload atau Generate Form yang terisi');
+    }
+
+    let fileUrl: string | null = null;
+    if (file) fileUrl = await this.storage.uploadMulterFile(file, 'fttt-docs', id);
+
     return this.prisma.ftttDocument.create({
       data: {
         projectId:     id,
         docType:       dto.docType as FtttDocumentType,
         fileUrl,
+        formContent:   dto.formContent ?? null,
         notes:         dto.notes ?? null,
         uploadedById:  userId,
         approvalStatus: 'PENDING_PM',
@@ -617,10 +639,11 @@ export class FtttProjectService {
   // ─── Issue #6: Surveyor replaces a REJECTED document ─────────────────────
   async replaceDocument(
     docId: string,
-    file: Express.Multer.File,
+    file: Express.Multer.File | undefined,
     userId: string,
     userRole: Role,
     notes?: string,
+    formContent?: string,
   ) {
     // Issue #3: Only Surveyor FTTT can replace rejected docs (not Admin — Admin only approves/rejects)
     const allowedRoles: Role[] = [Role.SURVEYOR_FTTT];
@@ -635,12 +658,19 @@ export class FtttProjectService {
       throw new BadRequestException('Hanya dokumen yang ditolak yang dapat diganti');
     }
 
-    const fileUrl = await this.storage.uploadMulterFile(file, 'fttt-docs', doc.projectId);
+    // Generate Form docs: formContent required; Upload docs: file required
+    if (!file && !formContent?.trim()) {
+      throw new BadRequestException('File atau isi form wajib diberikan untuk mengganti dokumen');
+    }
+
+    let fileUrl = doc.fileUrl;
+    if (file) fileUrl = await this.storage.uploadMulterFile(file, 'fttt-docs', doc.projectId);
 
     return this.prisma.ftttDocument.update({
       where: { id: docId },
       data: {
         fileUrl,
+        formContent:    formContent?.trim() ?? doc.formContent,
         notes:          notes ?? doc.notes,
         approvalStatus: 'PENDING_PM',   // reset to pending review
         uploadedById:   userId,
@@ -766,6 +796,11 @@ export class FtttProjectService {
       fileUrl = await this.storage.uploadMulterFile(file, 'fttt-recon', projectId);
     }
 
+    // Either file or formContent required
+    if (!file && !dto.formContent?.trim()) {
+      throw new BadRequestException('Dokumen harus berupa file upload atau Generate Form yang terisi');
+    }
+
     // Fix #1: docs in RECON_NO_APPROVAL list don't go through PM review — set APPROVED directly
     const initialStatus = RECON_NO_APPROVAL.has(dto.docKey) ? 'APPROVED' : 'PENDING_PM';
 
@@ -774,6 +809,7 @@ export class FtttProjectService {
         where: { id: existing.id },
         data: {
           fileUrl:        fileUrl ?? null,
+          formContent:    dto.formContent ?? null,
           notes:          dto.notes ?? null,
           uploadedById:   userId,
           approvalStatus: RECON_NO_APPROVAL.has(dto.docKey) ? 'APPROVED' : 'PENDING_PM',
@@ -790,6 +826,7 @@ export class FtttProjectService {
         projectId,
         docKey:         dto.docKey,
         fileUrl:        fileUrl ?? null,
+        formContent:    dto.formContent ?? null,
         notes:          dto.notes ?? null,
         uploadedById:   userId,
         approvalStatus: initialStatus,
@@ -841,9 +878,12 @@ export class FtttProjectService {
       throw new ForbiddenException('Tidak memiliki akses untuk menambahkan log penutupan');
     }
 
-    // BAST_II and EVIDENCE require a file
-    if ((dto.logType === FtttClosingLogType.BAST_II || dto.logType === FtttClosingLogType.EVIDENCE) && !file) {
-      throw new BadRequestException('File wajib untuk tipe log ini');
+    // EVIDENCE requires a file; BAST_II requires file OR formContent; NOTE requires notes
+    if (dto.logType === FtttClosingLogType.EVIDENCE && !file) {
+      throw new BadRequestException('File foto wajib untuk Evidence');
+    }
+    if (dto.logType === FtttClosingLogType.BAST_II && !file && !dto.formContent?.trim()) {
+      throw new BadRequestException('BAST II harus diisi melalui Generate Form atau upload file');
     }
 
     // Only one BAST_II allowed per project
@@ -852,12 +892,13 @@ export class FtttProjectService {
         where: { projectId, logType: 'BAST_II' },
       });
       if (existing) {
-        // Replace existing BAST_II — re-upload resets approval
+        // Replace existing BAST_II — resets approval
         let fileUrl = existing.fileUrl;
         if (file) fileUrl = await this.storage.uploadMulterFile(file, 'fttt-closing', projectId);
         return this.prisma.ftttClosingLog.update({
           where: { id: existing.id },
-          data: { fileUrl, notes: dto.notes ?? null, caption: dto.caption ?? null,
+          data: { fileUrl, formContent: dto.formContent ?? null,
+            notes: dto.notes ?? null, caption: dto.caption ?? null,
             uploadedById: userId, approvalStatus: 'PENDING_PM',
             pmApprovedById: null, pmApprovedAt: null, rejectionNotes: null },
           include: { uploadedBy: { select: { id: true, name: true } } },
@@ -873,6 +914,7 @@ export class FtttProjectService {
         projectId,
         logType:      dto.logType,
         fileUrl:      fileUrl ?? null,
+        formContent:  dto.formContent ?? null,
         caption:      dto.caption ?? null,
         notes:        dto.notes ?? null,
         uploadedById: userId,

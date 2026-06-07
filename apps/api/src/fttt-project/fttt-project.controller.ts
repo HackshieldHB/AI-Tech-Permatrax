@@ -98,7 +98,7 @@ export class FtttProjectController {
   @UseInterceptors(FileInterceptor('file', upload))
   uploadSurvey(
     @Param('id') id: string,
-    @UploadedFile() file: Express.Multer.File,
+    @UploadedFile() file: Express.Multer.File | undefined,
     @Body(new ZodValidationPipe(UploadSurveyDto)) dto: any,
     @CurrentUser() user: AuthUser,
   ) {
@@ -157,12 +157,12 @@ export class FtttProjectController {
     return this.service.addJaminan(id, dto, file, user.userId, user.role);
   }
 
-  // POST /fttt-projects/:id/documents  (Surveyor FTTT only — enforced in service)
+  // POST /fttt-projects/:id/documents  (Surveyor FTTT only; file OR formContent required)
   @Post(':id/documents')
   @UseInterceptors(FileInterceptor('file', upload))
   uploadDocument(
     @Param('id') id: string,
-    @UploadedFile() file: Express.Multer.File,
+    @UploadedFile() file: Express.Multer.File | undefined,
     @Body(new ZodValidationPipe(UploadDocumentDto)) dto: any,
     @CurrentUser() user: AuthUser,
   ) {
@@ -184,11 +184,12 @@ export class FtttProjectController {
   @UseInterceptors(FileInterceptor('file', upload))
   replaceDocument(
     @Param('docId') docId: string,
-    @UploadedFile() file: Express.Multer.File,
+    @UploadedFile() file: Express.Multer.File | undefined,
     @Body('notes') notes: string | undefined,
+    @Body('formContent') formContent: string | undefined,
     @CurrentUser() user: AuthUser,
   ) {
-    return this.service.replaceDocument(docId, file, user.userId, user.role, notes);
+    return this.service.replaceDocument(docId, file, user.userId, user.role, notes, formContent);
   }
 
   // POST /fttt-projects/:id/implementation-logs  (Implementation phase logs)

@@ -409,14 +409,16 @@ function JaminanSection({ project, onRefresh }: { project: FtttProject; onRefres
         </div>
       ))}
 
-      {/* Upload / Replace form — Finance only */}
+      {/* Generate Form — Finance only (file optional as lampiran) */}
       {isFinance && (
         <>
-          {/* Upload form: show when there are missing types OR user clicked Replace */}
           {(missingTypes.length > 0 || replaceFor !== null) && (
-            <div style={{ border: `1px solid ${replaceFor ? '#FFA500' : '#D0D7DE'}`, borderRadius: 8, padding: 12, marginTop: 8, background: replaceFor ? '#FFFBF0' : '#fff' }}>
-              <p style={{ fontSize: 12, fontWeight: 600, margin: '0 0 8px' }}>
-                {replaceFor ? `Ganti Dokumen: ${JAMINAN_LABELS[replaceFor]}` : 'Upload Jaminan'}
+            <div style={{ border: `1px dashed ${replaceFor ? '#FFA500' : '#0969DA'}`, borderRadius: 8, padding: 12, marginTop: 8, background: replaceFor ? '#FFFBF0' : '#F0F8FF' }}>
+              <p style={{ fontSize: 12, fontWeight: 700, margin: '0 0 4px', color: replaceFor ? '#7d5a00' : '#0969DA' }}>
+                📝 Generate Form — {replaceFor ? `Ganti: ${JAMINAN_LABELS[replaceFor]}` : 'Isi Data Jaminan'}
+              </p>
+              <p style={{ fontSize: 10, color: '#57606a', margin: '0 0 8px' }}>
+                Dokumen Jaminan dibuat oleh ILT / Finance melalui sistem. Isi data di bawah dan simpan. File lampiran opsional.
               </p>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
                 {!replaceFor && (
@@ -425,30 +427,30 @@ function JaminanSection({ project, onRefresh }: { project: FtttProject; onRefres
                     {missingTypes.map((t) => <option key={t} value={t}>{JAMINAN_LABELS[t]}</option>)}
                   </select>
                 )}
-                <input value={issuer} onChange={(e) => setIssuer(e.target.value)} placeholder="Penerbit (bank/lembaga)"
+                <input value={issuer} onChange={(e) => setIssuer(e.target.value)} placeholder="Penerbit (bank/lembaga) *"
                   style={{ flex: 1, padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12, minWidth: 120 }} />
               </div>
-              <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Catatan (opsional)"
+              <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Catatan / nomor dokumen / nilai jaminan (opsional)"
                 style={{ width: '100%', padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12, marginBottom: 8, boxSizing: 'border-box' }} />
-              <div style={{ display: 'flex', gap: 8 }}>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                 <input ref={fileRef} type="file" style={{ display: 'none' }} onChange={(e) => setSelectedFile(e.target.files?.[0] ?? null)} />
                 <button type="button" onClick={() => fileRef.current?.click()}
                   style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 11, cursor: 'pointer', background: '#F6F8FA' }}>
-                  {selectedFile ? selectedFile.name.slice(0, 18) + '…' : '+ Pilih File'}
+                  {selectedFile ? '📎 ' + selectedFile.name.slice(0, 18) + '…' : '📎 Lampiran (opsional)'}
                 </button>
-                <button type="button" onClick={() => { void handleUpload(replaceFor ?? undefined); }} disabled={submitting}
-                  style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: replaceFor ? '#FFA500' : '#0969DA', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 12 }}>
-                  {submitting ? 'Menyimpan…' : replaceFor ? 'Ganti Dokumen' : 'Upload'}
+                <button type="button" onClick={() => { void handleUpload(replaceFor ?? undefined); }} disabled={submitting || !issuer.trim()}
+                  style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: issuer.trim() ? (replaceFor ? '#FFA500' : '#0969DA') : '#D0D7DE', color: '#fff', fontWeight: 600, cursor: issuer.trim() ? 'pointer' : 'not-allowed', fontSize: 12 }}>
+                  {submitting ? 'Menyimpan…' : replaceFor ? '🔄 Perbarui' : '✉️ Simpan & Kirim ke PM'}
                 </button>
                 {replaceFor && (
-                  <button type="button" onClick={() => { setReplaceFor(null); setSelectedFile(null); }}
+                  <button type="button" onClick={() => { setReplaceFor(null); setSelectedFile(null); setIssuer(''); setNotes(''); }}
                     style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', background: '#fff', fontSize: 12, cursor: 'pointer' }}>Batal</button>
                 )}
               </div>
             </div>
           )}
           {allUploaded && !replaceFor && (
-            <p style={{ fontSize: 11, color: '#57606a', marginTop: 8 }}>Kedua dokumen sudah diunggah. Klik "Ganti" untuk mengganti dokumen yang salah.</p>
+            <p style={{ fontSize: 11, color: '#57606a', marginTop: 8 }}>Kedua dokumen sudah diisi. Klik "Ganti" untuk memperbarui data yang salah.</p>
           )}
         </>
       )}
@@ -467,8 +469,9 @@ function DocumentationSection({ project, onRefresh, userRole }: { project: FtttP
   const canPmApprove    = userRole === 'PM_FTTT';
   const canAdminApprove = userRole === 'ADMIN';
 
-  const [docType, setDocType] = useState<'ATP' | 'BAUT' | 'SUPPORTING' | 'EVIDENCE'>('ATP');
+  const [docType, setDocType] = useState<'ATP' | 'BAUT' | 'BAUT_REKONSILIASI' | 'SUPPORTING' | 'EVIDENCE'>('ATP');
   const [notes, setNotes] = useState('');
+  const [formContent, setFormContent] = useState('');
   const [uploading, setUploading] = useState(false);
   const fileRef    = useRef<HTMLInputElement>(null);
   const replaceRef = useRef<HTMLInputElement>(null);
@@ -477,7 +480,9 @@ function DocumentationSection({ project, onRefresh, userRole }: { project: FtttP
   const [rejectTarget, setRejectTarget] = useState<string | null>(null); // docId to reject
   const [rejectReason, setRejectReason] = useState('');
 
-  const DOC_LABELS: Record<string, string> = { ATP: 'ATP', BAUT: 'BAUT', SUPPORTING: 'Supporting Doc', EVIDENCE: 'Project Evidence' };
+  const GENERATE_FORM_TYPES = new Set(['BAUT_REKONSILIASI']);
+
+  const DOC_LABELS: Record<string, string> = { ATP: 'ATP', BAUT: 'BAUT (Amandemen 1)', BAUT_REKONSILIASI: 'BAUT — BA Rekonsiliasi', SUPPORTING: 'Supporting Doc', EVIDENCE: 'Project Evidence' };
   const STATUS_COLORS: Record<string, string> = { PENDING_PM: '#9a6700', PENDING_ADMIN: '#0969DA', APPROVED: '#1a7f37', REJECTED: '#cf222e' };
   const STATUS_LABELS: Record<string, string> = { PENDING_PM: 'Menunggu PM', PENDING_ADMIN: 'Menunggu Admin', APPROVED: 'Disetujui', REJECTED: 'Ditolak' };
 
@@ -491,6 +496,21 @@ function DocumentationSection({ project, onRefresh, userRole }: { project: FtttP
       const res = await apiFetch(`/fttt-projects/${project.id}/documents`, { method: 'POST', body: fd }, user?.id);
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
       toast.success('Dokumen berhasil diunggah'); onRefresh(); setNotes('');
+    } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
+    finally { setUploading(false); }
+  };
+
+  const handleGenerateFormDoc = async () => {
+    if (!formContent.trim()) { toast.error('Isi dokumen wajib diisi'); return; }
+    const fd = new FormData();
+    fd.append('docType', docType);
+    fd.append('formContent', formContent.trim());
+    if (notes) fd.append('notes', notes);
+    setUploading(true);
+    try {
+      const res = await apiFetch(`/fttt-projects/${project.id}/documents`, { method: 'POST', body: fd }, user?.id);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
+      toast.success('Dokumen berhasil disimpan — menunggu persetujuan PM'); onRefresh(); setNotes(''); setFormContent('');
     } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
     finally { setUploading(false); }
   };
@@ -532,8 +552,11 @@ function DocumentationSection({ project, onRefresh, userRole }: { project: FtttP
         <div key={d.id} style={{ background: '#F6F8FA', borderRadius: 8, padding: 10, marginBottom: 6 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
             <div style={{ flex: 1 }}>
-              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
                 <span style={{ fontSize: 12, fontWeight: 600 }}>{DOC_LABELS[d.docType] ?? d.docType}</span>
+                {GENERATE_FORM_TYPES.has(d.docType) && (
+                  <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 999, background: '#DDF4FF', color: '#0969DA' }}>Generate Form</span>
+                )}
                 <span style={{ fontSize: 10, fontWeight: 700, color: STATUS_COLORS[d.approvalStatus] }}>{STATUS_LABELS[d.approvalStatus]}</span>
               </div>
               {d.notes && <p style={{ fontSize: 11, color: '#57606a', margin: '2px 0 0' }}>{d.notes}</p>}
@@ -543,13 +566,19 @@ function DocumentationSection({ project, onRefresh, userRole }: { project: FtttP
                   Alasan ditolak: {d.rejectionNotes}
                 </p>
               )}
+              {/* Show form content for Generate Form docs */}
+              {d.formContent && (
+                <p style={{ fontSize: 11, color: '#57606a', margin: '3px 0 0', background: '#F0F8FF', padding: '4px 6px', borderRadius: 4, whiteSpace: 'pre-wrap' }}>
+                  {d.formContent.length > 120 ? d.formContent.slice(0, 120) + '…' : d.formContent}
+                </p>
+              )}
               <p style={{ fontSize: 10, color: '#8c959f', margin: '2px 0 0' }}>oleh {d.uploadedBy.name}</p>
             </div>
             <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end', marginLeft: 8 }}>
-              <a href={fixFileUrl(d.fileUrl)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: '#0969DA' }}>Lihat</a>
+              {d.fileUrl && <a href={fixFileUrl(d.fileUrl)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: '#0969DA' }}>Lihat</a>}
 
-              {/* Issue #3: Only SURVEYOR_FTTT can replace REJECTED docs */}
-              {canReplaceDocs && d.approvalStatus === 'REJECTED' && (
+              {/* Issue #3: Only SURVEYOR_FTTT can replace REJECTED Upload docs; Generate Form docs re-submit via form below */}
+              {canReplaceDocs && d.approvalStatus === 'REJECTED' && !GENERATE_FORM_TYPES.has(d.docType) && (
                 <>
                   <button type="button" onClick={() => { setReplacingId(d.id); setTimeout(() => replaceRef.current?.click(), 50); }}
                     style={{ padding: '3px 8px', borderRadius: 4, border: '1px solid #FFA500', background: '#FFF8F0', color: '#7d5a00', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>
@@ -560,6 +589,11 @@ function DocumentationSection({ project, onRefresh, userRole }: { project: FtttP
                       onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleReplace(d.id, f); }} />
                   )}
                 </>
+              )}
+
+              {/* Generate Form: hint to re-fill form (not file) on rejection */}
+              {canReplaceDocs && d.approvalStatus === 'REJECTED' && GENERATE_FORM_TYPES.has(d.docType) && (
+                <span style={{ fontSize: 10, color: '#0969DA', fontStyle: 'italic' }}>Isi ulang form di bawah ↓</span>
               )}
 
               {/* Issue #2: PM approves / rejects with mandatory reason */}
@@ -614,27 +648,49 @@ function DocumentationSection({ project, onRefresh, userRole }: { project: FtttP
         </div>
       )}
 
-      {/* Only Surveyor FTTT (and GM for oversight) can upload new docs */}
+      {/* Only Surveyor FTTT (and GM for oversight) can upload/generate new docs */}
       {canUploadDocs ? (
-        <div style={{ border: '1px solid #D0D7DE', borderRadius: 8, padding: 12, marginTop: 8 }}>
-          <p style={{ fontSize: 12, fontWeight: 600, margin: '0 0 8px' }}>Upload Dokumen Baru</p>
+        <div style={{ border: `1px ${GENERATE_FORM_TYPES.has(docType) ? 'dashed #0969DA' : 'solid #D0D7DE'}`, borderRadius: 8, padding: 12, marginTop: 8, background: GENERATE_FORM_TYPES.has(docType) ? '#F0F8FF' : '#fff' }}>
+          <p style={{ fontSize: 12, fontWeight: 600, margin: '0 0 8px', color: GENERATE_FORM_TYPES.has(docType) ? '#0969DA' : '#24292f' }}>
+            {GENERATE_FORM_TYPES.has(docType) ? '📝 Generate Form — Dokumen Baru' : '+ Upload Dokumen Baru'}
+          </p>
           <div style={{ display: 'flex', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
-            <select value={docType} onChange={(e) => setDocType(e.target.value as 'ATP' | 'BAUT' | 'SUPPORTING' | 'EVIDENCE')}
+            <select value={docType} onChange={(e) => { setDocType(e.target.value as typeof docType); setFormContent(''); }}
               style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12 }}>
-              <option value="ATP">ATP</option>
-              <option value="BAUT">BAUT</option>
-              <option value="SUPPORTING">Supporting Doc</option>
-              <option value="EVIDENCE">Project Evidence</option>
+              <option value="ATP">ATP (Upload)</option>
+              <option value="BAUT">BAUT — Amandemen 1 (Upload)</option>
+              <option value="BAUT_REKONSILIASI">BAUT — BA Rekonsiliasi (Generate Form)</option>
+              <option value="SUPPORTING">Supporting Doc (Upload)</option>
+              <option value="EVIDENCE">Project Evidence (Upload)</option>
             </select>
             <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Catatan (opsional)"
               style={{ flex: 1, padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12, minWidth: 100 }} />
           </div>
-          <input ref={fileRef} type="file" accept=".pdf,.xlsx,.xls,.jpg,.jpeg,.png" style={{ display: 'none' }}
-            onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleUpload(f); }} />
-          <button type="button" onClick={() => fileRef.current?.click()} disabled={uploading}
-            style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: '#0969DA', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 12 }}>
-            {uploading ? 'Mengunggah…' : '+ Upload'}
-          </button>
+          {GENERATE_FORM_TYPES.has(docType) ? (
+            <>
+              <p style={{ fontSize: 10, color: '#57606a', margin: '0 0 4px' }}>Isi konten dokumen BAUT BA Rekonsiliasi yang akan dibuatkan. Setelah disetujui, tanda tangan akan muncul otomatis.</p>
+              <textarea
+                value={formContent}
+                onChange={(e) => setFormContent(e.target.value)}
+                rows={5}
+                placeholder="Masukkan isi dokumen BAUT BA Rekonsiliasi…&#10;(tanggal, nomor BA, pihak yang terlibat, poin rekonsiliasi, dll.)"
+                style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #0969DA', fontSize: 12, resize: 'vertical', boxSizing: 'border-box', marginBottom: 8 }}
+              />
+              <button type="button" onClick={() => void handleGenerateFormDoc()} disabled={uploading || !formContent.trim()}
+                style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: formContent.trim() ? '#0969DA' : '#D0D7DE', color: '#fff', fontWeight: 600, cursor: formContent.trim() ? 'pointer' : 'not-allowed', fontSize: 12 }}>
+                {uploading ? 'Menyimpan…' : '✉️ Kirim ke PM untuk Disetujui'}
+              </button>
+            </>
+          ) : (
+            <>
+              <input ref={fileRef} type="file" accept=".pdf,.xlsx,.xls,.jpg,.jpeg,.png" style={{ display: 'none' }}
+                onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleUpload(f); }} />
+              <button type="button" onClick={() => fileRef.current?.click()} disabled={uploading}
+                style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: '#0969DA', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 12 }}>
+                {uploading ? 'Mengunggah…' : '+ Upload File'}
+              </button>
+            </>
+          )}
         </div>
       ) : (canPmApprove || canAdminApprove) ? (
         <div style={{ background: '#F0F8FF', border: '1px solid #0969DA', borderRadius: 8, padding: 10, marginTop: 8, fontSize: 12, color: '#0969DA' }}>
@@ -772,14 +828,21 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
 const RECON_DOCS: Record<string, {
   key: string; label: string; desc: string;
   uploaderRole: string[]; requiresApproval: boolean;
+  generateForm?: boolean;  // true = ILT-created doc, filled via form; false/undefined = upload from Telkom Infra
 }[]> = {
   TELKOM_INFRA: [
-    { key: 'BAPP',        label: 'BAPP',                  desc: 'Amandemen 2; Surat Waspang No Dinas; Risalah Rapat/MOM',      uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: true },
-    { key: 'BAST_BAPWPP', label: 'BAST & BAPWPP',         desc: 'Amandemen 1; Amandemen 2; PO; BOQ Perhitungan',              uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: true },
-    { key: 'BA_PENUTUPAN',label: 'BA Penutupan',           desc: 'Berita Acara Penutupan Project',                             uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: true },
-    { key: 'GOOD_RECEIPT', label: 'Good Receipt',          desc: 'Diterbitkan Telkom Infra — upload setelah 3 dok. di atas approved', uploaderRole: ['ADMIN'], requiresApproval: false },
-    { key: 'JAMINAN_PEMELIHARAAN', label: 'Jaminan Pemeliharaan', desc: 'Diupload Finance',                                   uploaderRole: ['FINANCE'], requiresApproval: false },
-    { key: 'INVOICE_FINAL', label: 'Invoice Final',        desc: 'Tagihan akhir project — dibuat Finance',                     uploaderRole: ['FINANCE'], requiresApproval: false },
+    // ── Generate Form docs (dibuat oleh Mitra Konstruksi / ILT, perlu approval) ──
+    { key: 'BAPP_MOM',           label: 'BAPP — Risalah Rapat / MOM',         desc: 'Minutes of Meeting rekonsiliasi project bersama Telkom Infra',        uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: true,  generateForm: true },
+    { key: 'BAST_BAPWPP_BOQ',    label: 'BAST & BAPWPP — BOQ Perhitungan',    desc: 'BOQ final perhitungan sesuai kondisi lapangan aktual',               uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: true,  generateForm: true },
+    { key: 'BA_PENUTUPAN',       label: 'BA Penutupan',                        desc: 'Berita Acara Penutupan Project — dibuat oleh ILT',                   uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: true,  generateForm: true },
+    { key: 'JAMINAN_PEMELIHARAAN', label: 'Jaminan Pemeliharaan',              desc: 'Dokumen jaminan masa pemeliharaan — dibuat oleh ILT / Finance',      uploaderRole: ['FINANCE'],       requiresApproval: false, generateForm: true },
+    { key: 'INVOICE_FINAL',      label: 'Invoice Final',                       desc: 'Tagihan akhir project — dibuat Finance sesuai BOQ final',            uploaderRole: ['FINANCE'],       requiresApproval: false, generateForm: true },
+    // ── Upload docs (diterima langsung dari Telkom Infra, auto-approved) ──────────
+    { key: 'BAPP_AMANDEMEN_2',        label: 'BAPP — Amandemen 2',            desc: 'Amandemen 2 dari Telkom Infra — upload file yang diterima',          uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: false },
+    { key: 'BAST_BAPWPP_AMANDEMEN_1', label: 'BAST & BAPWPP — Amandemen 1',  desc: 'Amandemen 1 dari Telkom Infra — upload file yang diterima',          uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: false },
+    { key: 'BAST_BAPWPP_AMANDEMEN_2', label: 'BAST & BAPWPP — Amandemen 2',  desc: 'Amandemen 2 dari Telkom Infra — upload file yang diterima',          uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: false },
+    { key: 'BAST_BAPWPP_PO',          label: 'BAST & BAPWPP — PO',           desc: 'PO dari Telkom Infra — upload file yang diterima',                   uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: false },
+    { key: 'GOOD_RECEIPT',            label: 'Good Receipt',                  desc: 'Completion Certificate GRN & Lampiran SMILE dari Telkom Infra',      uploaderRole: ['ADMIN'],         requiresApproval: false },
   ],
   PST: [
     { key: 'REKONSILIASI', label: 'Rekonsiliasi',          desc: 'Penyamaan DRM sebelum implementasi vs actual lapangan',      uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: true },
@@ -802,6 +865,7 @@ function ReconciliationSection({ project, onRefresh, userRole }: { project: Fttt
   const docs = RECON_DOCS[project.ftttCompany] ?? [];
   const [uploadingKey, setUploadingKey] = useState<string | null>(null);
   const [notes, setNotes] = useState<Record<string, string>>({});
+  const [formContents, setFormContents] = useState<Record<string, string>>({});
   const [rejectTarget, setRejectTarget] = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState('');
   const fileRefs = useRef<Record<string, HTMLInputElement | null>>({});
@@ -824,6 +888,24 @@ function ReconciliationSection({ project, onRefresh, userRole }: { project: Fttt
       const res = await apiFetch(`/fttt-projects/${project.id}/recon-docs`, { method: 'POST', body: fd }, user?.id);
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
       toast.success('Dokumen berhasil diunggah');
+      onRefresh();
+    } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
+    finally { setUploadingKey(null); }
+  };
+
+  const handleGenerateForm = async (key: string) => {
+    const content = formContents[key]?.trim();
+    if (!content) { toast.error('Isi dokumen wajib diisi'); return; }
+    setUploadingKey(key);
+    const fd = new FormData();
+    fd.append('docKey', key);
+    fd.append('formContent', content);
+    if (notes[key]) fd.append('notes', notes[key]);
+    try {
+      const res = await apiFetch(`/fttt-projects/${project.id}/recon-docs`, { method: 'POST', body: fd }, user?.id);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
+      toast.success('Dokumen berhasil disimpan — menunggu persetujuan');
+      setFormContents((prev) => ({ ...prev, [key]: '' }));
       onRefresh();
     } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
     finally { setUploadingKey(null); }
@@ -896,8 +978,8 @@ function ReconciliationSection({ project, onRefresh, userRole }: { project: Fttt
                   </>
                 )}
 
-                {/* Upload/Replace button */}
-                {canUpload && (!rec || rec.approvalStatus === 'REJECTED') && (
+                {/* Upload/Replace button (for non-Generate-Form docs only) */}
+                {canUpload && !doc.generateForm && (!rec || rec.approvalStatus === 'REJECTED') && (
                   <>
                     <input
                       ref={(el) => { fileRefs.current[doc.key] = el; }}
@@ -912,6 +994,46 @@ function ReconciliationSection({ project, onRefresh, userRole }: { project: Fttt
                 )}
               </div>
             </div>
+
+            {/* ── Generate Form input (for ILT-created docs) ─────────────────── */}
+            {doc.generateForm && canUpload && (!rec || rec.approvalStatus === 'REJECTED') && (
+              <div style={{ marginTop: 10, padding: 10, background: '#F0F8FF', borderRadius: 8, border: '1px dashed #0969DA' }}>
+                <p style={{ margin: '0 0 4px', fontSize: 11, fontWeight: 700, color: '#0969DA' }}>
+                  📝 Generate Form — Isi konten dokumen ini
+                </p>
+                <p style={{ margin: '0 0 6px', fontSize: 10, color: '#57606a' }}>
+                  Dokumen ini dibuat oleh ILT melalui sistem. Isi form di bawah, lalu kirim untuk review PM/Admin.
+                  {rec?.approvalStatus === 'REJECTED' ? ' (dokumen ditolak — perbaiki dan kirim ulang)' : ''}
+                </p>
+                <textarea
+                  value={formContents[doc.key] ?? (rec?.formContent ?? '')}
+                  onChange={(e) => setFormContents((prev) => ({ ...prev, [doc.key]: e.target.value }))}
+                  rows={4}
+                  placeholder={`Masukkan isi / data ${doc.label}…\nContoh: tanggal, pihak yang hadir, poin-poin yang disepakati, nilai BOQ, dll.`}
+                  style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #0969DA', fontSize: 12, resize: 'vertical', boxSizing: 'border-box', marginBottom: 6 }}
+                />
+                <input
+                  value={notes[doc.key] ?? ''}
+                  onChange={(e) => setNotes((prev) => ({ ...prev, [doc.key]: e.target.value }))}
+                  placeholder="Catatan tambahan (opsional)"
+                  style={{ width: '100%', padding: '5px 8px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 11, marginBottom: 8, boxSizing: 'border-box' }}
+                />
+                <button type="button"
+                  onClick={() => void handleGenerateForm(doc.key)}
+                  disabled={isUploading || !(formContents[doc.key]?.trim())}
+                  style={{ padding: '5px 14px', borderRadius: 6, border: 'none', background: (formContents[doc.key]?.trim()) ? '#0969DA' : '#D0D7DE', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 12 }}>
+                  {isUploading ? 'Menyimpan…' : rec ? '🔄 Kirim Ulang' : '✉️ Kirim ke PM untuk Disetujui'}
+                </button>
+              </div>
+            )}
+
+            {/* Show saved form content (approved/pending) */}
+            {doc.generateForm && rec && rec.formContent && rec.approvalStatus !== 'REJECTED' && (
+              <div style={{ marginTop: 8, padding: 8, background: '#F6F8FA', borderRadius: 6, border: '1px solid #EAEEF2' }}>
+                <p style={{ margin: '0 0 4px', fontSize: 10, fontWeight: 700, color: '#57606a' }}>Isi Dokumen (Generate Form):</p>
+                <p style={{ margin: 0, fontSize: 11, color: '#24292f', whiteSpace: 'pre-wrap' }}>{rec.formContent}</p>
+              </div>
+            )}
           </div>
         );
       })}
@@ -955,6 +1077,7 @@ function ClosingSection({ project, onRefresh, userRole }: { project: FtttProject
   const [logType, setLogType] = useState<'BAST_II' | 'EVIDENCE' | 'NOTE'>('BAST_II');
   const [caption, setCaption] = useState('');
   const [notes,   setNotes]   = useState('');
+  const [bastIIFormContent, setBastIIFormContent] = useState('');
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState('');
   const [rejectTarget, setRejectTarget] = useState<string | null>(null);
@@ -963,6 +1086,23 @@ function ClosingSection({ project, onRefresh, userRole }: { project: FtttProject
 
   const STATUS_COLORS: Record<string, string> = { PENDING_PM: '#9a6700', APPROVED: '#1a7f37', REJECTED: '#cf222e' };
   const STATUS_LABELS: Record<string, string> = { PENDING_PM: 'Menunggu PM', APPROVED: 'Disetujui', REJECTED: 'Ditolak' };
+
+  const handleBastIIForm = async () => {
+    if (!bastIIFormContent.trim()) { toast.error('Isi dokumen BAST II wajib diisi'); return; }
+    setUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append('logType', 'BAST_II');
+      fd.append('formContent', bastIIFormContent.trim());
+      fd.append('caption', 'BAST II');
+      const res = await apiFetch(`/fttt-projects/${project.id}/closing-logs`, { method: 'POST', body: fd }, user?.id);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
+      toast.success('BAST II berhasil disimpan — menunggu persetujuan PM');
+      setBastIIFormContent('');
+      onRefresh();
+    } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
+    finally { setUploading(false); }
+  };
 
   const handleUpload = async (files?: FileList | null) => {
     const fileArr = files ? Array.from(files) : [];
@@ -1026,6 +1166,11 @@ function ClosingSection({ project, onRefresh, userRole }: { project: FtttProject
             </div>
             <p style={{ margin: '3px 0 0', fontSize: 11, color: '#57606a' }}>Dokumen Berita Acara Serah Terima II — perlu disetujui PM FTTT</p>
             {bastII?.notes && <p style={{ margin: '2px 0 0', fontSize: 11, color: '#57606a' }}>📝 {bastII.notes}</p>}
+            {bastII?.formContent && (
+              <p style={{ margin: '3px 0 0', fontSize: 11, color: '#57606a', background: '#F0F8FF', padding: '4px 6px', borderRadius: 4, whiteSpace: 'pre-wrap' }}>
+                {bastII.formContent.length > 120 ? bastII.formContent.slice(0, 120) + '…' : bastII.formContent}
+              </p>
+            )}
             {bastII?.approvalStatus === 'REJECTED' && bastII.rejectionNotes && (
               <p style={{ margin: '3px 0 0', fontSize: 11, color: '#cf222e', fontStyle: 'italic' }}>Ditolak: {bastII.rejectionNotes}</p>
             )}
@@ -1042,23 +1187,43 @@ function ClosingSection({ project, onRefresh, userRole }: { project: FtttProject
                   style={{ padding: '3px 8px', borderRadius: 4, border: 'none', background: '#FFEBE9', color: '#cf222e', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>✗ Tolak</button>
               </>
             )}
-            {/* Surveyor/PM can upload or replace BAST II */}
+            {/* Surveyor/PM fills Generate Form for BAST II */}
             {canUpload && (!bastII || bastII.approvalStatus === 'REJECTED') && (
-              <>
-                <input type="file" accept=".pdf,.xlsx,.xls" style={{ display: 'none' }}
-                  ref={(el) => { if (el) (el as HTMLInputElement & { _bastii?: boolean })._bastii = true; }}
-                  id="bastii-file-input"
-                  onChange={(e) => { setLogType('BAST_II'); void handleUpload(e.target.files); }} />
-                <button type="button"
-                  onClick={() => { setLogType('BAST_II'); document.getElementById('bastii-file-input')?.click(); }}
-                  style={{ padding: '4px 10px', borderRadius: 6, border: 'none', background: bastII ? '#FFA500' : '#0969DA', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 11 }}>
-                  {bastII ? '🔄 Ganti' : '+ Upload BAST II'}
-                </button>
-              </>
+              <button type="button"
+                onClick={() => { setLogType('BAST_II'); document.getElementById('bastii-form-panel')?.scrollIntoView({ behavior: 'smooth' }); }}
+                style={{ padding: '4px 10px', borderRadius: 6, border: '1px dashed #0969DA', background: bastII ? '#FFF8F0' : '#F0F8FF', color: bastII ? '#7d5a00' : '#0969DA', fontWeight: 600, cursor: 'pointer', fontSize: 11 }}>
+                {bastII ? '🔄 Isi Ulang BAST II' : '📝 Generate Form BAST II'}
+              </button>
             )}
           </div>
         </div>
       </div>
+
+      {/* ── BAST II Generate Form panel ── */}
+      {canUpload && (!bastII || bastII.approvalStatus === 'REJECTED') && (
+        <div id="bastii-form-panel" style={{ background: '#F0F8FF', border: '1px dashed #0969DA', borderRadius: 10, padding: 14, marginBottom: 10 }}>
+          <p style={{ margin: '0 0 4px', fontSize: 13, fontWeight: 700, color: '#0969DA' }}>
+            📝 Generate Form — BAST II
+            {bastII?.approvalStatus === 'REJECTED' && <span style={{ fontSize: 11, color: '#cf222e', marginLeft: 8 }}>(ditolak — perbaiki dan kirim ulang)</span>}
+          </p>
+          <p style={{ margin: '0 0 8px', fontSize: 11, color: '#57606a' }}>
+            Dokumen Berita Acara Serah Terima II dibuat melalui sistem. Isi data di bawah, lalu kirim ke PM untuk disetujui.
+          </p>
+          <textarea
+            value={bastIIFormContent || (bastII?.formContent ?? '')}
+            onChange={(e) => setBastIIFormContent(e.target.value)}
+            rows={6}
+            placeholder="Isi dokumen BAST II…&#10;(tanggal serah terima, pihak yang terlibat, kondisi akhir project, item yang diserahterimakan, catatan pemeliharaan, dll.)"
+            style={{ width: '100%', padding: 10, borderRadius: 8, border: '1px solid #0969DA', fontSize: 12, resize: 'vertical', boxSizing: 'border-box', marginBottom: 8 }}
+          />
+          <button type="button"
+            onClick={() => void handleBastIIForm()}
+            disabled={uploading || !(bastIIFormContent.trim() || (bastII?.formContent && !bastIIFormContent))}
+            style={{ padding: '7px 16px', borderRadius: 8, border: 'none', background: (bastIIFormContent.trim()) ? '#0969DA' : '#D0D7DE', color: '#fff', fontWeight: 700, cursor: bastIIFormContent.trim() ? 'pointer' : 'not-allowed', fontSize: 13 }}>
+            {uploading ? 'Menyimpan…' : bastII ? '🔄 Kirim Ulang BAST II' : '✉️ Kirim ke PM untuk Disetujui'}
+          </button>
+        </div>
+      )}
 
       {/* ── Evidence Photos ── */}
       <div style={{ background: '#F6F8FA', borderRadius: 10, padding: 12, marginBottom: 10, border: '1px solid #EAEEF2' }}>

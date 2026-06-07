@@ -100,8 +100,9 @@ export const AddJaminanDto = z.object({
 export type AddJaminanDtoType = z.infer<typeof AddJaminanDto>;
 
 export const UploadDocumentDto = z.object({
-  docType: z.nativeEnum(FtttDocumentType),
-  notes:   z.string().max(1000).optional(),
+  docType:     z.nativeEnum(FtttDocumentType),
+  notes:       z.string().max(1000).optional(),
+  formContent: z.string().optional(),  // filled text for Generate Form mode docs
 });
 export type UploadDocumentDtoType = z.infer<typeof UploadDocumentDto>;
 
@@ -112,10 +113,11 @@ export const ApproveDocumentDto = z.object({
 });
 export type ApproveDocumentDtoType = z.infer<typeof ApproveDocumentDto>;
 
-// Reconciliation & Billing document upload
+// Reconciliation & Billing document upload / Generate Form
 export const AddReconDocDto = z.object({
-  docKey: z.string().min(1).max(100),
-  notes:  z.string().max(2000).optional(),
+  docKey:      z.string().min(1).max(100),
+  notes:       z.string().max(2000).optional(),
+  formContent: z.string().optional(),  // JSON string for Generate Form mode
 });
 export type AddReconDocDtoType = z.infer<typeof AddReconDocDto>;
 
@@ -129,9 +131,10 @@ export type AddImplLogDtoType = z.infer<typeof AddImplLogDto>;
 
 // Project Closing log (BAST II / evidence photo / note)
 export const AddClosingLogDto = z.object({
-  logType: z.nativeEnum(FtttClosingLogType),
-  caption: z.string().max(500).optional(),
-  notes:   z.string().max(2000).optional(),
+  logType:     z.nativeEnum(FtttClosingLogType),
+  caption:     z.string().max(500).optional(),
+  notes:       z.string().max(2000).optional(),
+  formContent: z.string().optional(),  // JSON string for Generate Form mode (BAST_II)
 });
 export type AddClosingLogDtoType = z.infer<typeof AddClosingLogDto>;
 

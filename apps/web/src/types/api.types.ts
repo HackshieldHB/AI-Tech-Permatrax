@@ -984,7 +984,7 @@ export type FtttDocType = 'PO_CONTRACT' | 'SITELIST' | 'BOQ_TOS';
 export type FtttApprovalStatus = 'PENDING_PM' | 'PENDING_ADMIN' | 'APPROVED' | 'REJECTED';
 export type FtttSanggahStatus = 'SUBMITTED' | 'ACCEPTED' | 'REJECTED';
 export type FtttJaminanType = 'JAMINAN_UANG_MUKA' | 'JAMINAN_PELAKSANAAN';
-export type FtttDocumentType = 'ATP' | 'BAUT' | 'SUPPORTING' | 'EVIDENCE';
+export type FtttDocumentType = 'ATP' | 'BAUT' | 'BAUT_REKONSILIASI' | 'SUPPORTING' | 'EVIDENCE';
 
 export const FTTT_COMPANY_LABELS: Record<FtttCompany, string> = {
   TELKOM_INFRA: 'Telkom Infra',
@@ -1097,7 +1097,8 @@ export interface FtttJaminan {
 export interface FtttDoc {
   id:              string;
   docType:         FtttDocumentType;
-  fileUrl:         string;
+  fileUrl:         string | null;       // null for form-generated docs
+  formContent:     string | null;       // JSON for form-generated docs
   notes:           string | null;
   approvalStatus:  FtttApprovalStatus;
   pmApprovedAt:    string | null;
@@ -1111,6 +1112,7 @@ export interface FtttReconDoc {
   id:              string;
   docKey:          string;
   fileUrl:         string | null;
+  formContent:     string | null;
   notes:           string | null;
   approvalStatus:  FtttApprovalStatus;
   pmApprovedAt:    string | null;
@@ -1127,6 +1129,7 @@ export interface FtttClosingLog {
   id:              string;
   logType:         FtttClosingLogType;
   fileUrl:         string | null;
+  formContent:     string | null;
   caption:         string | null;
   notes:           string | null;
   approvalStatus:  FtttApprovalStatus | null;

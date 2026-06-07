@@ -2953,6 +2953,7 @@ enum FtttJaminanType {
 enum FtttDocumentType {
   ATP
   BAUT
+  BAUT_REKONSILIASI
   SUPPORTING
   EVIDENCE
 }
@@ -3084,7 +3085,8 @@ model FtttDocument {
   projectId       String
   project         FtttProject        @relation(fields: [projectId], references: [id], onDelete: Cascade)
   docType         FtttDocumentType
-  fileUrl         String
+  fileUrl         String?          // nullable: form-generated docs don't have a physical file
+  formContent     String?          // JSON: form fields for Generate Form mode docs
   notes           String?
   approvalStatus  FtttApprovalStatus @default(PENDING_PM)
   uploadedById    String
@@ -3107,6 +3109,7 @@ model FtttReconDoc {
   project         FtttProject        @relation(fields: [projectId], references: [id], onDelete: Cascade)
   docKey          String             // e.g. 'BAPP', 'BAST_BAPWPP', 'GOOD_RECEIPT' etc.
   fileUrl         String?
+  formContent     String?            // JSON: form fields for Generate Form mode docs
   notes           String?
   approvalStatus  FtttApprovalStatus @default(PENDING_PM)
   uploadedById    String
@@ -3158,6 +3161,7 @@ model FtttClosingLog {
   project         FtttProject         @relation(fields: [projectId], references: [id], onDelete: Cascade)
   logType         FtttClosingLogType
   fileUrl         String?
+  formContent     String?            // JSON: form fields for Generate Form mode docs
   caption         String?
   notes           String?
   approvalStatus  FtttApprovalStatus? // null for EVIDENCE/NOTE; PENDING_PM/APPROVED/REJECTED for BAST_II
