@@ -265,8 +265,26 @@ export class FtttProjectService {
     }
 
     if (phase === FtttPhase.DOCUMENTATION) {
-      if (project.documents.length === 0) {
-        reasons.push('Minimal satu dokumen (ATP/BAUT) harus sudah disetujui');
+      // Per-lifecycle required document types for Documentation & Acceptance phase
+      const DOC_REQUIRED: Record<string, Array<[string, string]>> = {
+        TELKOM_INFRA: [
+          ['KONTRAK',             'Kontrak'],
+          ['PO',                  'PO'],
+          ['AMANDEMEN_1',         'Amandemen 1'],
+          ['DOK_PERUBAHAN_WAKTU', 'Dokumen Perubahan Waktu (NPWP)'],
+          ['BAUT_REKONSILIASI',   'BA Rekonsiliasi'],
+          ['BAUT',                'BAUT'],
+        ],
+        PST:   [['ATP', 'ATP'], ['BAUT', 'BAUT']],
+        IFORTE: [['ATP', 'ATP'], ['EVIDENCE', 'Evidence']],
+      };
+      const required = DOC_REQUIRED[company] ?? [];
+      // project.documents is filtered to APPROVED only in the include above
+      const approvedTypes = new Set(project.documents.map((d) => d.docType));
+      for (const [docType, label] of required) {
+        if (!approvedTypes.has(docType as any)) {
+          reasons.push(`Dokumen ${label} belum disetujui`);
+        }
       }
     }
 

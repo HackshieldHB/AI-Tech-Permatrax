@@ -2951,11 +2951,18 @@ enum FtttJaminanType {
 }
 
 enum FtttDocumentType {
+  // Shared
   ATP
+  EVIDENCE
   BAUT
   BAUT_REKONSILIASI
+  // Telkom Infra — Documentation & Acceptance upload docs
+  KONTRAK
+  PO
+  AMANDEMEN_1
+  DOK_PERUBAHAN_WAKTU
+  // Legacy (kept for backward compat, not shown in UI)
   SUPPORTING
-  EVIDENCE
 }
 
 enum FtttApprovalStatus {

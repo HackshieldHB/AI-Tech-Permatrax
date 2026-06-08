@@ -984,7 +984,10 @@ export type FtttDocType = 'PO_CONTRACT' | 'SITELIST' | 'BOQ_TOS';
 export type FtttApprovalStatus = 'PENDING_PM' | 'PENDING_ADMIN' | 'APPROVED' | 'REJECTED';
 export type FtttSanggahStatus = 'SUBMITTED' | 'ACCEPTED' | 'REJECTED';
 export type FtttJaminanType = 'JAMINAN_UANG_MUKA' | 'JAMINAN_PELAKSANAAN';
-export type FtttDocumentType = 'ATP' | 'BAUT' | 'BAUT_REKONSILIASI' | 'SUPPORTING' | 'EVIDENCE';
+export type FtttDocumentType =
+  | 'ATP' | 'EVIDENCE' | 'BAUT' | 'BAUT_REKONSILIASI'
+  | 'KONTRAK' | 'PO' | 'AMANDEMEN_1' | 'DOK_PERUBAHAN_WAKTU'
+  | 'SUPPORTING'; // legacy
 
 export const FTTT_COMPANY_LABELS: Record<FtttCompany, string> = {
   TELKOM_INFRA: 'Telkom Infra',
