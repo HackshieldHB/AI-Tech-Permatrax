@@ -376,9 +376,18 @@ function JaminanSection({ project, onRefresh }: { project: FtttProject; onRefres
 
   return (
     <div>
-      <p style={{ fontWeight: 600, fontSize: 13, marginBottom: 8 }}>
-        Dokumen Jaminan ({project.jaminans.length}/2)
-        {allUploaded && <span style={{ marginLeft: 8, fontSize: 11, color: '#1a7f37', fontWeight: 600 }}>✓ Lengkap</span>}
+      {/* Header — mandatory indicator */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+        <p style={{ margin: 0, fontWeight: 600, fontSize: 13 }}>
+          Dokumen Jaminan ({project.jaminans.length}/2)
+          {allUploaded
+            ? <span style={{ marginLeft: 8, fontSize: 11, color: '#1a7f37', fontWeight: 600 }}>✓ Lengkap</span>
+            : <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 700, color: '#cf222e', padding: '1px 6px', background: '#FFEBE9', borderRadius: 999 }}>WAJIB — {missingTypes.length} belum diisi</span>
+          }
+        </p>
+      </div>
+      <p style={{ margin: '0 0 10px', fontSize: 11, color: '#57606a' }}>
+        Kedua dokumen Jaminan merupakan syarat <strong>wajib</strong> sebelum fase Preparation dapat diselesaikan. Diisi oleh Finance.
       </p>
 
       {/* Show uploaded jaminans */}
@@ -387,38 +396,40 @@ function JaminanSection({ project, onRefresh }: { project: FtttProject; onRefres
           <div>
             <p style={{ margin: 0, fontWeight: 600, fontSize: 12 }}>✓ {JAMINAN_LABELS[j.jaminanType as JType] ?? j.jaminanType}</p>
             {j.issuer && <p style={{ margin: '2px 0 0', fontSize: 11, color: '#57606a' }}>{j.issuer}</p>}
-            <p style={{ margin: '2px 0 0', fontSize: 10, color: '#57606a' }}>oleh {j.uploadedBy.name}</p>
+            {j.notes  && <p style={{ margin: '2px 0 0', fontSize: 11, color: '#57606a' }}>{j.notes}</p>}
+            <p style={{ margin: '2px 0 0', fontSize: 10, color: '#8c959f' }}>oleh {j.uploadedBy.name}</p>
           </div>
           <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-            {j.fileUrl && <a href={fixFileUrl(j.fileUrl)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: '#0969DA' }}>Lihat</a>}
-            {/* Issue #3: Finance can replace existing doc */}
+            {j.fileUrl && <a href={fixFileUrl(j.fileUrl)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: '#0969DA' }}>Lihat File</a>}
             {isFinance && (
-              <button type="button" onClick={() => { setReplaceFor(j.jaminanType as JType); setActiveType(j.jaminanType as JType); setSelectedFile(null); setIssuer(''); setNotes(''); }}
+              <button type="button"
+                onClick={() => { setReplaceFor(j.jaminanType as JType); setActiveType(j.jaminanType as JType); setSelectedFile(null); setIssuer(j.issuer ?? ''); setNotes(j.notes ?? ''); }}
                 style={{ fontSize: 10, padding: '3px 8px', borderRadius: 4, border: '1px solid #D0D7DE', background: '#fff', cursor: 'pointer' }}>
-                Ganti
+                Edit / Ganti
               </button>
             )}
           </div>
         </div>
       ))}
 
-      {/* Show missing types as pending */}
+      {/* Show missing types as mandatory pending */}
       {missingTypes.map((t) => (
-        <div key={t} style={{ background: '#FFF8F0', border: '1px solid #FFA500', borderRadius: 8, padding: 10, marginBottom: 6 }}>
-          <p style={{ margin: 0, fontSize: 12, color: '#7d5a00' }}>⏳ {JAMINAN_LABELS[t]} — belum diunggah</p>
+        <div key={t} style={{ background: '#FFEBE9', border: '1px solid #cf222e', borderRadius: 8, padding: 10, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontSize: 14 }}>⚠️</span>
+          <div>
+            <p style={{ margin: 0, fontSize: 12, color: '#cf222e', fontWeight: 600 }}>{JAMINAN_LABELS[t]}</p>
+            <p style={{ margin: 0, fontSize: 10, color: '#cf222e' }}>Dokumen WAJIB — belum diisi oleh Finance</p>
+          </div>
         </div>
       ))}
 
-      {/* Generate Form — Finance only (file optional as lampiran) */}
+      {/* Upload / Edit form — Finance only */}
       {isFinance && (
         <>
           {(missingTypes.length > 0 || replaceFor !== null) && (
-            <div style={{ border: `1px dashed ${replaceFor ? '#FFA500' : '#0969DA'}`, borderRadius: 8, padding: 12, marginTop: 8, background: replaceFor ? '#FFFBF0' : '#F0F8FF' }}>
-              <p style={{ fontSize: 12, fontWeight: 700, margin: '0 0 4px', color: replaceFor ? '#7d5a00' : '#0969DA' }}>
-                📝 Generate Form — {replaceFor ? `Ganti: ${JAMINAN_LABELS[replaceFor]}` : 'Isi Data Jaminan'}
-              </p>
-              <p style={{ fontSize: 10, color: '#57606a', margin: '0 0 8px' }}>
-                Dokumen Jaminan dibuat oleh ILT / Finance melalui sistem. Isi data di bawah dan simpan. File lampiran opsional.
+            <div style={{ border: `1px solid ${replaceFor ? '#FFA500' : '#D0D7DE'}`, borderRadius: 8, padding: 12, marginTop: 8, background: replaceFor ? '#FFFBF0' : '#fff' }}>
+              <p style={{ fontSize: 12, fontWeight: 700, margin: '0 0 6px', color: replaceFor ? '#7d5a00' : '#24292f' }}>
+                {replaceFor ? `Edit Jaminan: ${JAMINAN_LABELS[replaceFor]}` : 'Upload Jaminan'}
               </p>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
                 {!replaceFor && (
@@ -427,20 +438,25 @@ function JaminanSection({ project, onRefresh }: { project: FtttProject; onRefres
                     {missingTypes.map((t) => <option key={t} value={t}>{JAMINAN_LABELS[t]}</option>)}
                   </select>
                 )}
-                <input value={issuer} onChange={(e) => setIssuer(e.target.value)} placeholder="Penerbit (bank/lembaga) *"
-                  style={{ flex: 1, padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12, minWidth: 120 }} />
+                <input value={issuer} onChange={(e) => setIssuer(e.target.value)}
+                  placeholder="Penerbit / bank / lembaga penjamin"
+                  style={{ flex: 1, padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12, minWidth: 140 }} />
               </div>
-              <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Catatan / nomor dokumen / nilai jaminan (opsional)"
+              <input value={notes} onChange={(e) => setNotes(e.target.value)}
+                placeholder="Nomor dokumen / nilai jaminan / catatan lain (opsional)"
                 style={{ width: '100%', padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12, marginBottom: 8, boxSizing: 'border-box' }} />
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-                <input ref={fileRef} type="file" style={{ display: 'none' }} onChange={(e) => setSelectedFile(e.target.files?.[0] ?? null)} />
+                <input ref={fileRef} type="file" accept=".pdf,.jpg,.jpeg,.png" style={{ display: 'none' }}
+                  onChange={(e) => setSelectedFile(e.target.files?.[0] ?? null)} />
+                {/* FIX C4: Rename from "Lampiran (opsional)" → clear upload button */}
                 <button type="button" onClick={() => fileRef.current?.click()}
                   style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 11, cursor: 'pointer', background: '#F6F8FA' }}>
-                  {selectedFile ? '📎 ' + selectedFile.name.slice(0, 18) + '…' : '📎 Lampiran (opsional)'}
+                  {selectedFile ? '📎 ' + selectedFile.name.slice(0, 20) + '…' : '📎 Upload File Jaminan'}
                 </button>
-                <button type="button" onClick={() => { void handleUpload(replaceFor ?? undefined); }} disabled={submitting || !issuer.trim()}
-                  style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: issuer.trim() ? (replaceFor ? '#FFA500' : '#0969DA') : '#D0D7DE', color: '#fff', fontWeight: 600, cursor: issuer.trim() ? 'pointer' : 'not-allowed', fontSize: 12 }}>
-                  {submitting ? 'Menyimpan…' : replaceFor ? '🔄 Perbarui' : '✉️ Simpan & Kirim ke PM'}
+                {/* FIX C4: Remove "Kirim ke PM" — Jaminan has no PM review/approval flow */}
+                <button type="button" onClick={() => { void handleUpload(replaceFor ?? undefined); }} disabled={submitting}
+                  style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: replaceFor ? '#FFA500' : '#0969DA', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 12 }}>
+                  {submitting ? 'Menyimpan…' : replaceFor ? '🔄 Perbarui Jaminan' : '+ Upload Jaminan'}
                 </button>
                 {replaceFor && (
                   <button type="button" onClick={() => { setReplaceFor(null); setSelectedFile(null); setIssuer(''); setNotes(''); }}
@@ -450,9 +466,16 @@ function JaminanSection({ project, onRefresh }: { project: FtttProject; onRefres
             </div>
           )}
           {allUploaded && !replaceFor && (
-            <p style={{ fontSize: 11, color: '#57606a', marginTop: 8 }}>Kedua dokumen sudah diisi. Klik "Ganti" untuk memperbarui data yang salah.</p>
+            <p style={{ fontSize: 11, color: '#57606a', marginTop: 8 }}>Kedua dokumen sudah diisi. Klik "Edit / Ganti" pada dokumen yang perlu diperbarui.</p>
           )}
         </>
+      )}
+
+      {/* Non-Finance info box */}
+      {!isFinance && missingTypes.length > 0 && (
+        <div style={{ background: '#FFF8C5', border: '1px solid #d4a017', borderRadius: 8, padding: 10, marginTop: 6, fontSize: 12, color: '#9a6700' }}>
+          ⏳ Menunggu Finance mengisi dokumen Jaminan yang wajib sebelum fase ini dapat diselesaikan.
+        </div>
       )}
     </div>
   );
