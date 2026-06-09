@@ -216,18 +216,19 @@ export class MapController {
     return this.mapService.toggleGisLayer(id, body.isVisible);
   }
 
-  // FIX: Delete KMZ layer — Designer + semua PM boleh hapus (bukan hanya Admin / PM Senior)
+  // FIX: Delete KMZ layer — MAP_VIEWER (JLM) can delete their own uploaded layers
   @Delete('layers/:id')
   @Roles(
-    Role.ADMIN, // FIX
-    Role.PM_FTTH, // FIX: PM dapat hapus layer KMZ
-    Role.PM_FTTB, // FIX
-    Role.PM_FTTT, // FIX
-    Role.PM_SENIOR, // FIX
-    Role.DESIGNER, // FIX: Designer dapat hapus layer KMZ
+    Role.ADMIN,
+    Role.PM_FTTH,
+    Role.PM_FTTB,
+    Role.PM_FTTT,
+    Role.PM_SENIOR,
+    Role.DESIGNER,
+    Role.MAP_VIEWER, // FIX: JLM user dapat hapus KMZ layer yang mereka upload sendiri
   )
   async deleteLayer(@Param('id') id: string) {
-    return this.mapService.deleteGisLayer(id); // FIX
+    return this.mapService.deleteGisLayer(id);
   }
 
   // FIX: Proxy Overpass API (hindari CORS browser)
