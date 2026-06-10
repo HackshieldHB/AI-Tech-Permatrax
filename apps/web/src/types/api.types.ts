@@ -976,8 +976,8 @@ export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
 
 export type FtttCompany = 'TELKOM_INFRA' | 'IFORTE' | 'PST';
 export type FtttPhase =
-  | 'INITIATION' | 'SURVEY' | 'PREPARATION' | 'IMPLEMENTATION'
-  | 'DOCUMENTATION' | 'RECONCILIATION' | 'CLOSING';
+  | 'INITIATION' | 'SURVEY' | 'PREPARATION' | 'PROCUREMENT'
+  | 'IMPLEMENTATION' | 'DOCUMENTATION' | 'RECONCILIATION' | 'CLOSING';
 export type FtttPhaseStatus = 'LOCKED' | 'ACTIVE' | 'COMPLETED' | 'SKIPPED';
 export type FtttProjectStatus = 'ACTIVE' | 'COMPLETED' | 'ON_HOLD' | 'CANCELLED';
 export type FtttDocType = 'PO_CONTRACT' | 'SITELIST' | 'BOQ_TOS';
@@ -999,6 +999,7 @@ export const FTTT_PHASE_LABELS: Record<FtttPhase, string> = {
   INITIATION:     'Project Initiation',
   SURVEY:         'Validation & Survey',
   PREPARATION:    'Project Preparation',
+  PROCUREMENT:    'Procurement',
   IMPLEMENTATION: 'Implementation',
   DOCUMENTATION:  'Documentation & Acceptance',
   RECONCILIATION: 'Reconciliation & Billing',

@@ -22,8 +22,8 @@ import { io, Socket } from 'socket.io-client';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const PHASE_ORDER: FtttPhase[] = [
-  'INITIATION', 'SURVEY', 'PREPARATION', 'IMPLEMENTATION',
-  'DOCUMENTATION', 'RECONCILIATION', 'CLOSING',
+  'INITIATION', 'SURVEY', 'PREPARATION', 'PROCUREMENT',
+  'IMPLEMENTATION', 'DOCUMENTATION', 'RECONCILIATION', 'CLOSING',
 ];
 
 function fmt(date: string | null) {
@@ -106,12 +106,25 @@ const FILE_TYPE_LABELS: Record<string, string> = {
 function SurveySection({ project, onRefresh }: { project: FtttProject; onRefresh: () => void }) {
   const { user } = useAuthStore();
   const [uploading, setUploading] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [rejectReason, setRejectReason] = useState('');
+  const [showRejectForm, setShowRejectForm] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const [fileType, setFileType] = useState('photo');
   const [caption, setCaption] = useState('');
 
-  const canDelete = ['SURVEYOR_FTTT', 'ADMIN', 'GENERAL_MANAGER'].includes(user?.role ?? '');
+  const role = user?.role ?? '';
+  const isSurveyor = role === 'SURVEYOR_FTTT';
+  const isPM       = role === 'PM_FTTT' || role === 'ADMIN' || role === 'GENERAL_MANAGER';
+  const canDelete  = ['SURVEYOR_FTTT', 'ADMIN', 'GENERAL_MANAGER'].includes(role);
+
+  // C6-PST2: Determine survey approval state from phaseProgress.notes
+  const surveyProg = project.phaseProgresses.find((p) => p.phase === 'SURVEY');
+  const surveyNotes = surveyProg?.notes ?? null;
+  const isPendingReview = surveyNotes === 'PENDING_PM_REVIEW';
+  const isRejected      = typeof surveyNotes === 'string' && surveyNotes.startsWith('REJECTED:');
+  const rejectionReason = isRejected ? surveyNotes.replace('REJECTED:', '') : '';
 
   const handleUpload = async (file: File) => {
     const fd = new FormData();
@@ -148,35 +161,119 @@ function SurveySection({ project, onRefresh }: { project: FtttProject; onRefresh
     }
   };
 
+  const handleSubmitForReview = async () => {
+    setSubmitting(true);
+    try {
+      const res = await apiFetch(`/fttt-projects/${project.id}/submit-survey-review`, { method: 'POST' }, user?.id);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
+      toast.success('Survei berhasil dikirim ke PM untuk direview');
+      onRefresh();
+    } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
+    finally { setSubmitting(false); }
+  };
+
+  const handlePMReview = async (approved: boolean) => {
+    if (!approved && !rejectReason.trim()) { toast.error('Alasan penolakan wajib diisi'); return; }
+    setSubmitting(true);
+    try {
+      const res = await apiFetch(`/fttt-projects/${project.id}/review-survey`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ approved, rejectionNotes: approved ? undefined : rejectReason.trim() }),
+      }, user?.id);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
+      toast.success(approved ? 'Survey disetujui — fase lanjut ke Preparation' : 'Survey ditolak — dikembalikan ke Surveyor');
+      setShowRejectForm(false); setRejectReason('');
+      onRefresh();
+    } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
+    finally { setSubmitting(false); }
+  };
+
   // Group uploads by fileType
   const grouped = project.surveyUploads.reduce<Record<string, typeof project.surveyUploads>>((acc, u) => {
     (acc[u.fileType] = acc[u.fileType] ?? []).push(u);
     return acc;
   }, {});
 
+  const fmtDateTime = (iso: string) => {
+    const d = new Date(iso);
+    return d.toLocaleDateString('id-ID', { day: '2-digit', month: '2-digit', year: 'numeric' }) + ' ' +
+           d.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) + ' WIB';
+  };
+
   return (
     <div>
-      {/* Upload form */}
-      <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
-        <select value={fileType} onChange={(e) => setFileType(e.target.value)}
-          style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12 }}>
-          <option value="photo">📷 Foto</option>
-          <option value="supporting_file">📄 File Pendukung</option>
-          <option value="survey_evidence">🔍 Bukti Survei</option>
-          <option value="operational_notes">📝 Catatan Lapangan</option>
-        </select>
-        <input value={caption} onChange={(e) => setCaption(e.target.value)}
-          placeholder="Keterangan (opsional)"
-          style={{ flex: 1, padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12, minWidth: 120 }} />
-        <input ref={fileRef} type="file" style={{ display: 'none' }}
-          onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleUpload(f); }} />
-        <button onClick={() => fileRef.current?.click()} disabled={uploading}
-          style={{ padding: '6px 12px', borderRadius: 6, border: '1px solid #D0D7DE', background: '#F6F8FA', cursor: 'pointer', fontSize: 12, display: 'flex', alignItems: 'center', gap: 4 }}>
-          <Upload size={13} /> {uploading ? 'Mengunggah…' : 'Upload'}
-        </button>
-      </div>
+      {/* C6-PST2: Survey review state banners */}
+      {isPendingReview && (
+        <div style={{ background: '#FFF8C5', border: '1px solid #d4a017', borderRadius: 8, padding: 12, marginBottom: 12 }}>
+          <p style={{ margin: '0 0 4px', fontWeight: 700, fontSize: 12, color: '#9a6700' }}>⏳ Menunggu Review PM FTTT</p>
+          <p style={{ margin: 0, fontSize: 11, color: '#9a6700' }}>Surveyor telah mengirim bukti survei. PM FTTT dapat mereview dan menyetujui atau menolak di bawah.</p>
+        </div>
+      )}
+      {isRejected && (
+        <div style={{ background: '#FFEBE9', border: '1px solid #cf222e', borderRadius: 8, padding: 12, marginBottom: 12 }}>
+          <p style={{ margin: '0 0 4px', fontWeight: 700, fontSize: 12, color: '#cf222e' }}>❌ Survey Ditolak — Revisi Diperlukan</p>
+          <p style={{ margin: 0, fontSize: 11, color: '#cf222e' }}>Alasan: {rejectionReason}</p>
+          {isSurveyor && <p style={{ margin: '4px 0 0', fontSize: 11, color: '#cf222e' }}>Harap perbaiki dokumen dan kirim ulang ke PM.</p>}
+        </div>
+      )}
 
-      {/* Grouped display */}
+      {/* PM review panel */}
+      {isPM && isPendingReview && (
+        <div style={{ background: '#F0F8FF', border: '1px solid #0969DA', borderRadius: 8, padding: 12, marginBottom: 12 }}>
+          <p style={{ margin: '0 0 8px', fontWeight: 700, fontSize: 12, color: '#0969DA' }}>📋 Review Hasil Validation & Survey</p>
+          <p style={{ margin: '0 0 10px', fontSize: 11, color: '#57606a' }}>Periksa seluruh dokumen yang diunggah Surveyor di bawah, lalu tentukan keputusan:</p>
+          {!showRejectForm ? (
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button type="button" onClick={() => void handlePMReview(true)} disabled={submitting}
+                style={{ padding: '7px 16px', borderRadius: 6, border: 'none', background: '#1a7f37', color: '#fff', fontWeight: 700, cursor: 'pointer', fontSize: 12 }}>
+                ✓ Setujui Survey
+              </button>
+              <button type="button" onClick={() => setShowRejectForm(true)}
+                style={{ padding: '7px 16px', borderRadius: 6, border: 'none', background: '#cf222e', color: '#fff', fontWeight: 700, cursor: 'pointer', fontSize: 12 }}>
+                ✗ Tolak Survey
+              </button>
+            </div>
+          ) : (
+            <div>
+              <textarea value={rejectReason} onChange={(e) => setRejectReason(e.target.value)} rows={3}
+                placeholder="Alasan penolakan (wajib diisi)…"
+                style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #cf222e', fontSize: 12, resize: 'vertical', boxSizing: 'border-box', marginBottom: 8 }} />
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button type="button" onClick={() => void handlePMReview(false)} disabled={submitting || !rejectReason.trim()}
+                  style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: rejectReason.trim() ? '#cf222e' : '#D0D7DE', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 12 }}>
+                  {submitting ? '…' : 'Konfirmasi Tolak'}
+                </button>
+                <button type="button" onClick={() => { setShowRejectForm(false); setRejectReason(''); }}
+                  style={{ padding: '6px 12px', borderRadius: 6, border: '1px solid #D0D7DE', background: '#fff', cursor: 'pointer', fontSize: 12 }}>Batal</button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Upload form — only shown when not pending review */}
+      {!isPendingReview && (
+        <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
+          <select value={fileType} onChange={(e) => setFileType(e.target.value)}
+            style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12 }}>
+            <option value="photo">📷 Foto</option>
+            <option value="supporting_file">📄 File Pendukung</option>
+            <option value="survey_evidence">🔍 Bukti Survei</option>
+            <option value="operational_notes">📝 Catatan Lapangan</option>
+          </select>
+          <input value={caption} onChange={(e) => setCaption(e.target.value)}
+            placeholder="Keterangan (opsional)"
+            style={{ flex: 1, padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12, minWidth: 120 }} />
+          <input ref={fileRef} type="file" style={{ display: 'none' }}
+            onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleUpload(f); }} />
+          <button onClick={() => fileRef.current?.click()} disabled={uploading}
+            style={{ padding: '6px 12px', borderRadius: 6, border: '1px solid #D0D7DE', background: '#F6F8FA', cursor: 'pointer', fontSize: 12, display: 'flex', alignItems: 'center', gap: 4 }}>
+            <Upload size={13} /> {uploading ? 'Mengunggah…' : 'Upload'}
+          </button>
+        </div>
+      )}
+
+      {/* Grouped display with timestamp */}
       {project.surveyUploads.length === 0 && (
         <p style={{ fontSize: 12, color: '#8c959f' }}>Belum ada dokumen survei diunggah.</p>
       )}
@@ -194,9 +291,11 @@ function SurveySection({ project, onRefresh }: { project: FtttProject; onRefresh
                   style={{ fontSize: 12, color: '#0969DA', textDecoration: 'none', display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {u.caption || u.fileUrl.split('/').pop() || 'File'}
                 </a>
-                <span style={{ fontSize: 10, color: '#8c959f' }}>oleh {u.uploadedBy.name}</span>
+                <span style={{ fontSize: 10, color: '#8c959f' }}>
+                  {fmtDateTime(u.createdAt)} · {u.uploadedBy.name}
+                </span>
               </div>
-              {canDelete && (
+              {canDelete && !isPendingReview && (
                 <button type="button"
                   onClick={() => void handleDelete(u.id, u.caption || u.fileType)}
                   disabled={deletingId === u.id}
@@ -208,6 +307,19 @@ function SurveySection({ project, onRefresh }: { project: FtttProject; onRefresh
           ))}
         </div>
       ))}
+
+      {/* C6-PST2: Submit to PM button for Surveyor */}
+      {isSurveyor && !isPendingReview && project.surveyUploads.length > 0 && (
+        <div style={{ marginTop: 12, padding: 10, background: '#DAFBE1', borderRadius: 8, border: '1px solid #2DA44E' }}>
+          <p style={{ margin: '0 0 6px', fontSize: 12, fontWeight: 600, color: '#1a7f37' }}>
+            ✅ Upload selesai? Kirim ke PM untuk direview.
+          </p>
+          <button type="button" onClick={() => void handleSubmitForReview()} disabled={submitting}
+            style={{ padding: '7px 16px', borderRadius: 6, border: 'none', background: '#1a7f37', color: '#fff', fontWeight: 700, cursor: 'pointer', fontSize: 12 }}>
+            {submitting ? 'Mengirim…' : '📤 Submit ke PM untuk Review'}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -541,10 +653,12 @@ function JaminanSection({ project, onRefresh }: { project: FtttProject; onRefres
 // PM then reviews, Admin confirms.
 function DocumentationSection({ project, onRefresh, userRole }: { project: FtttProject; onRefresh: () => void; userRole: string }) {
   const { user } = useAuthStore();
-  const canUploadDocs  = userRole === 'SURVEYOR_FTTT' || userRole === 'GENERAL_MANAGER';
-  const canReplaceDocs = userRole === 'SURVEYOR_FTTT';
+  // C6-TI2: PM FTTT owns Documentation & Acceptance; Surveyor no longer uploads here
+  // Approval flow: PM uploads → PENDING_PM (PM self-approves/any PM reviews) → PENDING_ADMIN → Admin final approve
+  const canUploadDocs  = userRole === 'PM_FTTT' || userRole === 'GENERAL_MANAGER';
+  const canReplaceDocs = userRole === 'PM_FTTT' || userRole === 'ADMIN' || userRole === 'GENERAL_MANAGER';
   const canPmApprove   = userRole === 'PM_FTTT';
-  const canAdminApprove = userRole === 'ADMIN';
+  const canAdminApprove = userRole === 'ADMIN' || userRole === 'GENERAL_MANAGER';
 
   // Per-doc state maps: key → value
   const [formContents, setFormContents] = useState<Record<string, string>>({});
@@ -838,19 +952,43 @@ function DocumentationSection({ project, onRefresh, userRole }: { project: FtttP
 // C5-Issue4: MONITORING_DOC is Admin-only; Surveyor+PM can only upload photos+notes
 function ImplementationSection({ project, onRefresh, userRole }: { project: FtttProject; onRefresh: () => void; userRole: string }) {
   const { user } = useAuthStore();
-  const isAdmin   = userRole === 'ADMIN' || userRole === 'GENERAL_MANAGER';
-  const canUpload = userRole === 'SURVEYOR_FTTT' || isAdmin; // can upload photos
-  const canMonitoring = isAdmin;  // C5: only Admin can upload monitoring docs
-  const canNote   = canUpload || userRole === 'PM_FTTT'; // PM can add notes too
+  const isAdmin      = userRole === 'ADMIN' || userRole === 'GENERAL_MANAGER';
+  const isSurveyor   = userRole === 'SURVEYOR_FTTT';
+  const canUpload    = isSurveyor || isAdmin;
+  const canMonitoring = isAdmin;
+  const canNote      = canUpload || userRole === 'PM_FTTT';
+
+  // C6-PST4: Track Surveyor "lapangan done" state via phaseProgress.notes
+  const implProg = project.phaseProgresses.find((p) => p.phase === 'IMPLEMENTATION');
+  const lapanganDone = implProg?.notes === 'SURVEYOR_DONE';
 
   const [logType, setLogType] = useState<'PHOTO' | 'MONITORING_DOC' | 'NOTE'>('PHOTO');
   const [caption, setCaption] = useState('');
   const [notes, setNotes]   = useState('');
-  const [uploading, setUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState<string>(''); // e.g. "Mengunggah 2/5..."
+  const [uploading, setUploading]   = useState(false);
+  const [markingDone, setMarkingDone] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<string>('');
   const fileRef = useRef<HTMLInputElement>(null);
 
   const LOG_LABELS = { PHOTO: '📷 Foto Progress', MONITORING_DOC: '📊 Dokumen Monitoring', NOTE: '📝 Catatan Progress' };
+
+  const handleMarkDone = async () => {
+    if (!confirm('Tandai pekerjaan lapangan selesai? Task akan diteruskan ke Admin untuk upload Dokumen Monitoring.')) return;
+    setMarkingDone(true);
+    try {
+      const res = await apiFetch(`/fttt-projects/${project.id}/mark-implementation-done`, { method: 'POST' }, user?.id);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
+      toast.success('Pekerjaan lapangan ditandai selesai — Admin akan upload Dokumen Monitoring');
+      onRefresh();
+    } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
+    finally { setMarkingDone(false); }
+  };
+
+  const fmtDateTime = (iso: string) => {
+    const d = new Date(iso);
+    return d.toLocaleDateString('id-ID', { day: '2-digit', month: '2-digit', year: 'numeric' }) + ' ' +
+           d.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) + ' WIB';
+  };
 
   // Issue #1: multi-file upload — loop through files for PHOTO type
   const handleAdd = async (files?: FileList | File[]) => {
@@ -903,7 +1041,10 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
             <p style={{ margin: 0, fontSize: 12, fontWeight: 600 }}>{LOG_LABELS[log.logType]}</p>
             {log.caption && <p style={{ margin: '2px 0 0', fontSize: 12 }}>{log.caption}</p>}
             {log.notes   && <p style={{ margin: '2px 0 0', fontSize: 11, color: '#57606a' }}>{log.notes}</p>}
-            <p style={{ margin: '3px 0 0', fontSize: 10, color: '#8c959f' }}>oleh {log.uploadedBy.name}</p>
+            {/* C6-TI1/PST3: Display timestamp for audit trail */}
+            <p style={{ margin: '3px 0 0', fontSize: 10, color: '#8c959f' }}>
+              {fmtDateTime(log.createdAt)} · {log.uploadedBy.name}
+            </p>
           </div>
           {log.fileUrl && (
             <a href={fixFileUrl(log.fileUrl)} target="_blank" rel="noopener noreferrer"
@@ -913,6 +1054,31 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
           )}
         </div>
       ))}
+
+      {/* C6-PST4: Status banner */}
+      {lapanganDone && (
+        <div style={{ background: '#FFF8C5', border: '1px solid #d4a017', borderRadius: 8, padding: 10, marginTop: 8, marginBottom: 8 }}>
+          <p style={{ margin: 0, fontSize: 12, fontWeight: 700, color: '#9a6700' }}>
+            ✅ Pekerjaan lapangan ditandai selesai oleh Surveyor
+          </p>
+          <p style={{ margin: '3px 0 0', fontSize: 11, color: '#9a6700' }}>
+            {isAdmin ? 'Silakan upload Dokumen Monitoring, kemudian selesaikan fase.' : 'Menunggu Admin upload Dokumen Monitoring.'}
+          </p>
+        </div>
+      )}
+
+      {/* C6-PST4: Surveyor "mark lapangan done" button */}
+      {isSurveyor && !lapanganDone && logs.length > 0 && (
+        <div style={{ background: '#DAFBE1', border: '1px solid #2DA44E', borderRadius: 8, padding: 10, marginTop: 8, marginBottom: 8 }}>
+          <p style={{ margin: '0 0 6px', fontSize: 12, fontWeight: 600, color: '#1a7f37' }}>
+            Pekerjaan lapangan sudah selesai?
+          </p>
+          <button type="button" onClick={() => void handleMarkDone()} disabled={markingDone}
+            style={{ padding: '7px 16px', borderRadius: 6, border: 'none', background: '#1a7f37', color: '#fff', fontWeight: 700, cursor: 'pointer', fontSize: 12 }}>
+            {markingDone ? 'Memproses…' : '✅ Tandai Pekerjaan Lapangan Selesai'}
+          </button>
+        </div>
+      )}
 
       {/* Add log form */}
       {(canUpload || canNote) && (
@@ -996,18 +1162,18 @@ const RECON_DOCS: Record<string, {
   uploaderRole: string[]; requiresApproval: boolean;
 }[]> = {
   TELKOM_INFRA: [
-    // ── Docs requiring PM/Admin approval ───────────────────────────────────────
-    { key: 'RISALAH_RAPAT_MOM', label: 'Risalah Rapat / MOM',           desc: 'Minutes of Meeting rekonsiliasi project bersama Telkom Infra',  uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: true  },
-    { key: 'BOQ_PERHITUNGAN',   label: 'BOQ Perhitungan',                desc: 'BOQ final sesuai kondisi lapangan aktual',                       uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: true  },
-    { key: 'BA_PENUTUPAN',      label: 'BA Penutupan',                   desc: 'Berita Acara Penutupan Project',                                 uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: true  },
-    { key: 'BAPP_TI',           label: 'BAPP',                           desc: 'Berita Acara Pemeriksaan Pekerjaan',                             uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: true  },
+    // ── C6-TI2: PM FTTT owns Reconciliation uploads (was SURVEYOR_FTTT) ─────
+    { key: 'RISALAH_RAPAT_MOM', label: 'Risalah Rapat / MOM',           desc: 'Minutes of Meeting rekonsiliasi project bersama Telkom Infra',  uploaderRole: ['PM_FTTT'], requiresApproval: true  },
+    { key: 'BOQ_PERHITUNGAN',   label: 'BOQ Perhitungan',                desc: 'BOQ final sesuai kondisi lapangan aktual',                       uploaderRole: ['PM_FTTT'], requiresApproval: true  },
+    { key: 'BA_PENUTUPAN',      label: 'BA Penutupan',                   desc: 'Berita Acara Penutupan Project',                                 uploaderRole: ['PM_FTTT'], requiresApproval: true  },
+    { key: 'BAPP_TI',           label: 'BAPP',                           desc: 'Berita Acara Pemeriksaan Pekerjaan',                             uploaderRole: ['PM_FTTT'], requiresApproval: true  },
     // ── Upload docs from Telkom Infra — auto-approved on upload ────────────────
-    { key: 'BAST_1_TI',         label: 'BAST 1',                         desc: 'Berita Acara Serah Terima 1 dari Telkom Infra',                  uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: false },
-    { key: 'BAPWPP_TI',         label: 'BAPWPP',                         desc: 'Berita Acara Perubahan Waktu Pelaksanaan Project',               uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: false },
-    { key: 'SURAT_WASPANG',     label: 'Surat Waspang',                  desc: 'Surat Waspang dari Telkom Infra',                                uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: false },
-    { key: 'PO_TI',             label: 'PO',                             desc: 'Purchase Order dari Telkom Infra',                               uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: false },
-    { key: 'AMANDEMEN_1_TI',    label: 'Amandemen 1',                    desc: 'Dokumen Amandemen 1 dari Telkom Infra',                          uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: false },
-    { key: 'AMANDEMEN_2_TI',    label: 'Amandemen 2',                    desc: 'Dokumen Amandemen 2 dari Telkom Infra',                          uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: false },
+    { key: 'BAST_1_TI',         label: 'BAST 1',                         desc: 'Berita Acara Serah Terima 1 dari Telkom Infra',                  uploaderRole: ['PM_FTTT'], requiresApproval: false },
+    { key: 'BAPWPP_TI',         label: 'BAPWPP',                         desc: 'Berita Acara Perubahan Waktu Pelaksanaan Project',               uploaderRole: ['PM_FTTT'], requiresApproval: false },
+    { key: 'SURAT_WASPANG',     label: 'Surat Waspang',                  desc: 'Surat Waspang dari Telkom Infra',                                uploaderRole: ['PM_FTTT'], requiresApproval: false },
+    { key: 'PO_TI',             label: 'PO',                             desc: 'Purchase Order dari Telkom Infra',                               uploaderRole: ['PM_FTTT'], requiresApproval: false },
+    { key: 'AMANDEMEN_1_TI',    label: 'Amandemen 1',                    desc: 'Dokumen Amandemen 1 dari Telkom Infra',                          uploaderRole: ['PM_FTTT'], requiresApproval: false },
+    { key: 'AMANDEMEN_2_TI',    label: 'Amandemen 2',                    desc: 'Dokumen Amandemen 2 dari Telkom Infra',                          uploaderRole: ['PM_FTTT'], requiresApproval: false },
     // NOTE: Jaminan Pemeliharaan & Invoice Final are in Project Closing phase (not here)
     // NOTE: Good Receipt removed — not used in Telkom Infra lifecycle
   ],
@@ -1189,22 +1355,89 @@ function ReconciliationSection({ project, onRefresh, userRole }: { project: Fttt
   );
 }
 
+// ─── Procurement Section (PST-5: PM uploads PO between Preparation and Implementation) ─
+function ProcurementSection({ project, onRefresh, userRole }: { project: FtttProject; onRefresh: () => void; userRole: string }) {
+  const { user } = useAuthStore();
+  const canUpload = ['PM_FTTT', 'ADMIN', 'GENERAL_MANAGER'].includes(userRole);
+  const [uploading, setUploadingKey] = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const poProcurement = project.reconDocs?.find((d) => d.docKey === 'PO_PROCUREMENT') ?? null;
+
+  const handleUpload = async (file: File) => {
+    setUploadingKey('PO_PROCUREMENT');
+    const fd = new FormData();
+    fd.append('docKey', 'PO_PROCUREMENT');
+    fd.append('file', file);
+    try {
+      const res = await apiFetch(`/fttt-projects/${project.id}/recon-docs`, { method: 'POST', body: fd }, user?.id);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal upload');
+      toast.success('Purchase Order berhasil diunggah');
+      onRefresh();
+    } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
+    finally { setUploadingKey(null); }
+  };
+
+  return (
+    <div>
+      <p style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>Procurement — Purchase Order</p>
+      <p style={{ fontSize: 12, color: '#57606a', marginBottom: 12 }}>
+        PM FTTT wajib meng-upload dokumen Purchase Order (PO) sebelum fase ini dapat diselesaikan dan project berlanjut ke Implementation.
+      </p>
+
+      <div style={{ background: '#F6F8FA', borderRadius: 10, padding: 12, border: '1px solid #EAEEF2' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <span style={{ fontSize: 13, fontWeight: 700 }}>📄 Purchase Order (PO)</span>
+              <span style={{ fontSize: 11, color: '#57606a', background: '#EDF2F4', padding: '2px 6px', borderRadius: 4 }}>PM FTTT</span>
+              {poProcurement
+                ? <span style={{ fontSize: 10, fontWeight: 700, color: '#1a7f37' }}>✓ Diunggah</span>
+                : <span style={{ fontSize: 10, color: '#cf222e', fontWeight: 600 }}>⚠️ WAJIB — belum diunggah</span>}
+            </div>
+            <p style={{ margin: '3px 0 0', fontSize: 11, color: '#57606a' }}>Dokumen Purchase Order yang telah diterbitkan</p>
+            {poProcurement?.uploadedBy && <p style={{ margin: '2px 0 0', fontSize: 10, color: '#8c959f' }}>oleh {poProcurement.uploadedBy.name}</p>}
+          </div>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            {poProcurement?.fileUrl && <a href={fixFileUrl(poProcurement.fileUrl)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: '#0969DA' }}>Lihat</a>}
+            {canUpload && (
+              <>
+                <input ref={fileRef} type="file" accept=".pdf,.xlsx,.xls,.jpg,.jpeg,.png" style={{ display: 'none' }}
+                  onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleUpload(f); }} />
+                <button type="button" onClick={() => fileRef.current?.click()} disabled={uploading === 'PO_PROCUREMENT'}
+                  style={{ padding: '4px 10px', borderRadius: 6, border: 'none', background: poProcurement ? '#FFA500' : '#0969DA', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 11 }}>
+                  {uploading === 'PO_PROCUREMENT' ? '…' : poProcurement ? '🔄 Ganti' : '+ Upload PO'}
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Project Closing Section ──────────────────────────────────────────────────
-// C5-Issue1: BAST II now Upload File (Generate Form removed)
-// C5-Issue3: Jaminan Pemeliharaan + Invoice Final added for Telkom Infra
+// C5: BAST II Upload; Jaminan+Invoice for TI
+// C6-TI3: Admin-only; maintenance period confirmation gate
 function ClosingSection({ project, onRefresh, userRole }: { project: FtttProject; onRefresh: () => void; userRole: string }) {
   const { user } = useAuthStore();
-  const canUpload    = ['SURVEYOR_FTTT', 'PM_FTTT', 'ADMIN', 'GENERAL_MANAGER'].includes(userRole);
+  // C6-TI3: Only Admin can manage closing activities
+  const canUpload    = ['ADMIN', 'GENERAL_MANAGER'].includes(userRole);
   const canApprove   = ['PM_FTTT', 'ADMIN', 'GENERAL_MANAGER'].includes(userRole);
   const isFinance    = ['FINANCE', 'ADMIN', 'GENERAL_MANAGER'].includes(userRole);
   const isTI         = project.ftttCompany === 'TELKOM_INFRA';
+
+  // C6-TI3: Maintenance period gate — Admin must confirm before uploads are enabled
+  const [maintenanceConfirmed, setMaintenanceConfirmed] = useState(false);
+  const uploadEnabled = canUpload && maintenanceConfirmed;
 
   const logs: FtttClosingLog[] = project.closingLogs ?? [];
   const bastII    = logs.find((l) => l.logType === 'BAST_II') ?? null;
   const evidences = logs.filter((l) => l.logType === 'EVIDENCE');
   const notes_list= logs.filter((l) => l.logType === 'NOTE');
 
-  // C5-Issue3: TI closing docs stored in reconDocs
+  // TI closing docs stored in reconDocs
   const jaminanPemeliharaan = project.reconDocs?.find((d) => d.docKey === 'JAMINAN_PEMELIHARAAN') ?? null;
   const invoiceFinal        = project.reconDocs?.find((d) => d.docKey === 'INVOICE_FINAL') ?? null;
 
@@ -1281,9 +1514,38 @@ function ClosingSection({ project, onRefresh, userRole }: { project: FtttProject
   return (
     <div>
       <p style={{ fontWeight: 600, fontSize: 14, marginBottom: 4 }}>Aktivitas Project Closing</p>
-      <p style={{ fontSize: 12, color: '#57606a', marginBottom: 16 }}>
-        Serah terima project kepada client setelah masa pemeliharaan selesai.
+      <p style={{ fontSize: 12, color: '#57606a', marginBottom: 10 }}>
+        Serah terima project kepada client setelah masa pemeliharaan selesai. Hanya Admin yang dapat mengelola dokumen fase ini.
       </p>
+
+      {/* C6-TI3: Maintenance period confirmation gate */}
+      {canUpload && !maintenanceConfirmed && (
+        <div style={{ background: '#FFF8C5', border: '1px solid #d4a017', borderRadius: 10, padding: 14, marginBottom: 16 }}>
+          <p style={{ margin: '0 0 6px', fontWeight: 700, fontSize: 13, color: '#9a6700' }}>
+            ⚠️ Konfirmasi Masa Pemeliharaan
+          </p>
+          <p style={{ margin: '0 0 10px', fontSize: 12, color: '#9a6700' }}>
+            Dokumen BAST II, Evidence Serah Terima, dan Catatan Penutupan hanya dapat diproses setelah masa pemeliharaan project selesai. Pastikan seluruh kewajiban masa pemeliharaan telah terpenuhi sebelum melanjutkan.
+          </p>
+          <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer' }}>
+            <input type="checkbox" checked={maintenanceConfirmed} onChange={(e) => setMaintenanceConfirmed(e.target.checked)}
+              style={{ marginTop: 2, width: 16, height: 16, cursor: 'pointer' }} />
+            <span style={{ fontSize: 12, color: '#9a6700', fontWeight: 600 }}>
+              Saya konfirmasi bahwa masa pemeliharaan project telah selesai dan proses Project Closing dapat dilanjutkan.
+            </span>
+          </label>
+        </div>
+      )}
+      {canUpload && maintenanceConfirmed && (
+        <div style={{ background: '#DAFBE1', border: '1px solid #2DA44E', borderRadius: 8, padding: 10, marginBottom: 14, fontSize: 12, color: '#1a7f37' }}>
+          ✅ Masa pemeliharaan dikonfirmasi — seluruh aktivitas penutupan project dapat dilakukan.
+        </div>
+      )}
+      {!canUpload && (
+        <div style={{ background: '#F6F8FA', border: '1px solid #D0D7DE', borderRadius: 8, padding: 10, marginBottom: 14, fontSize: 12, color: '#57606a' }}>
+          🔒 Pengelolaan dokumen Project Closing hanya dapat dilakukan oleh Admin Project.
+        </div>
+      )}
 
       {/* ── C5-Issue3: Jaminan Pemeliharaan + Invoice Final (Telkom Infra only, Finance) ── */}
       {isTI && (
@@ -1304,7 +1566,7 @@ function ClosingSection({ project, onRefresh, userRole }: { project: FtttProject
               </div>
               <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
                 {jaminanPemeliharaan?.fileUrl && <a href={fixFileUrl(jaminanPemeliharaan.fileUrl)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: '#0969DA' }}>Lihat</a>}
-                {isFinance && (
+                {isFinance && maintenanceConfirmed && (
                   <>
                     <input ref={jaminanFileRef} type="file" accept=".pdf,.jpg,.jpeg,.png" style={{ display: 'none' }}
                       onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleReconUpload('JAMINAN_PEMELIHARAAN', f); }} />
@@ -1334,7 +1596,7 @@ function ClosingSection({ project, onRefresh, userRole }: { project: FtttProject
               </div>
               <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
                 {invoiceFinal?.fileUrl && <a href={fixFileUrl(invoiceFinal.fileUrl)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: '#0969DA' }}>Lihat</a>}
-                {isFinance && (
+                {isFinance && maintenanceConfirmed && (
                   <>
                     <input ref={invoiceFileRef} type="file" accept=".pdf,.xlsx,.xls,.jpg,.jpeg,.png" style={{ display: 'none' }}
                       onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleReconUpload('INVOICE_FINAL', f); }} />
@@ -1381,7 +1643,7 @@ function ClosingSection({ project, onRefresh, userRole }: { project: FtttProject
                   style={{ padding: '3px 8px', borderRadius: 4, border: 'none', background: '#FFEBE9', color: '#cf222e', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>✗ Tolak</button>
               </>
             )}
-            {canUpload && (!bastII || bastII.approvalStatus === 'REJECTED') && (
+            {uploadEnabled && (!bastII || bastII.approvalStatus === 'REJECTED') && (
               <>
                 <input ref={bastiiFileRef} type="file" accept=".pdf,.xlsx,.xls,.jpg,.jpeg,.png" style={{ display: 'none' }}
                   onChange={(e) => { setLogType('BAST_II'); void handleUpload(e.target.files); }} />
@@ -1412,7 +1674,7 @@ function ClosingSection({ project, onRefresh, userRole }: { project: FtttProject
             {ev.fileUrl && <a href={fixFileUrl(ev.fileUrl)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: '#0969DA' }}>Lihat</a>}
           </div>
         ))}
-        {canUpload && (
+        {uploadEnabled && (
           <>
             <input type="file" id="evidence-file-input" multiple accept=".jpg,.jpeg,.png,.webp" style={{ display: 'none' }}
               onChange={(e) => { setLogType('EVIDENCE'); void handleUpload(e.target.files); }} />
@@ -1438,7 +1700,7 @@ function ClosingSection({ project, onRefresh, userRole }: { project: FtttProject
             <p style={{ margin: '2px 0 0', fontSize: 10, color: '#8c959f' }}>oleh {n.uploadedBy.name}</p>
           </div>
         ))}
-        {canUpload && (
+        {uploadEnabled && (
           <div style={{ marginTop: 8 }}>
             <input value={caption} onChange={(e) => setCaption(e.target.value)} placeholder="Judul catatan (opsional)"
               style={{ width: '100%', padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12, marginBottom: 6, boxSizing: 'border-box' }} />
@@ -1584,11 +1846,17 @@ export default function FtttProjectDetailPage() {
               </a>
             </p>
           </div>
-          {/* C5-Issue4: For IMPLEMENTATION phase, only ADMIN can advance */}
-          {!isCompletedOrCancelled && readiness && !(
-            project.currentPhase === 'IMPLEMENTATION' &&
-            userRole !== 'ADMIN' && userRole !== 'GENERAL_MANAGER'
-          ) && (
+          {/* Hide "Selesaikan Fase" in specific role-gated scenarios */}
+          {!isCompletedOrCancelled && readiness && (() => {
+            // C5: Implementation — Admin only
+            if (project.currentPhase === 'IMPLEMENTATION' && userRole !== 'ADMIN' && userRole !== 'GENERAL_MANAGER') return false;
+            // C6-PST2: Survey — Surveyor uses "Submit ke PM" button instead (in SurveySection)
+            if (project.currentPhase === 'SURVEY' && userRole === 'SURVEYOR_FTTT') return false;
+            // C6-TI2: Documentation & Reconciliation — PM FTTT + Admin only
+            if ((project.currentPhase === 'DOCUMENTATION' || project.currentPhase === 'RECONCILIATION') &&
+                userRole === 'SURVEYOR_FTTT') return false;
+            return true;
+          })() && (
             <button
               onClick={handleAdvance}
               disabled={advancing || !readiness.ready}
@@ -1603,11 +1871,16 @@ export default function FtttProjectDetailPage() {
               {advancing ? 'Memproses…' : `Selesaikan Fase → ${FTTT_PHASE_LABELS[project.currentPhase]}`}
             </button>
           )}
-          {/* Info for non-Admin during Implementation */}
+          {/* Role-gated info messages */}
           {!isCompletedOrCancelled && project.currentPhase === 'IMPLEMENTATION' &&
             userRole !== 'ADMIN' && userRole !== 'GENERAL_MANAGER' && (
             <div style={{ padding: '8px 14px', borderRadius: 8, background: '#F6F8FA', border: '1px solid #D0D7DE', fontSize: 12, color: '#57606a' }}>
               🔒 Penyelesaian fase Implementation hanya dapat dilakukan oleh Admin
+            </div>
+          )}
+          {!isCompletedOrCancelled && project.currentPhase === 'SURVEY' && userRole === 'SURVEYOR_FTTT' && (
+            <div style={{ padding: '8px 14px', borderRadius: 8, background: '#F6F8FA', border: '1px solid #D0D7DE', fontSize: 12, color: '#57606a' }}>
+              📤 Gunakan tombol "Submit ke PM" pada bagian Upload di bawah setelah semua dokumen diunggah
             </div>
           )}
         </div>
@@ -1665,7 +1938,7 @@ export default function FtttProjectDetailPage() {
             Aktivitas Fase: {FTTT_PHASE_LABELS[project.currentPhase]}
           </p>
 
-          {/* Survey — iForte & PST */}
+          {/* Survey — iForte & PST (C6-PST2: PM approval flow handled inside SurveySection) */}
           {project.currentPhase === 'SURVEY' && project.ftttCompany !== 'TELKOM_INFRA' && (
             <SurveySection project={project} onRefresh={load} />
           )}
@@ -1680,35 +1953,39 @@ export default function FtttProjectDetailPage() {
             <JaminanSection project={project} onRefresh={load} />
           )}
 
-          {/* Documentation — all companies */}
+          {/* C6-PST5: Procurement phase — PM uploads PO (PST only) */}
+          {project.currentPhase === 'PROCUREMENT' && (
+            <ProcurementSection project={project} onRefresh={load} userRole={userRole} />
+          )}
+
+          {/* Documentation — all companies (C6-TI2: PM FTTT owns) */}
           {project.currentPhase === 'DOCUMENTATION' && (
             <DocumentationSection project={project} onRefresh={load} userRole={userRole} />
           )}
 
-          {/* Issue #4: Reconciliation & Billing — all companies */}
+          {/* Reconciliation & Billing — all companies (C6-TI2: PM FTTT owns) */}
           {project.currentPhase === 'RECONCILIATION' && (
             <ReconciliationSection project={project} onRefresh={load} userRole={userRole} />
           )}
 
-          {/* Sanggah — iForte, available during RECONCILIATION (existing feature) */}
+          {/* Sanggah — iForte, available during RECONCILIATION */}
           {project.currentPhase === 'RECONCILIATION' && project.ftttCompany === 'IFORTE' && (
             <div style={{ marginTop: 16, borderTop: '1px solid #EAEEF2', paddingTop: 12 }}>
               <SanggahSection project={project} onRefresh={load} isAdmin={userRole === 'ADMIN'} />
             </div>
           )}
 
-          {/* Issue #4: Implementation phase — photo/doc/note logging by Surveyor */}
+          {/* Implementation phase */}
           {project.currentPhase === 'IMPLEMENTATION' && (
             <ImplementationSection project={project} onRefresh={load} userRole={userRole} />
           )}
 
-          {/* Generic message for other phases with no special UI */}
-          {/* CLOSING phase — BAST II, evidence, notes */}
+          {/* CLOSING phase — BAST II, evidence, notes (C6-TI3: Admin-only + maintenance gate) */}
           {project.currentPhase === 'CLOSING' && (
             <ClosingSection project={project} onRefresh={load} userRole={userRole} />
           )}
 
-          {!['SURVEY', 'PREPARATION', 'DOCUMENTATION', 'RECONCILIATION', 'IMPLEMENTATION', 'CLOSING'].includes(project.currentPhase) && (
+          {!['SURVEY', 'PREPARATION', 'PROCUREMENT', 'DOCUMENTATION', 'RECONCILIATION', 'IMPLEMENTATION', 'CLOSING'].includes(project.currentPhase) && (
             <p style={{ fontSize: 13, color: '#57606a' }}>
               Koordinasikan kegiatan di fase ini. Klik tombol "Selesaikan Fase" di atas setelah semua aktivitas selesai.
             </p>

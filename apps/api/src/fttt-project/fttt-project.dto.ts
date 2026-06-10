@@ -27,6 +27,7 @@ export const FTTT_PHASES_BY_COMPANY: Record<FtttCompany, FtttPhase[]> = {
     FtttPhase.INITIATION,
     FtttPhase.SURVEY,
     FtttPhase.PREPARATION,
+    FtttPhase.PROCUREMENT,   // PST: PM uploads PO after Preparation
     FtttPhase.IMPLEMENTATION,
     FtttPhase.DOCUMENTATION,
     FtttPhase.RECONCILIATION,
@@ -38,6 +39,7 @@ export const PHASE_LABELS: Record<FtttPhase, string> = {
   INITIATION:     'Project Initiation',
   SURVEY:         'Validation & Survey',
   PREPARATION:    'Project Preparation',
+  PROCUREMENT:    'Procurement',
   IMPLEMENTATION: 'Implementation',
   DOCUMENTATION:  'Documentation & Acceptance',
   RECONCILIATION: 'Reconciliation & Billing',

@@ -250,6 +250,17 @@ export class FtttProjectService {
       }
     }
 
+    // C6-PST5: PROCUREMENT phase readiness — PM must have uploaded PO
+    if (phase === FtttPhase.PROCUREMENT) {
+      const reconDocMap = new Map(
+        (project as typeof project & { reconDocs: { docKey: string }[] })
+          .reconDocs.map((d) => [d.docKey, true]),
+      );
+      if (!reconDocMap.has('PO_PROCUREMENT')) {
+        reasons.push('Dokumen Purchase Order (PO) belum diunggah oleh PM FTTT');
+      }
+    }
+
     if (phase === FtttPhase.PREPARATION) {
       if (company === FtttCompany.TELKOM_INFRA) {
         const hasUangMuka = project.jaminans.some((j) => j.jaminanType === 'JAMINAN_UANG_MUKA');
@@ -342,6 +353,73 @@ export class FtttProjectService {
     return { ready: reasons.length === 0, blockedReasons: reasons };
   }
 
+  // ─── C6-PST2: Submit Survey for PM review (Surveyor) ─────────────────────
+  async submitSurveyForReview(id: string, userId: string, userRole: Role) {
+    if (userRole !== Role.SURVEYOR_FTTT) {
+      throw new ForbiddenException('Hanya Surveyor FTTT yang dapat submit survey untuk review PM');
+    }
+    const project = await this.prisma.ftttProject.findUniqueOrThrow({ where: { id } });
+    if (project.currentPhase !== FtttPhase.SURVEY) {
+      throw new BadRequestException('Project tidak dalam fase Survey');
+    }
+    // Check at least 1 upload
+    const count = await this.prisma.ftttSurveyUpload.count({ where: { projectId: id } });
+    if (count === 0) {
+      throw new BadRequestException('Minimal satu bukti survei wajib diunggah sebelum submit ke PM');
+    }
+    await this.prisma.ftttPhaseProgress.update({
+      where: { projectId_phase: { projectId: id, phase: FtttPhase.SURVEY } },
+      data: { notes: 'PENDING_PM_REVIEW' },
+    });
+    return this.prisma.ftttProject.findUniqueOrThrow({ where: { id }, include: this.fullInclude() });
+  }
+
+  // ─── C6-PST2: PM reviews Survey phase ────────────────────────────────────
+  async reviewSurveyPhase(id: string, approved: boolean, rejectionNotes: string | undefined, userId: string, userRole: Role) {
+    const allowed: Role[] = [Role.PM_FTTT, Role.ADMIN, Role.GENERAL_MANAGER];
+    if (!allowed.includes(userRole)) {
+      throw new ForbiddenException('Hanya PM FTTT yang dapat mereview fase Validation & Survey');
+    }
+    const project = await this.prisma.ftttProject.findUniqueOrThrow({
+      where: { id },
+      include: { phaseProgresses: true },
+    });
+    if (project.currentPhase !== FtttPhase.SURVEY) {
+      throw new BadRequestException('Project tidak dalam fase Survey');
+    }
+    const surveyProg = project.phaseProgresses.find((p) => p.phase === 'SURVEY');
+    if (surveyProg?.notes !== 'PENDING_PM_REVIEW') {
+      throw new BadRequestException('Survey belum disubmit Surveyor untuk review');
+    }
+    if (approved) {
+      // PM approves → advance phase
+      return this.advancePhase(id, {}, userId, userRole);
+    } else {
+      if (!rejectionNotes?.trim()) throw new BadRequestException('Alasan penolakan wajib diisi');
+      await this.prisma.ftttPhaseProgress.update({
+        where: { projectId_phase: { projectId: id, phase: FtttPhase.SURVEY } },
+        data: { notes: `REJECTED:${rejectionNotes.trim()}` },
+      });
+      return this.prisma.ftttProject.findUniqueOrThrow({ where: { id }, include: this.fullInclude() });
+    }
+  }
+
+  // ─── C6-PST4: Surveyor marks Implementation lapangan done ────────────────
+  async markImplementationLapanganDone(id: string, userId: string, userRole: Role) {
+    if (userRole !== Role.SURVEYOR_FTTT) {
+      throw new ForbiddenException('Hanya Surveyor FTTT yang dapat menandai pekerjaan lapangan selesai');
+    }
+    const project = await this.prisma.ftttProject.findUniqueOrThrow({ where: { id } });
+    if (project.currentPhase !== FtttPhase.IMPLEMENTATION) {
+      throw new BadRequestException('Project tidak dalam fase Implementation');
+    }
+    await this.prisma.ftttPhaseProgress.update({
+      where: { projectId_phase: { projectId: id, phase: FtttPhase.IMPLEMENTATION } },
+      data: { notes: 'SURVEYOR_DONE' },
+    });
+    return this.prisma.ftttProject.findUniqueOrThrow({ where: { id }, include: this.fullInclude() });
+  }
+
   // ─── Advance to next phase ────────────────────────────────────────────────
   async advancePhase(id: string, dto: AdvancePhaseDtoType, userId: string, userRole?: Role) {
     const { ready, blockedReasons } = await this.checkPhaseReadiness(id);
@@ -363,6 +441,16 @@ export class FtttProjectService {
       userRole !== Role.GENERAL_MANAGER
     ) {
       throw new ForbiddenException('Hanya Admin yang dapat menyelesaikan fase Implementation');
+    }
+
+    // C6-TI2: Only PM FTTT or Admin can complete Documentation & Reconciliation phases
+    if (
+      (project.currentPhase === FtttPhase.DOCUMENTATION || project.currentPhase === FtttPhase.RECONCILIATION) &&
+      userRole !== Role.PM_FTTT &&
+      userRole !== Role.ADMIN &&
+      userRole !== Role.GENERAL_MANAGER
+    ) {
+      throw new ForbiddenException('Hanya PM FTTT atau Admin yang dapat menyelesaikan fase ini');
     }
 
     const lifecycle = FTTT_PHASES_BY_COMPANY[project.ftttCompany as FtttCompany];
@@ -606,10 +694,10 @@ export class FtttProjectService {
     userId: string,
     userRole: Role,
   ) {
-    // Only Surveyor FTTT (and Admin/GM) can upload/generate docs in Documentation phase
-    const docUploaderRoles: Role[] = [Role.SURVEYOR_FTTT, Role.ADMIN, Role.GENERAL_MANAGER];
+    // C6-TI2: PM FTTT (not Surveyor) owns Documentation & Acceptance document upload
+    const docUploaderRoles: Role[] = [Role.PM_FTTT, Role.ADMIN, Role.GENERAL_MANAGER];
     if (!docUploaderRoles.includes(userRole)) {
-      throw new ForbiddenException('Hanya Surveyor FTTT yang dapat mengunggah dokumen pada fase Documentation and Acceptance');
+      throw new ForbiddenException('Hanya PM FTTT yang dapat mengunggah dokumen pada fase Documentation and Acceptance');
     }
 
     // Either a file or formContent must be provided
@@ -685,10 +773,10 @@ export class FtttProjectService {
     notes?: string,
     formContent?: string,
   ) {
-    // Issue #3: Only Surveyor FTTT can replace rejected docs (not Admin — Admin only approves/rejects)
-    const allowedRoles: Role[] = [Role.SURVEYOR_FTTT];
+    // C6-TI2: PM FTTT can replace rejected docs (was Surveyor — ownership transferred)
+    const allowedRoles: Role[] = [Role.PM_FTTT, Role.ADMIN, Role.GENERAL_MANAGER];
     if (!allowedRoles.includes(userRole)) {
-      throw new ForbiddenException('Hanya Surveyor FTTT yang dapat mengganti dokumen');
+      throw new ForbiddenException('Hanya PM FTTT yang dapat mengganti dokumen yang ditolak');
     }
 
     const doc = await this.prisma.ftttDocument.findUniqueOrThrow({ where: { id: docId } });
@@ -821,8 +909,8 @@ export class FtttProjectService {
     userId: string,
     userRole: Role,
   ) {
-    // All authenticated project members can upload recon docs
-    const allowed: Role[] = [Role.SURVEYOR_FTTT, Role.PM_FTTT, Role.ADMIN, Role.GENERAL_MANAGER, Role.FINANCE];
+    // C6-TI2: PM FTTT (not Surveyor) owns Reconciliation document upload
+    const allowed: Role[] = [Role.PM_FTTT, Role.ADMIN, Role.GENERAL_MANAGER, Role.FINANCE];
     if (!allowed.includes(userRole)) {
       throw new ForbiddenException('Tidak memiliki akses untuk mengunggah dokumen rekonsiliasi');
     }
@@ -913,9 +1001,10 @@ export class FtttProjectService {
     userId: string,
     userRole: Role,
   ) {
-    const allowed: Role[] = [Role.SURVEYOR_FTTT, Role.PM_FTTT, Role.ADMIN, Role.GENERAL_MANAGER];
+    // C6-TI3: Only Admin can manage Project Closing activities
+    const allowed: Role[] = [Role.ADMIN, Role.GENERAL_MANAGER];
     if (!allowed.includes(userRole)) {
-      throw new ForbiddenException('Tidak memiliki akses untuk menambahkan log penutupan');
+      throw new ForbiddenException('Hanya Admin yang dapat mengelola dokumen fase Project Closing');
     }
 
     // EVIDENCE requires a file; BAST_II requires file OR formContent; NOTE requires notes

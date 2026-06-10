@@ -84,6 +84,35 @@ export class FtttProjectController {
     return this.service.checkPhaseReadiness(id);
   }
 
+  // POST /fttt-projects/:id/submit-survey-review  (C6-PST2: Surveyor submits survey to PM)
+  @Post(':id/submit-survey-review')
+  submitSurveyForReview(
+    @Param('id') id: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.service.submitSurveyForReview(id, user.userId, user.role);
+  }
+
+  // PUT /fttt-projects/:id/review-survey  (C6-PST2: PM approves/rejects survey)
+  @Put(':id/review-survey')
+  reviewSurveyPhase(
+    @Param('id') id: string,
+    @Body('approved') approved: boolean,
+    @Body('rejectionNotes') rejectionNotes: string | undefined,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.service.reviewSurveyPhase(id, approved, rejectionNotes, user.userId, user.role);
+  }
+
+  // POST /fttt-projects/:id/mark-implementation-done  (C6-PST4: Surveyor marks lapangan done)
+  @Post(':id/mark-implementation-done')
+  markImplementationLapanganDone(
+    @Param('id') id: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.service.markImplementationLapanganDone(id, user.userId, user.role);
+  }
+
   // POST /fttt-projects/:id/advance-phase
   @Post(':id/advance-phase')
   advancePhase(
