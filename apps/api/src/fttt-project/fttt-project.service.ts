@@ -973,7 +973,7 @@ export class FtttProjectService {
     }
     // Surveyor can delete their own uploads; Admin/GM can delete any
     const canDelete =
-      [Role.ADMIN, Role.GENERAL_MANAGER].includes(userRole) ||
+      (userRole === Role.ADMIN || userRole === Role.GENERAL_MANAGER) ||
       (userRole === Role.SURVEYOR_FTTT && upload.uploadedById === userId);
     if (!canDelete) {
       throw new ForbiddenException('Anda tidak dapat menghapus upload ini');
