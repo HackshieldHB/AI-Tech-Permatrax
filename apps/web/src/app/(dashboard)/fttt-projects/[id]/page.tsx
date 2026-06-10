@@ -787,7 +787,8 @@ function DocumentationSection({ project, onRefresh, userRole }: { project: FtttP
   // C6-TI2: PM FTTT owns Documentation & Acceptance; Surveyor no longer uploads here
   // Approval flow: PM uploads → PENDING_PM (PM self-approves/any PM reviews) → PENDING_ADMIN → Admin final approve
   const canUploadDocs  = userRole === 'PM_FTTT' || userRole === 'GENERAL_MANAGER';
-  const canReplaceDocs = userRole === 'PM_FTTT' || userRole === 'ADMIN' || userRole === 'GENERAL_MANAGER';
+  // C7.2: Admin is reviewer only — cannot replace rejected docs (only PM can)
+  const canReplaceDocs = userRole === 'PM_FTTT' || userRole === 'GENERAL_MANAGER';
   const canPmApprove   = userRole === 'PM_FTTT';
   const canAdminApprove = userRole === 'ADMIN' || userRole === 'GENERAL_MANAGER';
 
@@ -1047,7 +1048,7 @@ function DocumentationSection({ project, onRefresh, userRole }: { project: FtttP
           <div style={{ background: '#fff', borderRadius: 12, padding: 24, maxWidth: 440, width: '100%', boxShadow: '0 8px 32px rgba(0,0,0,0.15)' }}>
             <h3 style={{ margin: '0 0 8px', fontSize: 16, fontWeight: 700, color: '#cf222e' }}>Alasan Penolakan</h3>
             <p style={{ margin: '0 0 12px', fontSize: 13, color: '#57606a' }}>
-              Berikan alasan yang jelas agar Surveyor FTTT dapat melakukan perbaikan yang tepat.
+              Berikan alasan yang jelas agar PM FTTT dapat melakukan perbaikan dan upload ulang dokumen.
             </p>
             <textarea
               value={rejectReason}
@@ -1312,20 +1313,18 @@ const RECON_DOCS: Record<string, {
   uploaderRole: string[]; requiresApproval: boolean;
 }[]> = {
   TELKOM_INFRA: [
-    // ── C6-TI2: PM FTTT owns Reconciliation uploads (was SURVEYOR_FTTT) ─────
-    { key: 'RISALAH_RAPAT_MOM', label: 'Risalah Rapat / MOM',           desc: 'Minutes of Meeting rekonsiliasi project bersama Telkom Infra',  uploaderRole: ['PM_FTTT'], requiresApproval: true  },
-    { key: 'BOQ_PERHITUNGAN',   label: 'BOQ Perhitungan',                desc: 'BOQ final sesuai kondisi lapangan aktual',                       uploaderRole: ['PM_FTTT'], requiresApproval: true  },
-    { key: 'BA_PENUTUPAN',      label: 'BA Penutupan',                   desc: 'Berita Acara Penutupan Project',                                 uploaderRole: ['PM_FTTT'], requiresApproval: true  },
-    { key: 'BAPP_TI',           label: 'BAPP',                           desc: 'Berita Acara Pemeriksaan Pekerjaan',                             uploaderRole: ['PM_FTTT'], requiresApproval: true  },
-    // ── Upload docs from Telkom Infra — auto-approved on upload ────────────────
-    { key: 'BAST_1_TI',         label: 'BAST 1',                         desc: 'Berita Acara Serah Terima 1 dari Telkom Infra',                  uploaderRole: ['PM_FTTT'], requiresApproval: false },
-    { key: 'BAPWPP_TI',         label: 'BAPWPP',                         desc: 'Berita Acara Perubahan Waktu Pelaksanaan Project',               uploaderRole: ['PM_FTTT'], requiresApproval: false },
-    { key: 'SURAT_WASPANG',     label: 'Surat Waspang',                  desc: 'Surat Waspang dari Telkom Infra',                                uploaderRole: ['PM_FTTT'], requiresApproval: false },
-    { key: 'PO_TI',             label: 'PO',                             desc: 'Purchase Order dari Telkom Infra',                               uploaderRole: ['PM_FTTT'], requiresApproval: false },
-    { key: 'AMANDEMEN_1_TI',    label: 'Amandemen 1',                    desc: 'Dokumen Amandemen 1 dari Telkom Infra',                          uploaderRole: ['PM_FTTT'], requiresApproval: false },
-    { key: 'AMANDEMEN_2_TI',    label: 'Amandemen 2',                    desc: 'Dokumen Amandemen 2 dari Telkom Infra',                          uploaderRole: ['PM_FTTT'], requiresApproval: false },
+    // C7.2: ALL TI recon docs require Admin approval (PM uploads → PENDING_ADMIN → Admin approves)
+    { key: 'RISALAH_RAPAT_MOM', label: 'Risalah Rapat / MOM',           desc: 'Minutes of Meeting rekonsiliasi project bersama Telkom Infra',  uploaderRole: ['PM_FTTT'], requiresApproval: true },
+    { key: 'BOQ_PERHITUNGAN',   label: 'BOQ Perhitungan',                desc: 'BOQ final sesuai kondisi lapangan aktual',                       uploaderRole: ['PM_FTTT'], requiresApproval: true },
+    { key: 'BA_PENUTUPAN',      label: 'BA Penutupan',                   desc: 'Berita Acara Penutupan Project',                                 uploaderRole: ['PM_FTTT'], requiresApproval: true },
+    { key: 'BAPP_TI',           label: 'BAPP',                           desc: 'Berita Acara Pemeriksaan Pekerjaan',                             uploaderRole: ['PM_FTTT'], requiresApproval: true },
+    { key: 'BAST_1_TI',         label: 'BAST 1',                         desc: 'Berita Acara Serah Terima 1 dari Telkom Infra',                  uploaderRole: ['PM_FTTT'], requiresApproval: true },
+    { key: 'BAPWPP_TI',         label: 'BAPWPP',                         desc: 'Berita Acara Perubahan Waktu Pelaksanaan Project',               uploaderRole: ['PM_FTTT'], requiresApproval: true },
+    { key: 'SURAT_WASPANG',     label: 'Surat Waspang',                  desc: 'Surat Waspang dari Telkom Infra',                                uploaderRole: ['PM_FTTT'], requiresApproval: true },
+    { key: 'PO_TI',             label: 'PO',                             desc: 'Purchase Order dari Telkom Infra',                               uploaderRole: ['PM_FTTT'], requiresApproval: true },
+    { key: 'AMANDEMEN_1_TI',    label: 'Amandemen 1',                    desc: 'Dokumen Amandemen 1 dari Telkom Infra',                          uploaderRole: ['PM_FTTT'], requiresApproval: true },
+    { key: 'AMANDEMEN_2_TI',    label: 'Amandemen 2',                    desc: 'Dokumen Amandemen 2 dari Telkom Infra',                          uploaderRole: ['PM_FTTT'], requiresApproval: true },
     // NOTE: Jaminan Pemeliharaan & Invoice Final are in Project Closing phase (not here)
-    // NOTE: Good Receipt removed — not used in Telkom Infra lifecycle
   ],
   PST: [
     { key: 'REKONSILIASI', label: 'Rekonsiliasi',          desc: 'Penyamaan DRM sebelum implementasi vs actual lapangan',      uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: true },
@@ -1424,11 +1423,8 @@ function ReconciliationSection({ project, onRefresh, userRole }: { project: Fttt
                     {doc.uploaderRole.join(' / ')}
                   </span>
                   {rec && (
-                    <span style={{ fontSize: 10, fontWeight: 700, color:
-                      // Fix #1: no-approval docs that still show PENDING_PM (legacy data) → treat as uploaded
-                      (!doc.requiresApproval && rec.approvalStatus === 'PENDING_PM') ? '#1a7f37'
-                      : STATUS_COLORS[rec.approvalStatus] }}>
-                      {(!doc.requiresApproval && rec.approvalStatus === 'PENDING_PM') ? '✓ Diunggah' : STATUS_LABELS[rec.approvalStatus]}
+                    <span style={{ fontSize: 10, fontWeight: 700, color: STATUS_COLORS[rec.approvalStatus] ?? '#57606a' }}>
+                      {STATUS_LABELS[rec.approvalStatus] ?? rec.approvalStatus}
                     </span>
                   )}
                   {!rec && <span style={{ fontSize: 10, color: '#8c959f' }}>Belum diunggah</span>}

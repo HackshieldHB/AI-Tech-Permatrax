@@ -17,8 +17,7 @@ import {
 // ─── Reconciliation doc config (mirrors frontend RECON_DOCS) ─────────────────
 // docKeys that do NOT need PM/Admin approval — set to APPROVED on upload
 const RECON_NO_APPROVAL = new Set([
-  // Telkom Infra Recon — docs from Telkom Infra, auto-approved on upload
-  'BAST_1_TI', 'BAPWPP_TI', 'SURAT_WASPANG', 'PO_TI', 'AMANDEMEN_1_TI', 'AMANDEMEN_2_TI',
+  // C7.2: TI Recon docs removed — now go through Admin approval (PM uploads → PENDING_ADMIN)
   // Telkom Infra Closing — Finance uploads, auto-approved
   'JAMINAN_PEMELIHARAAN', 'INVOICE_FINAL',
   // PST
@@ -27,22 +26,27 @@ const RECON_NO_APPROVAL = new Set([
   'PUNCHLIST', 'PO_FINAL', 'PSS', 'MCV', 'INVOICE_IFORTE',
 ]);
 
+// C7.2: TI Recon docs uploaded by PM FTTT — skip PM self-approval, go directly to Admin review
+const RECON_PM_DIRECT_TO_ADMIN = new Set([
+  'BAST_1_TI', 'BAPWPP_TI', 'SURAT_WASPANG', 'PO_TI', 'AMANDEMEN_1_TI', 'AMANDEMEN_2_TI',
+  'RISALAH_RAPAT_MOM', 'BOQ_PERHITUNGAN', 'BA_PENUTUPAN', 'BAPP_TI',
+]);
+
 // Required docs per company for RECONCILIATION phase readiness
 // Tuple: [docKey, needsApproval (true = must be APPROVED, false = just must exist)]
 const RECON_REQUIRED: Record<string, Array<[string, boolean, string]>> = {
   TELKOM_INFRA: [
-    // Docs requiring PM/Admin approval
-    ['RISALAH_RAPAT_MOM',  true,  'Risalah Rapat/MOM (perlu disetujui)'],
-    ['BOQ_PERHITUNGAN',    true,  'BOQ Perhitungan (perlu disetujui)'],
-    ['BA_PENUTUPAN',       true,  'BA Penutupan (perlu disetujui)'],
-    ['BAPP_TI',            true,  'BAPP (perlu disetujui)'],
-    // Docs from Telkom Infra — auto-approved on upload (just must exist)
-    ['BAST_1_TI',          false, 'BAST 1'],
-    ['BAPWPP_TI',          false, 'BAPWPP'],
-    ['SURAT_WASPANG',      false, 'Surat Waspang'],
-    ['PO_TI',              false, 'PO'],
-    ['AMANDEMEN_1_TI',     false, 'Amandemen 1'],
-    ['AMANDEMEN_2_TI',     false, 'Amandemen 2'],
+    // C7.2: ALL TI recon docs now require Admin approval (consistent workflow)
+    ['RISALAH_RAPAT_MOM',  true, 'Risalah Rapat/MOM'],
+    ['BOQ_PERHITUNGAN',    true, 'BOQ Perhitungan'],
+    ['BA_PENUTUPAN',       true, 'BA Penutupan'],
+    ['BAPP_TI',            true, 'BAPP'],
+    ['BAST_1_TI',          true, 'BAST 1'],
+    ['BAPWPP_TI',          true, 'BAPWPP'],
+    ['SURAT_WASPANG',      true, 'Surat Waspang'],
+    ['PO_TI',              true, 'PO'],
+    ['AMANDEMEN_1_TI',     true, 'Amandemen 1'],
+    ['AMANDEMEN_2_TI',     true, 'Amandemen 2'],
     // NOTE: Jaminan Pemeliharaan & Invoice Final moved to CLOSING phase
   ],
   PST: [
@@ -930,10 +934,10 @@ export class FtttProjectService {
     notes?: string,
     formContent?: string,
   ) {
-    // C6-TI2: PM FTTT can replace rejected docs (was Surveyor — ownership transferred)
-    const allowedRoles: Role[] = [Role.PM_FTTT, Role.ADMIN, Role.GENERAL_MANAGER];
+    // C7.2: PM FTTT is document owner — only PM can replace rejected docs, Admin is reviewer only
+    const allowedRoles: Role[] = [Role.PM_FTTT, Role.GENERAL_MANAGER];
     if (!allowedRoles.includes(userRole)) {
-      throw new ForbiddenException('Hanya PM FTTT yang dapat mengganti dokumen yang ditolak');
+      throw new ForbiddenException('Hanya PM FTTT yang dapat mengganti dokumen yang ditolak. Admin berperan sebagai reviewer saja.');
     }
 
     const doc = await this.prisma.ftttDocument.findUniqueOrThrow({ where: { id: docId } });
@@ -1087,8 +1091,13 @@ export class FtttProjectService {
       throw new BadRequestException('Dokumen harus berupa file upload atau Generate Form yang terisi');
     }
 
-    // Fix #1: docs in RECON_NO_APPROVAL list don't go through PM review — set APPROVED directly
-    const initialStatus = RECON_NO_APPROVAL.has(dto.docKey) ? 'APPROVED' : 'PENDING_PM';
+    // C7.2: TI recon docs uploaded by PM go directly to Admin (no PM self-approval step)
+    const resolveStatus = (docKey: string, uploaderRole: Role) => {
+      if (RECON_NO_APPROVAL.has(docKey)) return 'APPROVED';
+      if (RECON_PM_DIRECT_TO_ADMIN.has(docKey) && uploaderRole === Role.PM_FTTT) return 'PENDING_ADMIN';
+      return 'PENDING_PM';
+    };
+    const initialStatus = resolveStatus(dto.docKey, userRole);
 
     if (existing) {
       return this.prisma.ftttReconDoc.update({
@@ -1098,7 +1107,7 @@ export class FtttProjectService {
           formContent:    dto.formContent ?? null,
           notes:          dto.notes ?? null,
           uploadedById:   userId,
-          approvalStatus: RECON_NO_APPROVAL.has(dto.docKey) ? 'APPROVED' : 'PENDING_PM',
+          approvalStatus: resolveStatus(dto.docKey, userRole),
           rejectionNotes: null,
           pmApprovedById: null, pmApprovedAt: null,
           adminApprovedById: null, adminApprovedAt: null,
