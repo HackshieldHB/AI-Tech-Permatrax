@@ -2913,7 +2913,7 @@ enum FtttPhase {
   INITIATION
   SURVEY
   PREPARATION
-  PROCUREMENT    -- PST: PO upload by PM between Preparation and Implementation
+  PROCUREMENT    // PST: PO upload by PM between Preparation and Implementation
   IMPLEMENTATION
   DOCUMENTATION
   RECONCILIATION
