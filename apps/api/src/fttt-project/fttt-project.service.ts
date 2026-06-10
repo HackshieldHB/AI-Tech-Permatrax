@@ -226,12 +226,14 @@ export class FtttProjectService {
     const project = await this.prisma.ftttProject.findUnique({
       where: { id },
       include: {
-        surveyUploads: true,
-        drmDocuments:  true,
-        jaminans:      true,
-        documents:     { where: { approvalStatus: 'APPROVED' } },
-        reconDocs:     true,   // needed for RECONCILIATION phase check
-        closingLogs:   true,   // needed for CLOSING phase check
+        surveyUploads:      true,
+        drmDocuments:       true,
+        jaminans:           true,
+        documents:          { where: { approvalStatus: 'APPROVED' } },
+        reconDocs:          true,
+        closingLogs:        true,
+        implementationLogs: true,  // needed for IMPLEMENTATION phase check
+        phaseProgresses:    true,  // needed to check lapangan-done flag
       },
     });
     if (!project) throw new NotFoundException();
@@ -247,6 +249,22 @@ export class FtttProjectService {
     if (phase === FtttPhase.SURVEY) {
       if (project.surveyUploads.length === 0) {
         reasons.push('Minimal satu bukti survei wajib diunggah');
+      }
+    }
+
+    // C7-PST3: Implementation readiness — lapangan must be marked done + Admin must upload monitoring doc
+    if (phase === FtttPhase.IMPLEMENTATION) {
+      const implProg = (project as typeof project & { phaseProgresses: { phase: string; notes: string | null }[] })
+        .phaseProgresses?.find((p) => p.phase === 'IMPLEMENTATION');
+      const lapanganDone = implProg?.notes === 'SURVEYOR_DONE';
+      if (!lapanganDone) {
+        reasons.push('Pekerjaan lapangan belum ditandai selesai');
+      }
+      const implLogs = (project as typeof project & { implementationLogs: { logType: string }[] })
+        .implementationLogs ?? [];
+      const hasMonitoringDoc = implLogs.some((l) => l.logType === 'MONITORING_DOC');
+      if (!hasMonitoringDoc) {
+        reasons.push('Dokumen Monitoring belum diunggah oleh Admin');
       }
     }
 
@@ -270,7 +288,9 @@ export class FtttProjectService {
       }
       if (company === FtttCompany.PST) {
         const hasBoq = project.drmDocuments.some((d) => d.docType === 'BOQ_INITIAL');
-        if (!hasBoq) reasons.push('Dokumen BOQ awal belum diunggah');
+        const hasDrm = project.drmDocuments.some((d) => d.docType === 'DRM_RESULT');
+        if (!hasBoq) reasons.push('Dokumen BOQ Awal belum diunggah');
+        if (!hasDrm) reasons.push('Dokumen Hasil DRM belum diunggah');
       }
     }
 
@@ -371,6 +391,17 @@ export class FtttProjectService {
       where: { projectId_phase: { projectId: id, phase: FtttPhase.SURVEY } },
       data: { notes: 'PENDING_PM_REVIEW' },
     });
+    // C7-PST1: Notify PM that survey is ready for review
+    const proj = await this.prisma.ftttProject.findUniqueOrThrow({ where: { id }, select: { projectName: true, pmId: true } });
+    if (proj.pmId) {
+      await this.notifications.createForUser(proj.pmId, {
+        title:   'FTTT — Survey Menunggu Review',
+        message: `Surveyor telah mengirim bukti survei untuk project ${proj.projectName ?? id.slice(-6)}. Silakan review.`,
+        type:    'FTTT_SURVEY_SUBMITTED',
+        link:    `/fttt-projects/${id}`,
+        entityId: id,
+      });
+    }
     return this.prisma.ftttProject.findUniqueOrThrow({ where: { id }, include: this.fullInclude() });
   }
 
@@ -406,8 +437,10 @@ export class FtttProjectService {
 
   // ─── C6-PST4: Surveyor marks Implementation lapangan done ────────────────
   async markImplementationLapanganDone(id: string, userId: string, userRole: Role) {
-    if (userRole !== Role.SURVEYOR_FTTT) {
-      throw new ForbiddenException('Hanya Surveyor FTTT yang dapat menandai pekerjaan lapangan selesai');
+    // C7-TI5: Surveyor marks lapangan done (PST flow); Admin also can (TI flow)
+    const allowed: Role[] = [Role.SURVEYOR_FTTT, Role.ADMIN, Role.GENERAL_MANAGER];
+    if (!allowed.includes(userRole)) {
+      throw new ForbiddenException('Hanya Surveyor FTTT atau Admin yang dapat menandai pekerjaan lapangan selesai');
     }
     const project = await this.prisma.ftttProject.findUniqueOrThrow({ where: { id } });
     if (project.currentPhase !== FtttPhase.IMPLEMENTATION) {
@@ -416,6 +449,15 @@ export class FtttProjectService {
     await this.prisma.ftttPhaseProgress.update({
       where: { projectId_phase: { projectId: id, phase: FtttPhase.IMPLEMENTATION } },
       data: { notes: 'SURVEYOR_DONE' },
+    });
+    // C7-PST1: Notify Admin to upload Monitoring Doc
+    const implProj = await this.prisma.ftttProject.findUniqueOrThrow({ where: { id }, select: { projectName: true } });
+    await this.notifications.notifyUsersByRole(Role.ADMIN, {
+      title:   'FTTT — Pekerjaan Lapangan Selesai',
+      message: `Pekerjaan lapangan untuk project ${implProj.projectName ?? id.slice(-6)} telah ditandai selesai. Silakan upload Dokumen Monitoring dan selesaikan fase Implementation.`,
+      type:    'FTTT_LAPANGAN_DONE',
+      link:    `/fttt-projects/${id}`,
+      entityId: id,
     });
     return this.prisma.ftttProject.findUniqueOrThrow({ where: { id }, include: this.fullInclude() });
   }
@@ -472,10 +514,11 @@ export class FtttProjectService {
       });
 
       if (nextPhase) {
-        // Unlock next phase
-        await tx.ftttPhaseProgress.update({
+        // C7-PST4: upsert to handle old projects that may not have a phaseProgress row for new phases
+        await tx.ftttPhaseProgress.upsert({
           where: { projectId_phase: { projectId: id, phase: nextPhase } },
-          data: { status: FtttPhaseStatus.ACTIVE, unlockedAt: new Date() },
+          update: { status: FtttPhaseStatus.ACTIVE, unlockedAt: new Date() },
+          create: { projectId: id, phase: nextPhase, status: FtttPhaseStatus.ACTIVE, unlockedAt: new Date() },
         });
         await tx.ftttProject.update({
           where: { id },
@@ -504,8 +547,10 @@ export class FtttProjectService {
       phases:        updated.phaseProgresses,
     });
 
+    const pName = updated.projectName ?? updated.id.slice(-6).toUpperCase();
+    const pmId  = updated.pmId;
+
     // Notify Finance when Telkom Infra project enters PREPARATION phase
-    // — Finance must upload Jaminan Uang Muka & Jaminan Pelaksanaan
     if (
       project.currentPhase === FtttPhase.INITIATION &&
       updated.currentPhase === FtttPhase.PREPARATION &&
@@ -513,9 +558,76 @@ export class FtttProjectService {
     ) {
       await this.notifications.notifyUsersByRole(Role.FINANCE, {
         title:    'FTTT Project — Upload Dokumen Jaminan Diperlukan',
-        message:  `Project ${updated.projectName ?? updated.id} (Telkom Infra) telah memasuki fase Project Preparation. Silakan upload dokumen Jaminan Uang Muka dan Jaminan Pelaksanaan.`,
+        message:  `Project ${pName} (Telkom Infra) telah memasuki fase Project Preparation. Silakan upload dokumen Jaminan Uang Muka dan Jaminan Pelaksanaan.`,
         type:     'FTTT_JAMINAN_REQUIRED',
         link:     `/fttt-projects/${id}`,
+        entityId: id,
+      });
+    }
+
+    // C7-PST1: Notify PM when project enters Survey phase (Surveyor needs to upload evidence)
+    if (updated.currentPhase === FtttPhase.SURVEY) {
+      await this.notifications.notifyUsersByRole(Role.SURVEYOR_FTTT, {
+        title:   'FTTT — Fase Validation & Survey Dimulai',
+        message: `Project ${pName} telah memasuki fase Validation & Survey. Silakan upload bukti survei.`,
+        type:    'FTTT_PHASE_CHANGE',
+        link:    `/fttt-projects/${id}`,
+        entityId: id,
+      });
+    }
+
+    // C7-PST1: Notify PM when project advances to Preparation
+    if (updated.currentPhase === FtttPhase.PREPARATION && pmId) {
+      await this.notifications.createForUser(pmId, {
+        title:   'FTTT — Fase Project Preparation Dimulai',
+        message: `Project ${pName} telah memasuki fase Project Preparation.`,
+        type:    'FTTT_PHASE_CHANGE',
+        link:    `/fttt-projects/${id}`,
+        entityId: id,
+      });
+    }
+
+    // C7-PST1: Notify PM + Admin when project enters Implementation
+    if (updated.currentPhase === FtttPhase.IMPLEMENTATION) {
+      if (pmId) {
+        await this.notifications.createForUser(pmId, {
+          title:   'FTTT — Fase Implementation Dimulai',
+          message: `Project ${pName} telah memasuki fase Implementation.`,
+          type:    'FTTT_PHASE_CHANGE',
+          link:    `/fttt-projects/${id}`,
+          entityId: id,
+        });
+      }
+      await this.notifications.notifyUsersByRole(Role.SURVEYOR_FTTT, {
+        title:   'FTTT — Fase Implementation Dimulai',
+        message: `Project ${pName} siap untuk upload progress implementasi.`,
+        type:    'FTTT_PHASE_CHANGE',
+        link:    `/fttt-projects/${id}`,
+        entityId: id,
+      });
+    }
+
+    // C7-PST1: Notify PM when project enters Documentation or Reconciliation
+    if (
+      (updated.currentPhase === FtttPhase.DOCUMENTATION || updated.currentPhase === FtttPhase.RECONCILIATION) &&
+      pmId
+    ) {
+      await this.notifications.createForUser(pmId, {
+        title:   `FTTT — Fase ${updated.currentPhase === FtttPhase.DOCUMENTATION ? 'Documentation & Acceptance' : 'Reconciliation & Billing'} Dimulai`,
+        message: `Project ${pName} memerlukan upload dokumen pada fase ini.`,
+        type:    'FTTT_PHASE_CHANGE',
+        link:    `/fttt-projects/${id}`,
+        entityId: id,
+      });
+    }
+
+    // C7-PST1: Notify Admin when project enters Closing
+    if (updated.currentPhase === FtttPhase.CLOSING) {
+      await this.notifications.notifyUsersByRole(Role.ADMIN, {
+        title:   'FTTT — Fase Project Closing Dimulai',
+        message: `Project ${pName} telah memasuki fase Project Closing. Upload BAST II dan Evidence setelah masa pemeliharaan selesai.`,
+        type:    'FTTT_PHASE_CHANGE',
+        link:    `/fttt-projects/${id}`,
         entityId: id,
       });
     }
@@ -532,9 +644,7 @@ export class FtttProjectService {
   ) {
     if (!file) throw new BadRequestException('File foto / dokumen survei wajib diunggah');
     const project = await this.prisma.ftttProject.findUniqueOrThrow({ where: { id } });
-    if (project.ftttCompany === FtttCompany.TELKOM_INFRA) {
-      throw new BadRequestException('Telkom Infra tidak memerlukan survei');
-    }
+    // C7-TI4: Telkom Infra now has Survey phase — removed the block
     const fileUrl = await this.storage.uploadMulterFile(file, 'fttt-survey', id);
     return this.prisma.ftttSurveyUpload.create({
       data: { projectId: id, uploadedById: userId, fileUrl, fileType: dto.fileType, caption: dto.caption ?? null },
@@ -723,42 +833,75 @@ export class FtttProjectService {
   }
 
   async approveDocument(docId: string, dto: ApproveDocumentDtoType, userId: string, userRole: Role) {
-    const doc = await this.prisma.ftttDocument.findUniqueOrThrow({ where: { id: docId } });
+    const doc = await this.prisma.ftttDocument.findUniqueOrThrow({
+      where: { id: docId },
+      include: { project: { select: { id: true, projectName: true, pmId: true } } },
+    });
 
     if (userRole === Role.PM_FTTT) {
       if (doc.approvalStatus !== 'PENDING_PM') {
         throw new BadRequestException('Dokumen tidak dalam status menunggu PM');
       }
-      // Issue #2: rejection reason is mandatory
       if (!dto.approved) {
         if (!dto.rejectionNotes?.trim()) {
           throw new BadRequestException('Alasan penolakan wajib diisi');
         }
-        return this.prisma.ftttDocument.update({
+        const updated = await this.prisma.ftttDocument.update({
           where: { id: docId },
           data: { approvalStatus: 'REJECTED', rejectionNotes: dto.rejectionNotes.trim() },
         });
+        // C7-PST1: Notify PM (uploader) that doc was rejected
+        if (doc.uploadedById !== userId) {
+          await this.notifications.createForUser(doc.uploadedById, {
+            title:   'FTTT — Dokumen Ditolak',
+            message: `Dokumen pada project ${(doc as any).project?.projectName ?? ''} ditolak. Silakan perbaiki dan upload ulang.`,
+            type:    'FTTT_DOC_REJECTED',
+            link:    `/fttt-projects/${(doc as any).project?.id}`,
+            entityId: (doc as any).project?.id,
+          });
+        }
+        return updated;
       }
-      return this.prisma.ftttDocument.update({
+      const updated = await this.prisma.ftttDocument.update({
         where: { id: docId },
         data: { approvalStatus: 'PENDING_ADMIN', pmApprovedById: userId, pmApprovedAt: new Date(), rejectionNotes: null },
       });
+      // C7-PST1: Notify Admin that doc is awaiting their approval
+      await this.notifications.notifyUsersByRole(Role.ADMIN, {
+        title:   'FTTT — Dokumen Menunggu Persetujuan Admin',
+        message: `Dokumen project ${(doc as any).project?.projectName ?? ''} telah disetujui PM dan menunggu konfirmasi Admin.`,
+        type:    'FTTT_DOC_PENDING_ADMIN',
+        link:    `/fttt-projects/${(doc as any).project?.id}`,
+        entityId: (doc as any).project?.id,
+      });
+      return updated;
     }
 
     if (userRole === Role.ADMIN) {
       if (doc.approvalStatus !== 'PENDING_ADMIN') {
         throw new BadRequestException('Dokumen tidak dalam status menunggu Admin');
       }
-      // Issue #2: rejection reason is mandatory for Admin too
       if (!dto.approved && !dto.rejectionNotes?.trim()) {
         throw new BadRequestException('Alasan penolakan wajib diisi');
       }
-      return this.prisma.ftttDocument.update({
+      const updated = await this.prisma.ftttDocument.update({
         where: { id: docId },
         data: dto.approved
           ? { approvalStatus: 'APPROVED', adminApprovedById: userId, adminApprovedAt: new Date(), rejectionNotes: null }
           : { approvalStatus: 'REJECTED', rejectionNotes: dto.rejectionNotes!.trim() },
       });
+      // C7-PST1: Notify PM of approval result
+      const pmId = (doc as any).project?.pmId;
+      if (pmId) {
+        await this.notifications.createForUser(pmId, {
+          title:   dto.approved ? 'FTTT — Dokumen Disetujui' : 'FTTT — Dokumen Ditolak',
+          message: `Dokumen project ${(doc as any).project?.projectName ?? ''} telah ${dto.approved ? 'disetujui' : 'ditolak'} oleh Admin.`,
+          type:    dto.approved ? 'FTTT_DOC_APPROVED' : 'FTTT_DOC_REJECTED',
+          link:    `/fttt-projects/${(doc as any).project?.id}`,
+          entityId: (doc as any).project?.id,
+        });
+      }
+      return updated;
     }
 
     throw new ForbiddenException('Anda tidak berwenang menyetujui dokumen ini');
@@ -845,7 +988,7 @@ export class FtttProjectService {
         caption:     dto.caption ?? null,
         notes:       dto.notes ?? null,
       },
-      include: { uploadedBy: { select: { id: true, name: true } } },
+      include: { uploadedBy: { select: { id: true, name: true, role: true } } },
     });
   }
 
@@ -895,7 +1038,7 @@ export class FtttProjectService {
       sanggahs:       { include: { submittedBy: { select: { id: true, name: true } } }, orderBy: { attemptNumber: 'asc' as const } },
       jaminans:           { include: { uploadedBy: { select: { id: true, name: true } } }, orderBy: { createdAt: 'asc' as const } },
       documents:          { include: { uploadedBy: { select: { id: true, name: true } } }, orderBy: { createdAt: 'desc' as const } },
-      implementationLogs: { include: { uploadedBy: { select: { id: true, name: true } } }, orderBy: { createdAt: 'asc' as const } },
+      implementationLogs: { include: { uploadedBy: { select: { id: true, name: true, role: true } } }, orderBy: { createdAt: 'asc' as const } },
       reconDocs:          { include: { uploadedBy: { select: { id: true, name: true } } }, orderBy: { createdAt: 'asc' as const } },
       closingLogs:        { include: { uploadedBy: { select: { id: true, name: true } } }, orderBy: { createdAt: 'asc' as const } },
     } as const;

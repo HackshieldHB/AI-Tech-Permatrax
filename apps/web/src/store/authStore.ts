@@ -18,6 +18,7 @@ interface AuthState {
   user: AuthUser | null;
   accessToken: string | null;
   isLoading: boolean;
+  hydrated: boolean;
   featureAccess: string[];
   featureAccessReady: boolean;
   setUser: (user: AuthUser) => void;
@@ -39,6 +40,7 @@ export const useAuthStore = create<AuthState>()(
       user: null,
       accessToken: null,
       isLoading: false,
+      hydrated: false,
       featureAccess: [],
       featureAccessReady: false,
 
@@ -73,7 +75,10 @@ export const useAuthStore = create<AuthState>()(
         localStorage.removeItem('accessToken');
         sessionStorage.removeItem('accessToken');
         const userId = get().user?.id;
-        if (!userId) return;
+        if (!userId) {
+          set({ hydrated: true });
+          return;
+        }
         try {
           const res = await fetch(`${NEXT_ROUTE_BASE}/api/auth/refresh`, {
             method: 'POST',
@@ -87,6 +92,8 @@ export const useAuthStore = create<AuthState>()(
           }
         } catch {
           // silent fail — user will be redirected to login on the next 401
+        } finally {
+          set({ hydrated: true });
         }
       },
 

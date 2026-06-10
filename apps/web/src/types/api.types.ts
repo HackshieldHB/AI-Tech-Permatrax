@@ -1149,7 +1149,7 @@ export interface FtttImplementationLog {
   caption:     string | null;
   notes:       string | null;
   createdAt:   string;
-  uploadedBy:  { id: string; name: string };
+  uploadedBy:  { id: string; name: string; role?: string };
 }
 
 export interface FtttProgressSummary {

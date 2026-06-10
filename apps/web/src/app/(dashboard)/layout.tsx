@@ -396,7 +396,7 @@ function NavItemLink({
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
-  const { user, accessToken, logout, canAccess, featureAccessReady, hydrate } = useAuthStore();
+  const { user, accessToken, hydrated, logout, canAccess, featureAccessReady, hydrate } = useAuthStore();
   const {
     notifications, unreadCount, unreadPRCount, unreadCashOpCount,
     addNotification, markAllRead, markRead,
@@ -472,12 +472,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     }
   }, [user]);
 
-  useEffect(() => { // FIX: hydrate → auth/me → feature flags (sequential, fail-closed nav)
-    hydrate();
+  useEffect(() => { // FIX: hydrate → wait → auth/me → feature flags (sequential, fail-closed nav)
     let cancelled = false;
     (async () => {
+      await (hydrate as () => Promise<void>)();
       const tok = useAuthStore.getState().accessToken;
-      if (!tok) return;
+      if (!tok || cancelled) return;
       useAuthStore.getState().resetFeatureAccess();
       const meRes = await apiFetch('/auth/me');
       if (cancelled) return;
@@ -493,9 +493,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     return () => { cancelled = true; };
   }, [hydrate, router]);
 
-  useEffect(() => { // FIX: auth gate
-    if (!accessToken) router.replace('/login');
-  }, [accessToken, router]);
+  useEffect(() => { // FIX: auth gate — only redirect after hydration completes to avoid race on page refresh
+    if (hydrated && !accessToken) router.replace('/login');
+  }, [accessToken, hydrated, router]);
 
   const refreshPurchasingAndStockBadges = useCallback(async () => {
     if (!user) return;

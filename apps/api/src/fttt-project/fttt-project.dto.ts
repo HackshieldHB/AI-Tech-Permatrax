@@ -7,7 +7,7 @@ import { FtttPhase } from '@prisma/client';
 export const FTTT_PHASES_BY_COMPANY: Record<FtttCompany, FtttPhase[]> = {
   TELKOM_INFRA: [
     FtttPhase.INITIATION,
-    // SURVEY is skipped for Telkom Infra
+    FtttPhase.SURVEY,     // C7-TI4: Validation & Survey restored for Telkom Infra
     FtttPhase.PREPARATION,
     FtttPhase.IMPLEMENTATION,
     FtttPhase.DOCUMENTATION,

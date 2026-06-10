@@ -328,22 +328,28 @@ function SurveySection({ project, onRefresh }: { project: FtttProject; onRefresh
 function DrmSection({ project, onRefresh }: { project: FtttProject; onRefresh: () => void }) {
   const { user } = useAuthStore();
   const [uploading, setUploading] = useState(false);
-  const [docType, setDocType] = useState('BOQ_INITIAL');
+  const [activeDocType, setActiveDocType] = useState('BOQ_INITIAL');
   const [notes, setNotes] = useState('');
+  const [replaceType, setReplaceType] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const replaceRef = useRef<HTMLInputElement>(null);
 
-  const handleUpload = async (file: File) => {
+  const canEdit = ['PM_FTTT', 'ADMIN', 'GENERAL_MANAGER'].includes(user?.role ?? '');
+
+  const handleUpload = async (file: File, typeOverride?: string) => {
+    const type = typeOverride ?? activeDocType;
     const fd = new FormData();
     fd.append('file', file);
-    fd.append('docType', docType);
+    fd.append('docType', type);
     if (notes) fd.append('notes', notes);
     setUploading(true);
     try {
       const res = await apiFetch(`/fttt-projects/${project.id}/drm-documents`, { method: 'POST', body: fd }, user?.id);
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal upload');
-      toast.success('Dokumen DRM berhasil diunggah');
+      toast.success('Dokumen berhasil diunggah / diganti');
       onRefresh();
       setNotes('');
+      setReplaceType(null);
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : 'Gagal');
     } finally {
@@ -351,7 +357,7 @@ function DrmSection({ project, onRefresh }: { project: FtttProject; onRefresh: (
     }
   };
 
-  // Group by docType
+  // Group by docType, latest version per type
   const grouped = project.drmDocuments.reduce<Record<string, typeof project.drmDocuments>>((acc, d) => {
     (acc[d.docType] = acc[d.docType] ?? []).push(d);
     return acc;
@@ -361,36 +367,81 @@ function DrmSection({ project, onRefresh }: { project: FtttProject; onRefresh: (
     BOQ_INITIAL: 'BOQ Awal', TOS_INITIAL: 'TOS Awal', DRM_RESULT: 'Hasil DRM', ACTUAL: 'Aktual',
   };
 
+  const REQUIRED_TYPES = ['BOQ_INITIAL', 'DRM_RESULT'];
+  const uploadedTypes = new Set(Object.keys(grouped));
+
   return (
     <div>
       <p style={{ fontWeight: 600, fontSize: 13, marginBottom: 8 }}>DRM Management — Riwayat Dokumen</p>
-      <div style={{ display: 'flex', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
-        <select value={docType} onChange={(e) => setDocType(e.target.value)} style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12 }}>
-          <option value="BOQ_INITIAL">BOQ Awal</option>
-          <option value="TOS_INITIAL">TOS Awal</option>
-          <option value="DRM_RESULT">Hasil DRM</option>
-          <option value="ACTUAL">Aktual</option>
-        </select>
-        <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Catatan (opsional)" style={{ flex: 1, padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12, minWidth: 120 }} />
-        <input ref={fileRef} type="file" accept=".xlsx,.xls,.pdf" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleUpload(f); }} />
-        <button onClick={() => fileRef.current?.click()} disabled={uploading} style={{ padding: '6px 12px', borderRadius: 6, border: '1px solid #D0D7DE', background: '#F6F8FA', cursor: 'pointer', fontSize: 12 }}>
-          {uploading ? 'Mengunggah…' : 'Upload'}
-        </button>
-      </div>
-      {Object.entries(grouped).map(([type, docs]) => (
-        <div key={type} style={{ marginBottom: 8 }}>
-          <p style={{ fontSize: 12, fontWeight: 600, color: '#57606a', margin: '0 0 4px' }}>{DRM_LABELS[type] ?? type}</p>
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            {docs.map((d) => (
-              <a key={d.id} href={fixFileUrl(d.fileUrl)} target="_blank" rel="noopener noreferrer"
-                style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 11, textDecoration: 'none', color: '#0969DA', display: 'flex', alignItems: 'center', gap: 4 }}>
-                <FileText size={11} /> v{d.version} {d.notes ? `— ${d.notes}` : ''} <ExternalLink size={10} />
-              </a>
-            ))}
+
+      {/* Uploaded docs with Ganti button — C7-PST5 */}
+      {Object.entries(grouped).map(([type, docs]) => {
+        const latest = docs[docs.length - 1];
+        return (
+          <div key={type} style={{ background: '#F0FFF8', border: '1px solid #2DA44E', borderRadius: 8, padding: 10, marginBottom: 8 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <p style={{ margin: 0, fontWeight: 600, fontSize: 12 }}>✓ {DRM_LABELS[type] ?? type}</p>
+                <div style={{ display: 'flex', gap: 6, marginTop: 4, flexWrap: 'wrap' }}>
+                  {docs.map((d) => (
+                    <a key={d.id} href={fixFileUrl(d.fileUrl)} target="_blank" rel="noopener noreferrer"
+                      style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 11, textDecoration: 'none', color: '#0969DA', display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                      <FileText size={11} /> v{d.version} <ExternalLink size={10} />
+                    </a>
+                  ))}
+                </div>
+                {latest.uploadedBy && <p style={{ margin: '3px 0 0', fontSize: 10, color: '#8c959f' }}>oleh {latest.uploadedBy.name}</p>}
+              </div>
+              {canEdit && (
+                <>
+                  <input ref={replaceRef} type="file" accept=".xlsx,.xls,.pdf,.doc,.docx" style={{ display: 'none' }}
+                    onChange={(e) => { const f = e.target.files?.[0]; if (f && replaceType) void handleUpload(f, replaceType); }} />
+                  <button type="button"
+                    onClick={() => { setReplaceType(type); replaceRef.current?.click(); }}
+                    disabled={uploading}
+                    style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid #FFA500', background: '#FFF8F0', color: '#7d5a00', cursor: 'pointer', fontSize: 11, fontWeight: 600, flexShrink: 0 }}>
+                    {uploading && replaceType === type ? '…' : '🔄 Ganti'}
+                  </button>
+                </>
+              )}
+            </div>
           </div>
+        );
+      })}
+
+      {/* Missing required docs */}
+      {REQUIRED_TYPES.filter((t) => !uploadedTypes.has(t)).map((t) => (
+        <div key={t} style={{ background: '#FFEBE9', border: '1px solid #cf222e', borderRadius: 8, padding: 10, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span>⚠️</span>
+          <p style={{ margin: 0, fontSize: 12, color: '#cf222e', fontWeight: 600 }}>{DRM_LABELS[t] ?? t} — belum diunggah</p>
         </div>
       ))}
-      {project.drmDocuments.length === 0 && <p style={{ fontSize: 12, color: '#8c959f' }}>Belum ada dokumen DRM.</p>}
+
+      {/* Upload new doc form */}
+      {canEdit && (
+        <div style={{ border: '1px solid #D0D7DE', borderRadius: 8, padding: 12, marginTop: 8 }}>
+          <p style={{ margin: '0 0 6px', fontSize: 12, fontWeight: 600 }}>Upload Dokumen DRM</p>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
+            <select value={activeDocType} onChange={(e) => setActiveDocType(e.target.value)}
+              style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12 }}>
+              <option value="BOQ_INITIAL">BOQ Awal</option>
+              <option value="DRM_RESULT">Hasil DRM</option>
+              <option value="TOS_INITIAL">TOS Awal</option>
+              <option value="ACTUAL">Aktual</option>
+            </select>
+            <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Catatan (opsional)"
+              style={{ flex: 1, padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12, minWidth: 120 }} />
+          </div>
+          <input ref={fileRef} type="file" accept=".xlsx,.xls,.pdf,.doc,.docx" style={{ display: 'none' }}
+            onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleUpload(f); }} />
+          <button onClick={() => fileRef.current?.click()} disabled={uploading}
+            style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: '#0969DA', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 12 }}>
+            {uploading ? 'Mengunggah…' : '+ Upload'}
+          </button>
+        </div>
+      )}
+
+      {project.drmDocuments.length === 0 && !canEdit && <p style={{ fontSize: 12, color: '#8c959f' }}>Belum ada dokumen DRM.</p>}
     </div>
   );
 }
@@ -767,7 +818,7 @@ function DocumentationSection({ project, onRefresh, userRole }: { project: FtttP
         </div>
         <p style={{ margin: '3px 0 0', fontSize: 11, color: '#57606a' }}>
           Dokumen dikonfigurasi sesuai lifecycle {project.ftttCompany === 'TELKOM_INFRA' ? 'Telkom Infra' : project.ftttCompany === 'PST' ? 'PST' : 'iFORTE'}.
-          Upload docs dilakukan oleh Surveyor FTTT; Generate Form docs diisi melalui sistem.
+          Upload dokumen dilakukan oleh PM FTTT; review dan approval oleh Admin.
         </p>
       </div>
 
@@ -938,10 +989,10 @@ function DocumentationSection({ project, onRefresh, userRole }: { project: FtttP
         </div>
       )}
 
-      {/* Info for PM / Admin — read-only notice */}
-      {!canUploadDocs && (canPmApprove || canAdminApprove) && (
+      {/* Info for Admin — review-only notice */}
+      {canAdminApprove && !canUploadDocs && (
         <div style={{ background: '#F0F8FF', border: '1px solid #0969DA', borderRadius: 8, padding: 10, marginTop: 6, fontSize: 12, color: '#0969DA' }}>
-          ℹ️ Anda dapat mereview dan approve/reject dokumen pada setiap card di atas. Upload dokumen baru hanya dapat dilakukan oleh Surveyor FTTT.
+          ℹ️ Anda dapat mereview dan approve/reject dokumen pada setiap card di atas. Upload dokumen baru hanya dapat dilakukan oleh PM FTTT.
         </div>
       )}
     </div>
@@ -954,9 +1005,11 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
   const { user } = useAuthStore();
   const isAdmin      = userRole === 'ADMIN' || userRole === 'GENERAL_MANAGER';
   const isSurveyor   = userRole === 'SURVEYOR_FTTT';
-  const canUpload    = isSurveyor || isAdmin;
+  const isPmFttt     = userRole === 'PM_FTTT';
+  // C7-TI5: PM FTTT can now upload PHOTO logs (same as Surveyor)
+  const canUpload    = isSurveyor || isAdmin || isPmFttt;
   const canMonitoring = isAdmin;
-  const canNote      = canUpload || userRole === 'PM_FTTT';
+  const canNote      = canUpload;
 
   // C6-PST4: Track Surveyor "lapangan done" state via phaseProgress.notes
   const implProg = project.phaseProgresses.find((p) => p.phase === 'IMPLEMENTATION');
@@ -1041,9 +1094,14 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
             <p style={{ margin: 0, fontSize: 12, fontWeight: 600 }}>{LOG_LABELS[log.logType]}</p>
             {log.caption && <p style={{ margin: '2px 0 0', fontSize: 12 }}>{log.caption}</p>}
             {log.notes   && <p style={{ margin: '2px 0 0', fontSize: 11, color: '#57606a' }}>{log.notes}</p>}
-            {/* C6-TI1/PST3: Display timestamp for audit trail */}
+            {/* C7-TI1/PST2: Display timestamp + user + role for audit trail */}
             <p style={{ margin: '3px 0 0', fontSize: 10, color: '#8c959f' }}>
               {fmtDateTime(log.createdAt)} · {log.uploadedBy.name}
+              {log.uploadedBy.role && (
+                <span style={{ marginLeft: 4, padding: '1px 5px', borderRadius: 4, background: '#EAEEF2', fontSize: 9 }}>
+                  {log.uploadedBy.role}
+                </span>
+              )}
             </p>
           </div>
           {log.fileUrl && (
@@ -1055,11 +1113,11 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
         </div>
       ))}
 
-      {/* C6-PST4: Status banner */}
+      {/* C7-TI5/PST: Status banner when lapangan done */}
       {lapanganDone && (
         <div style={{ background: '#FFF8C5', border: '1px solid #d4a017', borderRadius: 8, padding: 10, marginTop: 8, marginBottom: 8 }}>
           <p style={{ margin: 0, fontSize: 12, fontWeight: 700, color: '#9a6700' }}>
-            ✅ Pekerjaan lapangan ditandai selesai oleh Surveyor
+            ✅ Pekerjaan lapangan ditandai selesai
           </p>
           <p style={{ margin: '3px 0 0', fontSize: 11, color: '#9a6700' }}>
             {isAdmin ? 'Silakan upload Dokumen Monitoring, kemudian selesaikan fase.' : 'Menunggu Admin upload Dokumen Monitoring.'}
@@ -1067,8 +1125,21 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
         </div>
       )}
 
-      {/* C6-PST4: Surveyor "mark lapangan done" button */}
+      {/* C7-TI5: Surveyor button — mark lapangan done (PST flow: Surveyor sends to Admin) */}
       {isSurveyor && !lapanganDone && logs.length > 0 && (
+        <div style={{ background: '#DAFBE1', border: '1px solid #2DA44E', borderRadius: 8, padding: 10, marginTop: 8, marginBottom: 8 }}>
+          <p style={{ margin: '0 0 6px', fontSize: 12, fontWeight: 600, color: '#1a7f37' }}>
+            Pekerjaan lapangan sudah selesai?
+          </p>
+          <button type="button" onClick={() => void handleMarkDone()} disabled={markingDone}
+            style={{ padding: '7px 16px', borderRadius: 6, border: 'none', background: '#1a7f37', color: '#fff', fontWeight: 700, cursor: 'pointer', fontSize: 12 }}>
+            {markingDone ? 'Memproses…' : '✅ Selesai Fase → Implementation'}
+          </button>
+        </div>
+      )}
+
+      {/* C7-TI5: Admin button — confirm lapangan done (TI flow: Admin marks and uploads monitoring doc) */}
+      {isAdmin && !lapanganDone && logs.length > 0 && (
         <div style={{ background: '#DAFBE1', border: '1px solid #2DA44E', borderRadius: 8, padding: 10, marginTop: 8, marginBottom: 8 }}>
           <p style={{ margin: '0 0 6px', fontSize: 12, fontWeight: 600, color: '#1a7f37' }}>
             Pekerjaan lapangan sudah selesai?
@@ -1106,8 +1177,7 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
           {logType === 'NOTE' ? (
             <button type="button" onClick={() => { void handleAdd(); }} disabled={uploading || !caption.trim()}
               style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: '#0969DA', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 12 }}>
-              {uploading ? 'Menyimpan…' : '+ Simpan Catatan'}
-
+              {uploading ? 'Menyimpan…' : '💾 Simpan Catatan'}
             </button>
           ) : (
             <>
@@ -1618,7 +1688,7 @@ function ClosingSection({ project, onRefresh, userRole }: { project: FtttProject
           <div style={{ flex: 1 }}>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
               <span style={{ fontSize: 13, fontWeight: 700 }}>📄 BAST II</span>
-              <span style={{ fontSize: 11, color: '#57606a', background: '#EDF2F4', padding: '2px 6px', borderRadius: 4 }}>Surveyor / PM</span>
+              <span style={{ fontSize: 11, color: '#57606a', background: '#EDF2F4', padding: '2px 6px', borderRadius: 4 }}>Admin</span>
               {bastII?.approvalStatus && (
                 <span style={{ fontSize: 10, fontWeight: 700, color: STATUS_COLORS[bastII.approvalStatus] }}>
                   {STATUS_LABELS[bastII.approvalStatus]}
@@ -1938,8 +2008,8 @@ export default function FtttProjectDetailPage() {
             Aktivitas Fase: {FTTT_PHASE_LABELS[project.currentPhase]}
           </p>
 
-          {/* Survey — iForte & PST (C6-PST2: PM approval flow handled inside SurveySection) */}
-          {project.currentPhase === 'SURVEY' && project.ftttCompany !== 'TELKOM_INFRA' && (
+          {/* Survey — all companies including Telkom Infra (C7-TI4: TI now includes Survey phase) */}
+          {project.currentPhase === 'SURVEY' && (
             <SurveySection project={project} onRefresh={load} />
           )}
 
