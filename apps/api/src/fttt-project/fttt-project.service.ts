@@ -641,11 +641,25 @@ export class FtttProjectService {
     file: Express.Multer.File | undefined,
     dto: UploadSurveyDtoType,
     userId: string,
+    userRole?: Role,
   ) {
-    if (!file) throw new BadRequestException('File foto / dokumen survei wajib diunggah');
-    const project = await this.prisma.ftttProject.findUniqueOrThrow({ where: { id } });
-    // C7-TI4: Telkom Infra now has Survey phase — removed the block
-    const fileUrl = await this.storage.uploadMulterFile(file, 'fttt-survey', id);
+    // C7.1: Only Surveyor FTTT can upload survey documents
+    if (userRole && userRole !== Role.SURVEYOR_FTTT && userRole !== Role.ADMIN && userRole !== Role.GENERAL_MANAGER) {
+      throw new ForbiddenException('Hanya Surveyor FTTT yang dapat meng-upload dokumen pada fase Validation & Survey');
+    }
+    // C7.1: operational_notes is text-only — no file required
+    const isTextOnly = dto.fileType === 'operational_notes';
+    if (!file && !isTextOnly) {
+      throw new BadRequestException('File dokumen survei wajib diunggah');
+    }
+    if (isTextOnly && !dto.caption?.trim()) {
+      throw new BadRequestException('Isi catatan lapangan tidak boleh kosong');
+    }
+    await this.prisma.ftttProject.findUniqueOrThrow({ where: { id } });
+    let fileUrl = '';
+    if (file) {
+      fileUrl = await this.storage.uploadMulterFile(file, 'fttt-survey', id);
+    }
     return this.prisma.ftttSurveyUpload.create({
       data: { projectId: id, uploadedById: userId, fileUrl, fileType: dto.fileType, caption: dto.caption ?? null },
       include: { uploadedBy: { select: { id: true, name: true } } },
@@ -1052,8 +1066,9 @@ export class FtttProjectService {
     userId: string,
     userRole: Role,
   ) {
-    // C6-TI2: PM FTTT (not Surveyor) owns Reconciliation document upload
-    const allowed: Role[] = [Role.PM_FTTT, Role.ADMIN, Role.GENERAL_MANAGER, Role.FINANCE];
+    // C6-TI2: PM FTTT owns TI Reconciliation; PST Rekonsiliasi is Surveyor-owned
+    // C7.1: Add SURVEYOR_FTTT so PST Rekonsiliasi doc can be uploaded by Surveyor
+    const allowed: Role[] = [Role.PM_FTTT, Role.ADMIN, Role.GENERAL_MANAGER, Role.FINANCE, Role.SURVEYOR_FTTT];
     if (!allowed.includes(userRole)) {
       throw new ForbiddenException('Tidak memiliki akses untuk mengunggah dokumen rekonsiliasi');
     }

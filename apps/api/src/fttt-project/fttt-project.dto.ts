@@ -69,8 +69,10 @@ export const AdvancePhaseDto = z.object({
 export type AdvancePhaseDtoType = z.infer<typeof AdvancePhaseDto>;
 
 export const UploadSurveyDto = z.object({
-  fileType: z.enum(['photo', 'supporting_file', 'survey_evidence', 'operational_notes']),
-  caption:  z.string().max(500).optional(),
+  // C7.1: 'photo' removed; 'operational_notes' is text-only (no file)
+  fileType:  z.enum(['photo', 'supporting_file', 'survey_evidence', 'operational_notes']),
+  caption:   z.string().max(2000).optional(),
+  textOnly:  z.boolean().optional(),  // true for operational_notes
 });
 export type UploadSurveyDtoType = z.infer<typeof UploadSurveyDto>;
 

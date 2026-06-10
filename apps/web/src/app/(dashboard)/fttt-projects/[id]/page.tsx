@@ -95,38 +95,50 @@ function LiveProgressBar({ project }: { project: FtttProject }) {
   );
 }
 
-// ─── Survey uploads section (C5-Issue5: grouped by type + delete) ────────────
+// ─── Survey uploads section ───────────────────────────────────────────────────
+// C7.1: Surveyor-only uploads; PM is reviewer/approver only
+// C7.1: Removed "Foto" option; Catatan Lapangan is text-only; file-type validation per activity
+
 const FILE_TYPE_LABELS: Record<string, string> = {
-  photo:             '📷 Foto',
   supporting_file:   '📄 File Pendukung',
   survey_evidence:   '🔍 Bukti Survei',
   operational_notes: '📝 Catatan Lapangan',
 };
 
+// Accepted file formats per activity type
+const FILE_ACCEPT: Record<string, string> = {
+  supporting_file:   '.pdf,.doc,.docx,.xls,.xlsx',
+  survey_evidence:   '.pdf,.png,.jpg,.jpeg,.doc,.docx,.xls,.xlsx,.webp,.bmp,.tiff',
+  operational_notes: '',   // text-only — no file
+};
+
 function SurveySection({ project, onRefresh }: { project: FtttProject; onRefresh: () => void }) {
   const { user } = useAuthStore();
-  const [uploading, setUploading] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [uploading, setUploading]     = useState(false);
+  const [submitting, setSubmitting]   = useState(false);
+  const [deletingId, setDeletingId]   = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState('');
   const [showRejectForm, setShowRejectForm] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
-  const [fileType, setFileType] = useState('photo');
-  const [caption, setCaption] = useState('');
+  // C7.1: default to supporting_file (Foto removed)
+  const [fileType, setFileType] = useState<'supporting_file' | 'survey_evidence' | 'operational_notes'>('supporting_file');
+  const [caption, setCaption]   = useState('');
+  const [noteText, setNoteText] = useState('');  // C7.1: text-only for Catatan Lapangan
 
-  const role = user?.role ?? '';
+  const role       = user?.role ?? '';
   const isSurveyor = role === 'SURVEYOR_FTTT';
+  // C7.1: PM is reviewer/approver only — no upload capability
   const isPM       = role === 'PM_FTTT' || role === 'ADMIN' || role === 'GENERAL_MANAGER';
   const canDelete  = ['SURVEYOR_FTTT', 'ADMIN', 'GENERAL_MANAGER'].includes(role);
 
-  // C6-PST2: Determine survey approval state from phaseProgress.notes
-  const surveyProg = project.phaseProgresses.find((p) => p.phase === 'SURVEY');
-  const surveyNotes = surveyProg?.notes ?? null;
+  const surveyProg      = project.phaseProgresses.find((p) => p.phase === 'SURVEY');
+  const surveyNotes     = surveyProg?.notes ?? null;
   const isPendingReview = surveyNotes === 'PENDING_PM_REVIEW';
   const isRejected      = typeof surveyNotes === 'string' && surveyNotes.startsWith('REJECTED:');
   const rejectionReason = isRejected ? surveyNotes.replace('REJECTED:', '') : '';
 
-  const handleUpload = async (file: File) => {
+  // C7.1: Upload file (for supporting_file and survey_evidence)
+  const handleUploadFile = async (file: File) => {
     const fd = new FormData();
     fd.append('file', file);
     fd.append('fileType', fileType);
@@ -135,10 +147,31 @@ function SurveySection({ project, onRefresh }: { project: FtttProject; onRefresh
     try {
       const res = await apiFetch(`/fttt-projects/${project.id}/survey-uploads`, { method: 'POST', body: fd }, user?.id);
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal upload');
-      toast.success('Bukti survei berhasil diunggah');
+      toast.success('Dokumen berhasil diunggah');
       onRefresh();
       setCaption('');
       if (fileRef.current) fileRef.current.value = '';
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Gagal');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  // C7.1: Save text note (for operational_notes — no file, multipart with empty file field)
+  const handleSaveNote = async () => {
+    if (!noteText.trim()) { toast.error('Catatan tidak boleh kosong'); return; }
+    setUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append('fileType', 'operational_notes');
+      fd.append('caption', noteText.trim());
+      // No file appended — backend handles text-only for operational_notes
+      const res = await apiFetch(`/fttt-projects/${project.id}/survey-uploads`, { method: 'POST', body: fd }, user?.id);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal menyimpan catatan');
+      toast.success('Catatan lapangan berhasil disimpan');
+      onRefresh();
+      setNoteText('');
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : 'Gagal');
     } finally {
@@ -200,13 +233,15 @@ function SurveySection({ project, onRefresh }: { project: FtttProject; onRefresh
            d.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) + ' WIB';
   };
 
+  const isNoteType = fileType === 'operational_notes';
+
   return (
     <div>
-      {/* C6-PST2: Survey review state banners */}
+      {/* Survey state banners */}
       {isPendingReview && (
         <div style={{ background: '#FFF8C5', border: '1px solid #d4a017', borderRadius: 8, padding: 12, marginBottom: 12 }}>
           <p style={{ margin: '0 0 4px', fontWeight: 700, fontSize: 12, color: '#9a6700' }}>⏳ Menunggu Review PM FTTT</p>
-          <p style={{ margin: 0, fontSize: 11, color: '#9a6700' }}>Surveyor telah mengirim bukti survei. PM FTTT dapat mereview dan menyetujui atau menolak di bawah.</p>
+          <p style={{ margin: 0, fontSize: 11, color: '#9a6700' }}>Surveyor telah mengirim hasil survey. PM FTTT dapat mereview dan menyetujui atau menolak di bawah.</p>
         </div>
       )}
       {isRejected && (
@@ -217,7 +252,14 @@ function SurveySection({ project, onRefresh }: { project: FtttProject; onRefresh
         </div>
       )}
 
-      {/* PM review panel */}
+      {/* C7.1: PM info banner — read-only, reviewer only */}
+      {isPM && !isPendingReview && !isRejected && (
+        <div style={{ background: '#F0F8FF', border: '1px solid #0969DA', borderRadius: 8, padding: 10, marginBottom: 12, fontSize: 12, color: '#0969DA' }}>
+          ℹ️ Pada fase Validation & Survey, PM berperan sebagai <strong>reviewer</strong>. Upload dokumen hanya dapat dilakukan oleh Surveyor FTTT. Setelah Surveyor menyelesaikan dan mengirim hasil survey, Anda dapat mereview dan menyetujui atau menolaknya di sini.
+        </div>
+      )}
+
+      {/* PM review panel — shown when pending review */}
       {isPM && isPendingReview && (
         <div style={{ background: '#F0F8FF', border: '1px solid #0969DA', borderRadius: 8, padding: 12, marginBottom: 12 }}>
           <p style={{ margin: '0 0 8px', fontWeight: 700, fontSize: 12, color: '#0969DA' }}>📋 Review Hasil Validation & Survey</p>
@@ -251,29 +293,62 @@ function SurveySection({ project, onRefresh }: { project: FtttProject; onRefresh
         </div>
       )}
 
-      {/* Upload form — only shown when not pending review */}
-      {!isPendingReview && (
-        <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
-          <select value={fileType} onChange={(e) => setFileType(e.target.value)}
-            style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12 }}>
-            <option value="photo">📷 Foto</option>
-            <option value="supporting_file">📄 File Pendukung</option>
-            <option value="survey_evidence">🔍 Bukti Survei</option>
-            <option value="operational_notes">📝 Catatan Lapangan</option>
-          </select>
-          <input value={caption} onChange={(e) => setCaption(e.target.value)}
-            placeholder="Keterangan (opsional)"
-            style={{ flex: 1, padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12, minWidth: 120 }} />
-          <input ref={fileRef} type="file" style={{ display: 'none' }}
-            onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleUpload(f); }} />
-          <button onClick={() => fileRef.current?.click()} disabled={uploading}
-            style={{ padding: '6px 12px', borderRadius: 6, border: '1px solid #D0D7DE', background: '#F6F8FA', cursor: 'pointer', fontSize: 12, display: 'flex', alignItems: 'center', gap: 4 }}>
-            <Upload size={13} /> {uploading ? 'Mengunggah…' : 'Upload'}
-          </button>
+      {/* C7.1: Upload form — Surveyor only, not when pending review */}
+      {isSurveyor && !isPendingReview && (
+        <div style={{ border: '1px solid #D0D7DE', borderRadius: 8, padding: 12, marginBottom: 14 }}>
+          <p style={{ margin: '0 0 8px', fontSize: 12, fontWeight: 600 }}>Tambah Aktivitas Survey</p>
+
+          {/* Activity type selector — C7.1: Foto removed */}
+          <div style={{ display: 'flex', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
+            <select value={fileType} onChange={(e) => setFileType(e.target.value as typeof fileType)}
+              style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12 }}>
+              <option value="supporting_file">📄 File Pendukung</option>
+              <option value="survey_evidence">🔍 Bukti Survei</option>
+              <option value="operational_notes">📝 Catatan Lapangan</option>
+            </select>
+
+            {/* File format hint */}
+            <span style={{ fontSize: 11, color: '#8c959f', alignSelf: 'center' }}>
+              {fileType === 'supporting_file' && 'Format: PDF, Word, Excel'}
+              {fileType === 'survey_evidence'  && 'Format: PDF, PNG, JPG, Word, Excel'}
+              {fileType === 'operational_notes' && 'Input teks — tidak perlu file'}
+            </span>
+          </div>
+
+          {/* Caption for file types */}
+          {!isNoteType && (
+            <input value={caption} onChange={(e) => setCaption(e.target.value)}
+              placeholder="Keterangan / nama dokumen (opsional)"
+              style={{ width: '100%', padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12, marginBottom: 8, boxSizing: 'border-box' }} />
+          )}
+
+          {/* C7.1: Catatan Lapangan — text input only */}
+          {isNoteType ? (
+            <div>
+              <textarea value={noteText} onChange={(e) => setNoteText(e.target.value)} rows={4}
+                placeholder="Tuliskan hasil observasi, temuan lapangan, atau informasi survey…"
+                style={{ width: '100%', padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12, resize: 'vertical', boxSizing: 'border-box', marginBottom: 8 }} />
+              <button type="button" onClick={() => void handleSaveNote()} disabled={uploading || !noteText.trim()}
+                style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: noteText.trim() ? '#0969DA' : '#D0D7DE', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 12 }}>
+                {uploading ? 'Menyimpan…' : '💾 Simpan Catatan'}
+              </button>
+            </div>
+          ) : (
+            /* C7.1: File upload with per-type accept filter */
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <input ref={fileRef} type="file" style={{ display: 'none' }}
+                accept={FILE_ACCEPT[fileType]}
+                onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleUploadFile(f); }} />
+              <button type="button" onClick={() => fileRef.current?.click()} disabled={uploading}
+                style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: '#0969DA', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 12, display: 'flex', alignItems: 'center', gap: 4 }}>
+                <Upload size={13} /> {uploading ? 'Mengunggah…' : 'Upload'}
+              </button>
+            </div>
+          )}
         </div>
       )}
 
-      {/* Grouped display with timestamp */}
+      {/* Uploaded docs list */}
       {project.surveyUploads.length === 0 && (
         <p style={{ fontSize: 12, color: '#8c959f' }}>Belum ada dokumen survei diunggah.</p>
       )}
@@ -281,16 +356,21 @@ function SurveySection({ project, onRefresh }: { project: FtttProject; onRefresh
         <div key={type} style={{ marginBottom: 12 }}>
           <p style={{ margin: '0 0 6px', fontSize: 12, fontWeight: 700, color: '#24292f' }}>
             {FILE_TYPE_LABELS[type] ?? type}
-            <span style={{ fontWeight: 400, color: '#57606a', marginLeft: 6 }}>({items.length} file)</span>
+            <span style={{ fontWeight: 400, color: '#57606a', marginLeft: 6 }}>({items.length})</span>
           </p>
           {items.map((u) => (
-            <div key={u.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', background: '#F6F8FA', borderRadius: 6, marginBottom: 4, border: '1px solid #EAEEF2' }}>
-              <FileText size={13} color="#57606a" />
+            <div key={u.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '8px 10px', background: '#F6F8FA', borderRadius: 6, marginBottom: 4, border: '1px solid #EAEEF2' }}>
+              <FileText size={13} color="#57606a" style={{ marginTop: 2, flexShrink: 0 }} />
               <div style={{ flex: 1, minWidth: 0 }}>
-                <a href={fixFileUrl(u.fileUrl)} target="_blank" rel="noopener noreferrer"
-                  style={{ fontSize: 12, color: '#0969DA', textDecoration: 'none', display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {u.caption || u.fileUrl.split('/').pop() || 'File'}
-                </a>
+                {/* C7.1: Catatan Lapangan — show as text, no file link */}
+                {type === 'operational_notes' ? (
+                  <p style={{ margin: 0, fontSize: 12, color: '#24292f', whiteSpace: 'pre-wrap' }}>{u.caption || '—'}</p>
+                ) : (
+                  <a href={fixFileUrl(u.fileUrl)} target="_blank" rel="noopener noreferrer"
+                    style={{ fontSize: 12, color: '#0969DA', textDecoration: 'none', display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {u.caption || u.fileUrl?.split('/').pop() || 'File'} <ExternalLink size={10} />
+                  </a>
+                )}
                 <span style={{ fontSize: 10, color: '#8c959f' }}>
                   {fmtDateTime(u.createdAt)} · {u.uploadedBy.name}
                 </span>
@@ -300,7 +380,7 @@ function SurveySection({ project, onRefresh }: { project: FtttProject; onRefresh
                   onClick={() => void handleDelete(u.id, u.caption || u.fileType)}
                   disabled={deletingId === u.id}
                   style={{ padding: '3px 8px', borderRadius: 4, border: '1px solid #cf222e', background: '#FFEBE9', color: '#cf222e', cursor: 'pointer', fontSize: 11, fontWeight: 600, flexShrink: 0 }}>
-                  {deletingId === u.id ? '…' : '🗑 Hapus'}
+                  {deletingId === u.id ? '…' : '🗑'}
                 </button>
               )}
             </div>
@@ -308,7 +388,7 @@ function SurveySection({ project, onRefresh }: { project: FtttProject; onRefresh
         </div>
       ))}
 
-      {/* C6-PST2: Submit to PM button for Surveyor */}
+      {/* Surveyor submit-to-PM button */}
       {isSurveyor && !isPendingReview && project.surveyUploads.length > 0 && (
         <div style={{ marginTop: 12, padding: 10, background: '#DAFBE1', borderRadius: 8, border: '1px solid #2DA44E' }}>
           <p style={{ margin: '0 0 6px', fontSize: 12, fontWeight: 600, color: '#1a7f37' }}>

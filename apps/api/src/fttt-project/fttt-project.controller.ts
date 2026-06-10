@@ -134,6 +134,7 @@ export class FtttProjectController {
   }
 
   // POST /fttt-projects/:id/survey-uploads
+  // C7.1: Only Surveyor can upload survey documents
   @Post(':id/survey-uploads')
   @UseInterceptors(FileInterceptor('file', upload))
   uploadSurvey(
@@ -142,7 +143,7 @@ export class FtttProjectController {
     @Body(new ZodValidationPipe(UploadSurveyDto)) dto: any,
     @CurrentUser() user: AuthUser,
   ) {
-    return this.service.uploadSurveyEvidence(id, file, dto, user.userId);
+    return this.service.uploadSurveyEvidence(id, file, dto, user.userId, user.role);
   }
 
   // POST /fttt-projects/:id/drm-documents
