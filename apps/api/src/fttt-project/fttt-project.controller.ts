@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   Post,
@@ -90,7 +91,17 @@ export class FtttProjectController {
     @Body(new ZodValidationPipe(AdvancePhaseDto)) dto: any,
     @CurrentUser() user: AuthUser,
   ) {
-    return this.service.advancePhase(id, dto, user.userId);
+    return this.service.advancePhase(id, dto, user.userId, user.role);
+  }
+
+  // DELETE /fttt-projects/:id/survey-uploads/:uploadId  (C5-Issue5)
+  @Delete(':id/survey-uploads/:uploadId')
+  deleteSurveyUpload(
+    @Param('id') id: string,
+    @Param('uploadId') uploadId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.service.deleteSurveyUpload(id, uploadId, user.userId, user.role);
   }
 
   // POST /fttt-projects/:id/survey-uploads

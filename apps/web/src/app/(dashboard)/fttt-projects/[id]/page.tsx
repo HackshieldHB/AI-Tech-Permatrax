@@ -95,13 +95,23 @@ function LiveProgressBar({ project }: { project: FtttProject }) {
   );
 }
 
-// ─── Survey uploads section ───────────────────────────────────────────────────
+// ─── Survey uploads section (C5-Issue5: grouped by type + delete) ────────────
+const FILE_TYPE_LABELS: Record<string, string> = {
+  photo:             '📷 Foto',
+  supporting_file:   '📄 File Pendukung',
+  survey_evidence:   '🔍 Bukti Survei',
+  operational_notes: '📝 Catatan Lapangan',
+};
+
 function SurveySection({ project, onRefresh }: { project: FtttProject; onRefresh: () => void }) {
   const { user } = useAuthStore();
   const [uploading, setUploading] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const [fileType, setFileType] = useState('photo');
   const [caption, setCaption] = useState('');
+
+  const canDelete = ['SURVEYOR_FTTT', 'ADMIN', 'GENERAL_MANAGER'].includes(user?.role ?? '');
 
   const handleUpload = async (file: File) => {
     const fd = new FormData();
@@ -115,6 +125,7 @@ function SurveySection({ project, onRefresh }: { project: FtttProject; onRefresh
       toast.success('Bukti survei berhasil diunggah');
       onRefresh();
       setCaption('');
+      if (fileRef.current) fileRef.current.value = '';
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : 'Gagal');
     } finally {
@@ -122,38 +133,81 @@ function SurveySection({ project, onRefresh }: { project: FtttProject; onRefresh
     }
   };
 
+  const handleDelete = async (uploadId: string, label: string) => {
+    if (!confirm(`Hapus "${label}"?`)) return;
+    setDeletingId(uploadId);
+    try {
+      const res = await apiFetch(`/fttt-projects/${project.id}/survey-uploads/${uploadId}`, { method: 'DELETE' }, user?.id);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal hapus');
+      toast.success('File berhasil dihapus');
+      onRefresh();
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Gagal');
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
+  // Group uploads by fileType
+  const grouped = project.surveyUploads.reduce<Record<string, typeof project.surveyUploads>>((acc, u) => {
+    (acc[u.fileType] = acc[u.fileType] ?? []).push(u);
+    return acc;
+  }, {});
+
   return (
     <div>
-      <p style={{ fontWeight: 600, fontSize: 13, marginBottom: 8 }}>Bukti Survei ({project.surveyUploads.length})</p>
-      <div style={{ display: 'flex', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
-        <select value={fileType} onChange={(e) => setFileType(e.target.value)} style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12 }}>
-          <option value="photo">Foto</option>
-          <option value="supporting_file">File Pendukung</option>
-          <option value="survey_evidence">Bukti Survei</option>
-          <option value="operational_notes">Catatan Lapangan</option>
+      {/* Upload form */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
+        <select value={fileType} onChange={(e) => setFileType(e.target.value)}
+          style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12 }}>
+          <option value="photo">📷 Foto</option>
+          <option value="supporting_file">📄 File Pendukung</option>
+          <option value="survey_evidence">🔍 Bukti Survei</option>
+          <option value="operational_notes">📝 Catatan Lapangan</option>
         </select>
-        <input
-          value={caption} onChange={(e) => setCaption(e.target.value)}
-          placeholder="Keterangan (opsional)" style={{ flex: 1, padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12, minWidth: 120 }}
-        />
-        <input ref={fileRef} type="file" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleUpload(f); }} />
-        <button
-          onClick={() => fileRef.current?.click()} disabled={uploading}
-          style={{ padding: '6px 12px', borderRadius: 6, border: '1px solid #D0D7DE', background: '#F6F8FA', cursor: 'pointer', fontSize: 12, display: 'flex', alignItems: 'center', gap: 4 }}
-        >
+        <input value={caption} onChange={(e) => setCaption(e.target.value)}
+          placeholder="Keterangan (opsional)"
+          style={{ flex: 1, padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12, minWidth: 120 }} />
+        <input ref={fileRef} type="file" style={{ display: 'none' }}
+          onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleUpload(f); }} />
+        <button onClick={() => fileRef.current?.click()} disabled={uploading}
+          style={{ padding: '6px 12px', borderRadius: 6, border: '1px solid #D0D7DE', background: '#F6F8FA', cursor: 'pointer', fontSize: 12, display: 'flex', alignItems: 'center', gap: 4 }}>
           <Upload size={13} /> {uploading ? 'Mengunggah…' : 'Upload'}
         </button>
       </div>
-      {project.surveyUploads.length > 0 && (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-          {project.surveyUploads.map((u) => (
-            <a key={u.id} href={fixFileUrl(u.fileUrl)} target="_blank" rel="noopener noreferrer"
-              style={{ padding: '6px 10px', border: '1px solid #D0D7DE', borderRadius: 6, fontSize: 12, textDecoration: 'none', color: '#0969DA', display: 'flex', alignItems: 'center', gap: 4 }}>
-              <FileText size={12} /> {u.fileType}{u.caption ? ` — ${u.caption}` : ''}
-            </a>
+
+      {/* Grouped display */}
+      {project.surveyUploads.length === 0 && (
+        <p style={{ fontSize: 12, color: '#8c959f' }}>Belum ada dokumen survei diunggah.</p>
+      )}
+      {Object.entries(grouped).map(([type, items]) => (
+        <div key={type} style={{ marginBottom: 12 }}>
+          <p style={{ margin: '0 0 6px', fontSize: 12, fontWeight: 700, color: '#24292f' }}>
+            {FILE_TYPE_LABELS[type] ?? type}
+            <span style={{ fontWeight: 400, color: '#57606a', marginLeft: 6 }}>({items.length} file)</span>
+          </p>
+          {items.map((u) => (
+            <div key={u.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', background: '#F6F8FA', borderRadius: 6, marginBottom: 4, border: '1px solid #EAEEF2' }}>
+              <FileText size={13} color="#57606a" />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <a href={fixFileUrl(u.fileUrl)} target="_blank" rel="noopener noreferrer"
+                  style={{ fontSize: 12, color: '#0969DA', textDecoration: 'none', display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {u.caption || u.fileUrl.split('/').pop() || 'File'}
+                </a>
+                <span style={{ fontSize: 10, color: '#8c959f' }}>oleh {u.uploadedBy.name}</span>
+              </div>
+              {canDelete && (
+                <button type="button"
+                  onClick={() => void handleDelete(u.id, u.caption || u.fileType)}
+                  disabled={deletingId === u.id}
+                  style={{ padding: '3px 8px', borderRadius: 4, border: '1px solid #cf222e', background: '#FFEBE9', color: '#cf222e', cursor: 'pointer', fontSize: 11, fontWeight: 600, flexShrink: 0 }}>
+                  {deletingId === u.id ? '…' : '🗑 Hapus'}
+                </button>
+              )}
+            </div>
           ))}
         </div>
-      )}
+      ))}
     </div>
   );
 }
@@ -780,10 +834,13 @@ function DocumentationSection({ project, onRefresh, userRole }: { project: FtttP
   );
 }
 
-// ─── Implementation phase section — Issue #1: multi-photo support ─────────────
+// ─── Implementation phase section ─────────────────────────────────────────────
+// C5-Issue4: MONITORING_DOC is Admin-only; Surveyor+PM can only upload photos+notes
 function ImplementationSection({ project, onRefresh, userRole }: { project: FtttProject; onRefresh: () => void; userRole: string }) {
   const { user } = useAuthStore();
-  const canUpload = userRole === 'SURVEYOR_FTTT' || userRole === 'ADMIN' || userRole === 'GENERAL_MANAGER';
+  const isAdmin   = userRole === 'ADMIN' || userRole === 'GENERAL_MANAGER';
+  const canUpload = userRole === 'SURVEYOR_FTTT' || isAdmin; // can upload photos
+  const canMonitoring = isAdmin;  // C5: only Admin can upload monitoring docs
   const canNote   = canUpload || userRole === 'PM_FTTT'; // PM can add notes too
 
   const [logType, setLogType] = useState<'PHOTO' | 'MONITORING_DOC' | 'NOTE'>('PHOTO');
@@ -865,9 +922,14 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
             <select value={logType} onChange={(e) => setLogType(e.target.value as typeof logType)}
               style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12 }}>
               {canUpload && <option value="PHOTO">📷 Foto Progress</option>}
-              {canUpload && <option value="MONITORING_DOC">📊 Dokumen Monitoring (Excel/PDF)</option>}
+              {canMonitoring && <option value="MONITORING_DOC">📊 Dokumen Monitoring (Excel/PDF)</option>}
               <option value="NOTE">📝 Catatan Progress</option>
             </select>
+            {!canMonitoring && userRole !== 'PM_FTTT' && (
+              <span style={{ fontSize: 11, color: '#8c959f', alignSelf: 'center' }}>
+                📊 Dokumen Monitoring diupload oleh Admin
+              </span>
+            )}
           </div>
           <input value={caption} onChange={(e) => setCaption(e.target.value)} placeholder={logType === 'NOTE' ? 'Judul catatan…' : 'Keterangan / caption…'}
             style={{ width: '100%', padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12, marginBottom: 6, boxSizing: 'border-box' }} />
@@ -903,23 +965,22 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
 }
 
 // ─── Documentation & Acceptance — per-lifecycle config ───────────────────────
+// C5-Issue1: All Generate Form removed — all docs now use Upload File
 const DOCUMENTATION_DOCS: Record<string, {
   key: string; label: string; desc: string;
   generateForm: boolean; required: boolean;
 }[]> = {
   TELKOM_INFRA: [
-    // Upload docs (dari Telkom Infra / pihak eksternal)
     { key: 'KONTRAK',             label: 'Kontrak',                        desc: 'Dokumen kontrak project dari Telkom Infra',                    generateForm: false, required: true  },
     { key: 'PO',                  label: 'PO',                             desc: 'Purchase Order dari Telkom Infra',                              generateForm: false, required: true  },
     { key: 'AMANDEMEN_1',         label: 'Amandemen 1',                    desc: 'Dokumen Amandemen 1 dari Telkom Infra',                         generateForm: false, required: true  },
     { key: 'DOK_PERUBAHAN_WAKTU', label: 'Dok. Perubahan Waktu (NPWP)',    desc: 'Dokumen perubahan waktu pelaksanaan project di NPWP',          generateForm: false, required: true  },
-    // Generate Form docs (dibuat oleh ILT, perlu approval PM/Admin)
-    { key: 'BAUT_REKONSILIASI',   label: 'BA Rekonsiliasi',                desc: 'Berita Acara Rekonsiliasi — dibuat melalui Generate Form',      generateForm: true,  required: true  },
-    { key: 'BAUT',                label: 'BAUT',                           desc: 'Berita Acara Uji Terima — dibuat melalui Generate Form',        generateForm: true,  required: true  },
+    { key: 'BAUT_REKONSILIASI',   label: 'BA Rekonsiliasi',                desc: 'Berita Acara Rekonsiliasi — upload file',                       generateForm: false, required: true  },
+    { key: 'BAUT',                label: 'BAUT',                           desc: 'Berita Acara Uji Terima — upload file',                         generateForm: false, required: true  },
   ],
   PST: [
     { key: 'ATP',                 label: 'ATP',                            desc: 'Acceptance Test Protocol dari PST',                             generateForm: false, required: true  },
-    { key: 'BAUT',                label: 'BAUT',                           desc: 'Berita Acara Uji Terima — dibuat melalui Generate Form',        generateForm: true,  required: true  },
+    { key: 'BAUT',                label: 'BAUT',                           desc: 'Berita Acara Uji Terima — upload file',                         generateForm: false, required: true  },
   ],
   IFORTE: [
     { key: 'ATP',                 label: 'ATP',                            desc: 'Acceptance Test Protocol dari iFORTE',                          generateForm: false, required: true  },
@@ -929,24 +990,26 @@ const DOCUMENTATION_DOCS: Record<string, {
 
 // ─── Reconciliation & Billing Section (Issue #4) ─────────────────────────────
 // Company-specific document definitions for Reconciliation phase
+// C5-Issue1/3/4: All Generate Form removed; Good Receipt removed; Jaminan+Invoice moved to Closing
 const RECON_DOCS: Record<string, {
   key: string; label: string; desc: string;
   uploaderRole: string[]; requiresApproval: boolean;
-  generateForm?: boolean;  // true = ILT-created doc, filled via form; false/undefined = upload from Telkom Infra
 }[]> = {
   TELKOM_INFRA: [
-    // ── Generate Form docs (dibuat oleh Mitra Konstruksi / ILT, perlu approval) ──
-    { key: 'BAPP_MOM',           label: 'BAPP — Risalah Rapat / MOM',         desc: 'Minutes of Meeting rekonsiliasi project bersama Telkom Infra',        uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: true,  generateForm: true },
-    { key: 'BAST_BAPWPP_BOQ',    label: 'BAST & BAPWPP — BOQ Perhitungan',    desc: 'BOQ final perhitungan sesuai kondisi lapangan aktual',               uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: true,  generateForm: true },
-    { key: 'BA_PENUTUPAN',       label: 'BA Penutupan',                        desc: 'Berita Acara Penutupan Project — dibuat oleh ILT',                   uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: true,  generateForm: true },
-    { key: 'JAMINAN_PEMELIHARAAN', label: 'Jaminan Pemeliharaan',              desc: 'Dokumen jaminan masa pemeliharaan — dibuat oleh ILT / Finance',      uploaderRole: ['FINANCE'],       requiresApproval: false, generateForm: true },
-    { key: 'INVOICE_FINAL',      label: 'Invoice Final',                       desc: 'Tagihan akhir project — dibuat Finance sesuai BOQ final',            uploaderRole: ['FINANCE'],       requiresApproval: false, generateForm: true },
-    // ── Upload docs (diterima langsung dari Telkom Infra, auto-approved) ──────────
-    { key: 'BAPP_AMANDEMEN_2',        label: 'BAPP — Amandemen 2',            desc: 'Amandemen 2 dari Telkom Infra — upload file yang diterima',          uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: false },
-    { key: 'BAST_BAPWPP_AMANDEMEN_1', label: 'BAST & BAPWPP — Amandemen 1',  desc: 'Amandemen 1 dari Telkom Infra — upload file yang diterima',          uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: false },
-    { key: 'BAST_BAPWPP_AMANDEMEN_2', label: 'BAST & BAPWPP — Amandemen 2',  desc: 'Amandemen 2 dari Telkom Infra — upload file yang diterima',          uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: false },
-    { key: 'BAST_BAPWPP_PO',          label: 'BAST & BAPWPP — PO',           desc: 'PO dari Telkom Infra — upload file yang diterima',                   uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: false },
-    { key: 'GOOD_RECEIPT',            label: 'Good Receipt',                  desc: 'Completion Certificate GRN & Lampiran SMILE dari Telkom Infra',      uploaderRole: ['ADMIN'],         requiresApproval: false },
+    // ── Docs requiring PM/Admin approval ───────────────────────────────────────
+    { key: 'RISALAH_RAPAT_MOM', label: 'Risalah Rapat / MOM',           desc: 'Minutes of Meeting rekonsiliasi project bersama Telkom Infra',  uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: true  },
+    { key: 'BOQ_PERHITUNGAN',   label: 'BOQ Perhitungan',                desc: 'BOQ final sesuai kondisi lapangan aktual',                       uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: true  },
+    { key: 'BA_PENUTUPAN',      label: 'BA Penutupan',                   desc: 'Berita Acara Penutupan Project',                                 uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: true  },
+    { key: 'BAPP_TI',           label: 'BAPP',                           desc: 'Berita Acara Pemeriksaan Pekerjaan',                             uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: true  },
+    // ── Upload docs from Telkom Infra — auto-approved on upload ────────────────
+    { key: 'BAST_1_TI',         label: 'BAST 1',                         desc: 'Berita Acara Serah Terima 1 dari Telkom Infra',                  uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: false },
+    { key: 'BAPWPP_TI',         label: 'BAPWPP',                         desc: 'Berita Acara Perubahan Waktu Pelaksanaan Project',               uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: false },
+    { key: 'SURAT_WASPANG',     label: 'Surat Waspang',                  desc: 'Surat Waspang dari Telkom Infra',                                uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: false },
+    { key: 'PO_TI',             label: 'PO',                             desc: 'Purchase Order dari Telkom Infra',                               uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: false },
+    { key: 'AMANDEMEN_1_TI',    label: 'Amandemen 1',                    desc: 'Dokumen Amandemen 1 dari Telkom Infra',                          uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: false },
+    { key: 'AMANDEMEN_2_TI',    label: 'Amandemen 2',                    desc: 'Dokumen Amandemen 2 dari Telkom Infra',                          uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: false },
+    // NOTE: Jaminan Pemeliharaan & Invoice Final are in Project Closing phase (not here)
+    // NOTE: Good Receipt removed — not used in Telkom Infra lifecycle
   ],
   PST: [
     { key: 'REKONSILIASI', label: 'Rekonsiliasi',          desc: 'Penyamaan DRM sebelum implementasi vs actual lapangan',      uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: true },
@@ -1082,8 +1145,8 @@ function ReconciliationSection({ project, onRefresh, userRole }: { project: Fttt
                   </>
                 )}
 
-                {/* Upload/Replace button (for non-Generate-Form docs only) */}
-                {canUpload && !doc.generateForm && (!rec || rec.approvalStatus === 'REJECTED') && (
+                {/* Upload / Replace button — C5-Issue1: all docs are now Upload File */}
+                {canUpload && (!rec || rec.approvalStatus === 'REJECTED') && (
                   <>
                     <input
                       ref={(el) => { fileRefs.current[doc.key] = el; }}
@@ -1098,46 +1161,6 @@ function ReconciliationSection({ project, onRefresh, userRole }: { project: Fttt
                 )}
               </div>
             </div>
-
-            {/* ── Generate Form input (for ILT-created docs) ─────────────────── */}
-            {doc.generateForm && canUpload && (!rec || rec.approvalStatus === 'REJECTED') && (
-              <div style={{ marginTop: 10, padding: 10, background: '#F0F8FF', borderRadius: 8, border: '1px dashed #0969DA' }}>
-                <p style={{ margin: '0 0 4px', fontSize: 11, fontWeight: 700, color: '#0969DA' }}>
-                  📝 Generate Form — Isi konten dokumen ini
-                </p>
-                <p style={{ margin: '0 0 6px', fontSize: 10, color: '#57606a' }}>
-                  Dokumen ini dibuat oleh ILT melalui sistem. Isi form di bawah, lalu kirim untuk review PM/Admin.
-                  {rec?.approvalStatus === 'REJECTED' ? ' (dokumen ditolak — perbaiki dan kirim ulang)' : ''}
-                </p>
-                <textarea
-                  value={formContents[doc.key] ?? (rec?.formContent ?? '')}
-                  onChange={(e) => setFormContents((prev) => ({ ...prev, [doc.key]: e.target.value }))}
-                  rows={4}
-                  placeholder={`Masukkan isi / data ${doc.label}…\nContoh: tanggal, pihak yang hadir, poin-poin yang disepakati, nilai BOQ, dll.`}
-                  style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #0969DA', fontSize: 12, resize: 'vertical', boxSizing: 'border-box', marginBottom: 6 }}
-                />
-                <input
-                  value={notes[doc.key] ?? ''}
-                  onChange={(e) => setNotes((prev) => ({ ...prev, [doc.key]: e.target.value }))}
-                  placeholder="Catatan tambahan (opsional)"
-                  style={{ width: '100%', padding: '5px 8px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 11, marginBottom: 8, boxSizing: 'border-box' }}
-                />
-                <button type="button"
-                  onClick={() => void handleGenerateForm(doc.key)}
-                  disabled={isUploading || !(formContents[doc.key]?.trim())}
-                  style={{ padding: '5px 14px', borderRadius: 6, border: 'none', background: (formContents[doc.key]?.trim()) ? '#0969DA' : '#D0D7DE', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 12 }}>
-                  {isUploading ? 'Menyimpan…' : rec ? '🔄 Kirim Ulang' : '✉️ Kirim ke PM untuk Disetujui'}
-                </button>
-              </div>
-            )}
-
-            {/* Show saved form content (approved/pending) */}
-            {doc.generateForm && rec && rec.formContent && rec.approvalStatus !== 'REJECTED' && (
-              <div style={{ marginTop: 8, padding: 8, background: '#F6F8FA', borderRadius: 6, border: '1px solid #EAEEF2' }}>
-                <p style={{ margin: '0 0 4px', fontSize: 10, fontWeight: 700, color: '#57606a' }}>Isi Dokumen (Generate Form):</p>
-                <p style={{ margin: 0, fontSize: 11, color: '#24292f', whiteSpace: 'pre-wrap' }}>{rec.formContent}</p>
-              </div>
-            )}
           </div>
         );
       })}
@@ -1166,46 +1189,54 @@ function ReconciliationSection({ project, onRefresh, userRole }: { project: Fttt
   );
 }
 
-// ─── Project Closing Section ───────────────────────────────────────────────────
-// BAST II (formal handover doc, needs PM approval) + evidence photos + notes
+// ─── Project Closing Section ──────────────────────────────────────────────────
+// C5-Issue1: BAST II now Upload File (Generate Form removed)
+// C5-Issue3: Jaminan Pemeliharaan + Invoice Final added for Telkom Infra
 function ClosingSection({ project, onRefresh, userRole }: { project: FtttProject; onRefresh: () => void; userRole: string }) {
   const { user } = useAuthStore();
   const canUpload    = ['SURVEYOR_FTTT', 'PM_FTTT', 'ADMIN', 'GENERAL_MANAGER'].includes(userRole);
   const canApprove   = ['PM_FTTT', 'ADMIN', 'GENERAL_MANAGER'].includes(userRole);
+  const isFinance    = ['FINANCE', 'ADMIN', 'GENERAL_MANAGER'].includes(userRole);
+  const isTI         = project.ftttCompany === 'TELKOM_INFRA';
 
   const logs: FtttClosingLog[] = project.closingLogs ?? [];
   const bastII    = logs.find((l) => l.logType === 'BAST_II') ?? null;
   const evidences = logs.filter((l) => l.logType === 'EVIDENCE');
   const notes_list= logs.filter((l) => l.logType === 'NOTE');
 
+  // C5-Issue3: TI closing docs stored in reconDocs
+  const jaminanPemeliharaan = project.reconDocs?.find((d) => d.docKey === 'JAMINAN_PEMELIHARAAN') ?? null;
+  const invoiceFinal        = project.reconDocs?.find((d) => d.docKey === 'INVOICE_FINAL') ?? null;
+
   const [logType, setLogType] = useState<'BAST_II' | 'EVIDENCE' | 'NOTE'>('BAST_II');
   const [caption, setCaption] = useState('');
   const [notes,   setNotes]   = useState('');
-  const [bastIIFormContent, setBastIIFormContent] = useState('');
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState('');
+  const [uploadingReconKey, setUploadingReconKey] = useState<string | null>(null);
   const [rejectTarget, setRejectTarget] = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState('');
-  const fileRef = useRef<HTMLInputElement>(null);
+  const fileRef          = useRef<HTMLInputElement>(null);
+  const bastiiFileRef    = useRef<HTMLInputElement>(null);
+  const jaminanFileRef   = useRef<HTMLInputElement>(null);
+  const invoiceFileRef   = useRef<HTMLInputElement>(null);
 
   const STATUS_COLORS: Record<string, string> = { PENDING_PM: '#9a6700', APPROVED: '#1a7f37', REJECTED: '#cf222e' };
   const STATUS_LABELS: Record<string, string> = { PENDING_PM: 'Menunggu PM', APPROVED: 'Disetujui', REJECTED: 'Ditolak' };
 
-  const handleBastIIForm = async () => {
-    if (!bastIIFormContent.trim()) { toast.error('Isi dokumen BAST II wajib diisi'); return; }
-    setUploading(true);
+  // Upload Jaminan Pemeliharaan or Invoice Final (reconDocs)
+  const handleReconUpload = async (docKey: string, file: File) => {
+    setUploadingReconKey(docKey);
+    const fd = new FormData();
+    fd.append('docKey', docKey);
+    fd.append('file', file);
     try {
-      const fd = new FormData();
-      fd.append('logType', 'BAST_II');
-      fd.append('formContent', bastIIFormContent.trim());
-      fd.append('caption', 'BAST II');
-      const res = await apiFetch(`/fttt-projects/${project.id}/closing-logs`, { method: 'POST', body: fd }, user?.id);
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
-      toast.success('BAST II berhasil disimpan — menunggu persetujuan PM');
-      setBastIIFormContent('');
+      const res = await apiFetch(`/fttt-projects/${project.id}/recon-docs`, { method: 'POST', body: fd }, user?.id);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal upload');
+      toast.success('Dokumen berhasil diunggah');
       onRefresh();
     } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
-    finally { setUploading(false); }
+    finally { setUploadingReconKey(null); }
   };
 
   const handleUpload = async (files?: FileList | null) => {
@@ -1251,10 +1282,75 @@ function ClosingSection({ project, onRefresh, userRole }: { project: FtttProject
     <div>
       <p style={{ fontWeight: 600, fontSize: 14, marginBottom: 4 }}>Aktivitas Project Closing</p>
       <p style={{ fontSize: 12, color: '#57606a', marginBottom: 16 }}>
-        Serah terima project 100% kepada Telkom Infra setelah masa pemeliharaan selesai.
+        Serah terima project kepada client setelah masa pemeliharaan selesai.
       </p>
 
-      {/* ── BAST II ── */}
+      {/* ── C5-Issue3: Jaminan Pemeliharaan + Invoice Final (Telkom Infra only, Finance) ── */}
+      {isTI && (
+        <>
+          {/* Jaminan Pemeliharaan */}
+          <div style={{ background: '#F6F8FA', borderRadius: 10, padding: 12, marginBottom: 10, border: '1px solid #EAEEF2' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <span style={{ fontSize: 13, fontWeight: 700 }}>🔒 Jaminan Pemeliharaan</span>
+                  <span style={{ fontSize: 11, color: '#57606a', background: '#EDF2F4', padding: '2px 6px', borderRadius: 4 }}>Finance</span>
+                  {jaminanPemeliharaan
+                    ? <span style={{ fontSize: 10, fontWeight: 700, color: '#1a7f37' }}>✓ Diunggah</span>
+                    : <span style={{ fontSize: 10, color: '#cf222e', fontWeight: 600 }}>⚠️ WAJIB — belum diunggah</span>}
+                </div>
+                <p style={{ margin: '3px 0 0', fontSize: 11, color: '#57606a' }}>Dokumen jaminan masa pemeliharaan project</p>
+                {jaminanPemeliharaan?.uploadedBy && <p style={{ margin: '2px 0 0', fontSize: 10, color: '#8c959f' }}>oleh {jaminanPemeliharaan.uploadedBy.name}</p>}
+              </div>
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
+                {jaminanPemeliharaan?.fileUrl && <a href={fixFileUrl(jaminanPemeliharaan.fileUrl)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: '#0969DA' }}>Lihat</a>}
+                {isFinance && (
+                  <>
+                    <input ref={jaminanFileRef} type="file" accept=".pdf,.jpg,.jpeg,.png" style={{ display: 'none' }}
+                      onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleReconUpload('JAMINAN_PEMELIHARAAN', f); }} />
+                    <button type="button" onClick={() => jaminanFileRef.current?.click()} disabled={uploadingReconKey === 'JAMINAN_PEMELIHARAAN'}
+                      style={{ padding: '4px 10px', borderRadius: 6, border: 'none', background: jaminanPemeliharaan ? '#FFA500' : '#0969DA', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 11 }}>
+                      {uploadingReconKey === 'JAMINAN_PEMELIHARAAN' ? '…' : jaminanPemeliharaan ? '🔄 Ganti' : '+ Upload'}
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Invoice Final */}
+          <div style={{ background: '#F6F8FA', borderRadius: 10, padding: 12, marginBottom: 10, border: '1px solid #EAEEF2' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <span style={{ fontSize: 13, fontWeight: 700 }}>🧾 Invoice Final</span>
+                  <span style={{ fontSize: 11, color: '#57606a', background: '#EDF2F4', padding: '2px 6px', borderRadius: 4 }}>Finance</span>
+                  {invoiceFinal
+                    ? <span style={{ fontSize: 10, fontWeight: 700, color: '#1a7f37' }}>✓ Diunggah</span>
+                    : <span style={{ fontSize: 10, color: '#cf222e', fontWeight: 600 }}>⚠️ WAJIB — belum diunggah</span>}
+                </div>
+                <p style={{ margin: '3px 0 0', fontSize: 11, color: '#57606a' }}>Tagihan akhir project kepada Telkom Infra</p>
+                {invoiceFinal?.uploadedBy && <p style={{ margin: '2px 0 0', fontSize: 10, color: '#8c959f' }}>oleh {invoiceFinal.uploadedBy.name}</p>}
+              </div>
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
+                {invoiceFinal?.fileUrl && <a href={fixFileUrl(invoiceFinal.fileUrl)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: '#0969DA' }}>Lihat</a>}
+                {isFinance && (
+                  <>
+                    <input ref={invoiceFileRef} type="file" accept=".pdf,.xlsx,.xls,.jpg,.jpeg,.png" style={{ display: 'none' }}
+                      onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleReconUpload('INVOICE_FINAL', f); }} />
+                    <button type="button" onClick={() => invoiceFileRef.current?.click()} disabled={uploadingReconKey === 'INVOICE_FINAL'}
+                      style={{ padding: '4px 10px', borderRadius: 6, border: 'none', background: invoiceFinal ? '#FFA500' : '#0969DA', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 11 }}>
+                      {uploadingReconKey === 'INVOICE_FINAL' ? '…' : invoiceFinal ? '🔄 Ganti' : '+ Upload'}
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* ── BAST II — Upload File (C5-Issue1: Generate Form removed) ── */}
       <div style={{ background: '#F6F8FA', borderRadius: 10, padding: 12, marginBottom: 10, border: '1px solid #EAEEF2' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div style={{ flex: 1 }}>
@@ -1268,13 +1364,8 @@ function ClosingSection({ project, onRefresh, userRole }: { project: FtttProject
               )}
               {!bastII && <span style={{ fontSize: 10, color: '#8c959f' }}>Belum diunggah</span>}
             </div>
-            <p style={{ margin: '3px 0 0', fontSize: 11, color: '#57606a' }}>Dokumen Berita Acara Serah Terima II — perlu disetujui PM FTTT</p>
+            <p style={{ margin: '3px 0 0', fontSize: 11, color: '#57606a' }}>Berita Acara Serah Terima II — perlu disetujui PM FTTT</p>
             {bastII?.notes && <p style={{ margin: '2px 0 0', fontSize: 11, color: '#57606a' }}>📝 {bastII.notes}</p>}
-            {bastII?.formContent && (
-              <p style={{ margin: '3px 0 0', fontSize: 11, color: '#57606a', background: '#F0F8FF', padding: '4px 6px', borderRadius: 4, whiteSpace: 'pre-wrap' }}>
-                {bastII.formContent.length > 120 ? bastII.formContent.slice(0, 120) + '…' : bastII.formContent}
-              </p>
-            )}
             {bastII?.approvalStatus === 'REJECTED' && bastII.rejectionNotes && (
               <p style={{ margin: '3px 0 0', fontSize: 11, color: '#cf222e', fontStyle: 'italic' }}>Ditolak: {bastII.rejectionNotes}</p>
             )}
@@ -1282,7 +1373,6 @@ function ClosingSection({ project, onRefresh, userRole }: { project: FtttProject
           </div>
           <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0, marginLeft: 8 }}>
             {bastII?.fileUrl && <a href={fixFileUrl(bastII.fileUrl)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: '#0969DA' }}>Lihat</a>}
-            {/* PM approves/rejects BAST II */}
             {canApprove && bastII?.approvalStatus === 'PENDING_PM' && (
               <>
                 <button type="button" onClick={() => void handleApprove(bastII.id, true)}
@@ -1291,43 +1381,19 @@ function ClosingSection({ project, onRefresh, userRole }: { project: FtttProject
                   style={{ padding: '3px 8px', borderRadius: 4, border: 'none', background: '#FFEBE9', color: '#cf222e', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>✗ Tolak</button>
               </>
             )}
-            {/* Surveyor/PM fills Generate Form for BAST II */}
             {canUpload && (!bastII || bastII.approvalStatus === 'REJECTED') && (
-              <button type="button"
-                onClick={() => { setLogType('BAST_II'); document.getElementById('bastii-form-panel')?.scrollIntoView({ behavior: 'smooth' }); }}
-                style={{ padding: '4px 10px', borderRadius: 6, border: '1px dashed #0969DA', background: bastII ? '#FFF8F0' : '#F0F8FF', color: bastII ? '#7d5a00' : '#0969DA', fontWeight: 600, cursor: 'pointer', fontSize: 11 }}>
-                {bastII ? '🔄 Isi Ulang BAST II' : '📝 Generate Form BAST II'}
-              </button>
+              <>
+                <input ref={bastiiFileRef} type="file" accept=".pdf,.xlsx,.xls,.jpg,.jpeg,.png" style={{ display: 'none' }}
+                  onChange={(e) => { setLogType('BAST_II'); void handleUpload(e.target.files); }} />
+                <button type="button" onClick={() => { setLogType('BAST_II'); bastiiFileRef.current?.click(); }} disabled={uploading}
+                  style={{ padding: '4px 10px', borderRadius: 6, border: 'none', background: bastII ? '#FFA500' : '#0969DA', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 11 }}>
+                  {uploading && logType === 'BAST_II' ? '…' : bastII ? '🔄 Ganti BAST II' : '+ Upload BAST II'}
+                </button>
+              </>
             )}
           </div>
         </div>
       </div>
-
-      {/* ── BAST II Generate Form panel ── */}
-      {canUpload && (!bastII || bastII.approvalStatus === 'REJECTED') && (
-        <div id="bastii-form-panel" style={{ background: '#F0F8FF', border: '1px dashed #0969DA', borderRadius: 10, padding: 14, marginBottom: 10 }}>
-          <p style={{ margin: '0 0 4px', fontSize: 13, fontWeight: 700, color: '#0969DA' }}>
-            📝 Generate Form — BAST II
-            {bastII?.approvalStatus === 'REJECTED' && <span style={{ fontSize: 11, color: '#cf222e', marginLeft: 8 }}>(ditolak — perbaiki dan kirim ulang)</span>}
-          </p>
-          <p style={{ margin: '0 0 8px', fontSize: 11, color: '#57606a' }}>
-            Dokumen Berita Acara Serah Terima II dibuat melalui sistem. Isi data di bawah, lalu kirim ke PM untuk disetujui.
-          </p>
-          <textarea
-            value={bastIIFormContent || (bastII?.formContent ?? '')}
-            onChange={(e) => setBastIIFormContent(e.target.value)}
-            rows={6}
-            placeholder="Isi dokumen BAST II…&#10;(tanggal serah terima, pihak yang terlibat, kondisi akhir project, item yang diserahterimakan, catatan pemeliharaan, dll.)"
-            style={{ width: '100%', padding: 10, borderRadius: 8, border: '1px solid #0969DA', fontSize: 12, resize: 'vertical', boxSizing: 'border-box', marginBottom: 8 }}
-          />
-          <button type="button"
-            onClick={() => void handleBastIIForm()}
-            disabled={uploading || !(bastIIFormContent.trim() || (bastII?.formContent && !bastIIFormContent))}
-            style={{ padding: '7px 16px', borderRadius: 8, border: 'none', background: (bastIIFormContent.trim()) ? '#0969DA' : '#D0D7DE', color: '#fff', fontWeight: 700, cursor: bastIIFormContent.trim() ? 'pointer' : 'not-allowed', fontSize: 13 }}>
-            {uploading ? 'Menyimpan…' : bastII ? '🔄 Kirim Ulang BAST II' : '✉️ Kirim ke PM untuk Disetujui'}
-          </button>
-        </div>
-      )}
 
       {/* ── Evidence Photos ── */}
       <div style={{ background: '#F6F8FA', borderRadius: 10, padding: 12, marginBottom: 10, border: '1px solid #EAEEF2' }}>
@@ -1518,7 +1584,11 @@ export default function FtttProjectDetailPage() {
               </a>
             </p>
           </div>
-          {!isCompletedOrCancelled && readiness && (
+          {/* C5-Issue4: For IMPLEMENTATION phase, only ADMIN can advance */}
+          {!isCompletedOrCancelled && readiness && !(
+            project.currentPhase === 'IMPLEMENTATION' &&
+            userRole !== 'ADMIN' && userRole !== 'GENERAL_MANAGER'
+          ) && (
             <button
               onClick={handleAdvance}
               disabled={advancing || !readiness.ready}
@@ -1532,6 +1602,13 @@ export default function FtttProjectDetailPage() {
             >
               {advancing ? 'Memproses…' : `Selesaikan Fase → ${FTTT_PHASE_LABELS[project.currentPhase]}`}
             </button>
+          )}
+          {/* Info for non-Admin during Implementation */}
+          {!isCompletedOrCancelled && project.currentPhase === 'IMPLEMENTATION' &&
+            userRole !== 'ADMIN' && userRole !== 'GENERAL_MANAGER' && (
+            <div style={{ padding: '8px 14px', borderRadius: 8, background: '#F6F8FA', border: '1px solid #D0D7DE', fontSize: 12, color: '#57606a' }}>
+              🔒 Penyelesaian fase Implementation hanya dapat dilakukan oleh Admin
+            </div>
           )}
         </div>
 

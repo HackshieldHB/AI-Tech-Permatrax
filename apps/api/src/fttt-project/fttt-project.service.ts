@@ -17,12 +17,10 @@ import {
 // ─── Reconciliation doc config (mirrors frontend RECON_DOCS) ─────────────────
 // docKeys that do NOT need PM/Admin approval — set to APPROVED on upload
 const RECON_NO_APPROVAL = new Set([
-  // Telkom Infra — Generate Form docs (auto-approved; no separate PM sign-off needed)
+  // Telkom Infra Recon — docs from Telkom Infra, auto-approved on upload
+  'BAST_1_TI', 'BAPWPP_TI', 'SURAT_WASPANG', 'PO_TI', 'AMANDEMEN_1_TI', 'AMANDEMEN_2_TI',
+  // Telkom Infra Closing — Finance uploads, auto-approved
   'JAMINAN_PEMELIHARAAN', 'INVOICE_FINAL',
-  // Telkom Infra — Upload docs sourced directly from Telkom Infra (already official)
-  'GOOD_RECEIPT',
-  'BAPP_AMANDEMEN_2',
-  'BAST_BAPWPP_AMANDEMEN_1', 'BAST_BAPWPP_AMANDEMEN_2', 'BAST_BAPWPP_PO',
   // PST
   'BAST_1', 'GOOD_RECEIPT_PST', 'INVOICE_PST',
   // iFORTE
@@ -33,18 +31,19 @@ const RECON_NO_APPROVAL = new Set([
 // Tuple: [docKey, needsApproval (true = must be APPROVED, false = just must exist)]
 const RECON_REQUIRED: Record<string, Array<[string, boolean, string]>> = {
   TELKOM_INFRA: [
-    // Generate Form docs (ILT-created) — need PM/Admin approval
-    ['BAPP_MOM',              true,  'BAPP - Risalah Rapat/MOM (perlu disetujui)'],
-    ['BAST_BAPWPP_BOQ',       true,  'BAST & BAPWPP - BOQ Perhitungan (perlu disetujui)'],
-    ['BA_PENUTUPAN',          true,  'BA Penutupan (perlu disetujui)'],
-    // Upload docs from Telkom Infra — auto-approved on upload
-    ['BAPP_AMANDEMEN_2',         false, 'BAPP - Amandemen 2'],
-    ['BAST_BAPWPP_AMANDEMEN_1',  false, 'BAST & BAPWPP - Amandemen 1'],
-    ['BAST_BAPWPP_AMANDEMEN_2',  false, 'BAST & BAPWPP - Amandemen 2'],
-    ['BAST_BAPWPP_PO',           false, 'BAST & BAPWPP - PO'],
-    ['GOOD_RECEIPT',             false, 'Good Receipt'],
-    ['JAMINAN_PEMELIHARAAN',     false, 'Jaminan Pemeliharaan'],
-    ['INVOICE_FINAL',            false, 'Invoice Final'],
+    // Docs requiring PM/Admin approval
+    ['RISALAH_RAPAT_MOM',  true,  'Risalah Rapat/MOM (perlu disetujui)'],
+    ['BOQ_PERHITUNGAN',    true,  'BOQ Perhitungan (perlu disetujui)'],
+    ['BA_PENUTUPAN',       true,  'BA Penutupan (perlu disetujui)'],
+    ['BAPP_TI',            true,  'BAPP (perlu disetujui)'],
+    // Docs from Telkom Infra — auto-approved on upload (just must exist)
+    ['BAST_1_TI',          false, 'BAST 1'],
+    ['BAPWPP_TI',          false, 'BAPWPP'],
+    ['SURAT_WASPANG',      false, 'Surat Waspang'],
+    ['PO_TI',              false, 'PO'],
+    ['AMANDEMEN_1_TI',     false, 'Amandemen 1'],
+    ['AMANDEMEN_2_TI',     false, 'Amandemen 2'],
+    // NOTE: Jaminan Pemeliharaan & Invoice Final moved to CLOSING phase
   ],
   PST: [
     ['REKONSILIASI',      true,  'Rekonsiliasi (perlu disetujui)'],
@@ -288,7 +287,7 @@ export class FtttProjectService {
       }
     }
 
-    // CLOSING phase readiness — BAST II must be approved + at least 1 evidence or note
+    // CLOSING phase readiness — BAST II must be approved + evidence/note
     if (phase === FtttPhase.CLOSING) {
       const closingLogs = (project as typeof project & {
         closingLogs: { logType: string; approvalStatus: string | null }[];
@@ -305,6 +304,20 @@ export class FtttProjectService {
       const hasNote     = closingLogs.some((l) => l.logType === 'NOTE');
       if (!hasEvidence && !hasNote) {
         reasons.push('Minimal satu evidence foto atau catatan serah terima wajib diunggah');
+      }
+
+      // C5-Issue3: Telkom Infra closing also requires Jaminan Pemeliharaan + Invoice Final
+      if (company === FtttCompany.TELKOM_INFRA) {
+        const reconDocMap = new Map(
+          (project as typeof project & { reconDocs: { docKey: string }[] })
+            .reconDocs.map((d) => [d.docKey, true]),
+        );
+        if (!reconDocMap.has('JAMINAN_PEMELIHARAAN')) {
+          reasons.push('Jaminan Pemeliharaan belum diunggah pada fase Closing');
+        }
+        if (!reconDocMap.has('INVOICE_FINAL')) {
+          reasons.push('Invoice Final belum diunggah pada fase Closing');
+        }
       }
     }
 
@@ -330,7 +343,7 @@ export class FtttProjectService {
   }
 
   // ─── Advance to next phase ────────────────────────────────────────────────
-  async advancePhase(id: string, dto: AdvancePhaseDtoType, userId: string) {
+  async advancePhase(id: string, dto: AdvancePhaseDtoType, userId: string, userRole?: Role) {
     const { ready, blockedReasons } = await this.checkPhaseReadiness(id);
     if (!ready) {
       throw new BadRequestException(
@@ -342,6 +355,15 @@ export class FtttProjectService {
       where: { id },
       include: { phaseProgresses: true },
     });
+
+    // C5-Issue4: Only Admin can complete the Implementation phase
+    if (
+      project.currentPhase === FtttPhase.IMPLEMENTATION &&
+      userRole !== Role.ADMIN &&
+      userRole !== Role.GENERAL_MANAGER
+    ) {
+      throw new ForbiddenException('Hanya Admin yang dapat menyelesaikan fase Implementation');
+    }
 
     const lifecycle = FTTT_PHASES_BY_COMPANY[project.ftttCompany as FtttCompany];
     const currentIdx = lifecycle.indexOf(project.currentPhase as FtttPhase);
@@ -900,8 +922,9 @@ export class FtttProjectService {
     if (dto.logType === FtttClosingLogType.EVIDENCE && !file) {
       throw new BadRequestException('File foto wajib untuk Evidence');
     }
-    if (dto.logType === FtttClosingLogType.BAST_II && !file && !dto.formContent?.trim()) {
-      throw new BadRequestException('BAST II harus diisi melalui Generate Form atau upload file');
+    // C5-Issue1: BAST II is now Upload File only (Generate Form removed)
+    if (dto.logType === FtttClosingLogType.BAST_II && !file) {
+      throw new BadRequestException('File BAST II wajib diunggah');
     }
 
     // Only one BAST_II allowed per project
@@ -940,6 +963,22 @@ export class FtttProjectService {
       },
       include: { uploadedBy: { select: { id: true, name: true } } },
     });
+  }
+
+  // ─── C5-Issue5: Delete survey upload ─────────────────────────────────────
+  async deleteSurveyUpload(projectId: string, uploadId: string, userId: string, userRole: Role) {
+    const upload = await this.prisma.ftttSurveyUpload.findUniqueOrThrow({ where: { id: uploadId } });
+    if (upload.projectId !== projectId) {
+      throw new BadRequestException('Upload tidak ditemukan di project ini');
+    }
+    // Surveyor can delete their own uploads; Admin/GM can delete any
+    const canDelete =
+      [Role.ADMIN, Role.GENERAL_MANAGER].includes(userRole) ||
+      (userRole === Role.SURVEYOR_FTTT && upload.uploadedById === userId);
+    if (!canDelete) {
+      throw new ForbiddenException('Anda tidak dapat menghapus upload ini');
+    }
+    return this.prisma.ftttSurveyUpload.delete({ where: { id: uploadId } });
   }
 
   async approveClosingLog(logId: string, approved: boolean, rejectionNotes: string | undefined, userId: string, userRole: Role) {
