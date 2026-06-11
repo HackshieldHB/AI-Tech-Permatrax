@@ -1,4 +1,4 @@
-import { apiFetch, API_URL, getExternalApiHost } from './auth';
+import { apiFetch, API_URL, getExternalApiHost, NEXT_ROUTE_BASE } from './auth';
 import { useAuthStore } from '../store/authStore';
 import { notify } from './toast';
 import type { PaginatedResponse } from '../types/api.types';
@@ -49,7 +49,8 @@ async function parseResponseBody<T>(res: Response): Promise<T | null> {
 async function handle<T>(res: Response, opts?: { silentForbidden?: boolean }): Promise<T> {
   if (res.status === 401) {
     await useAuthStore.getState().logout();
-    if (typeof window !== 'undefined') window.location.href = '/login';
+    // C7.3: Use basePath-aware redirect — NEXT_ROUTE_BASE = '/Permatrax' on dev VPS, '' locally
+    if (typeof window !== 'undefined') window.location.href = `${NEXT_ROUTE_BASE}/login`;
     throw new Error('Unauthorized');
   }
   if (res.status === 403) {

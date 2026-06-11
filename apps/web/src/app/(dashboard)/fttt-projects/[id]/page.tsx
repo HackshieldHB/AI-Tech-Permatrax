@@ -1687,9 +1687,15 @@ function ClosingSection({ project, onRefresh, userRole }: { project: FtttProject
           ✅ Masa pemeliharaan dikonfirmasi — seluruh aktivitas penutupan project dapat dilakukan.
         </div>
       )}
-      {!canUpload && (
+      {!canUpload && !isFinance && (
         <div style={{ background: '#F6F8FA', border: '1px solid #D0D7DE', borderRadius: 8, padding: 10, marginBottom: 14, fontSize: 12, color: '#57606a' }}>
           🔒 Pengelolaan dokumen Project Closing hanya dapat dilakukan oleh Admin Project.
+        </div>
+      )}
+      {/* C7.3: Finance info banner — Finance can upload Jaminan/Invoice without maintenance confirmation */}
+      {isFinance && !canUpload && (
+        <div style={{ background: '#F0F8FF', border: '1px solid #0969DA', borderRadius: 8, padding: 10, marginBottom: 14, fontSize: 12, color: '#0969DA' }}>
+          ℹ️ Finance dapat meng-upload dokumen Jaminan Pemeliharaan dan Invoice Final kapan saja pada fase Project Closing.
         </div>
       )}
 
@@ -1712,7 +1718,8 @@ function ClosingSection({ project, onRefresh, userRole }: { project: FtttProject
               </div>
               <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
                 {jaminanPemeliharaan?.fileUrl && <a href={fixFileUrl(jaminanPemeliharaan.fileUrl)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: '#0969DA' }}>Lihat</a>}
-                {isFinance && maintenanceConfirmed && (
+                {/* C7.3: Finance uploads Jaminan independently — no maintenance confirmation needed */}
+                {isFinance && (
                   <>
                     <input ref={jaminanFileRef} type="file" accept=".pdf,.jpg,.jpeg,.png" style={{ display: 'none' }}
                       onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleReconUpload('JAMINAN_PEMELIHARAAN', f); }} />
@@ -1742,7 +1749,8 @@ function ClosingSection({ project, onRefresh, userRole }: { project: FtttProject
               </div>
               <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
                 {invoiceFinal?.fileUrl && <a href={fixFileUrl(invoiceFinal.fileUrl)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: '#0969DA' }}>Lihat</a>}
-                {isFinance && maintenanceConfirmed && (
+                {/* C7.3: Finance uploads Invoice independently — no maintenance confirmation needed */}
+                {isFinance && (
                   <>
                     <input ref={invoiceFileRef} type="file" accept=".pdf,.xlsx,.xls,.jpg,.jpeg,.png" style={{ display: 'none' }}
                       onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleReconUpload('INVOICE_FINAL', f); }} />
