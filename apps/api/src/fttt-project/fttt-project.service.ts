@@ -1070,11 +1070,18 @@ export class FtttProjectService {
     userId: string,
     userRole: Role,
   ) {
-    // C6-TI2: PM FTTT owns TI Reconciliation; PST Rekonsiliasi is Surveyor-owned
-    // C7.1: Add SURVEYOR_FTTT so PST Rekonsiliasi doc can be uploaded by Surveyor
-    const allowed: Role[] = [Role.PM_FTTT, Role.ADMIN, Role.GENERAL_MANAGER, Role.FINANCE, Role.SURVEYOR_FTTT];
-    if (!allowed.includes(userRole)) {
-      throw new ForbiddenException('Tidak memiliki akses untuk mengunggah dokumen rekonsiliasi');
+    // C7.3b: Jaminan Pemeliharaan & Invoice Final are Finance-only (Admin excluded)
+    const FINANCE_ONLY_DOCS = new Set(['JAMINAN_PEMELIHARAAN', 'INVOICE_FINAL']);
+    if (FINANCE_ONLY_DOCS.has(dto.docKey)) {
+      if (userRole !== Role.FINANCE && userRole !== Role.GENERAL_MANAGER) {
+        throw new ForbiddenException('Hanya Finance yang dapat mengunggah dokumen Jaminan Pemeliharaan dan Invoice Final');
+      }
+    } else {
+      // Other recon docs: PM FTTT, Admin, GM, Finance, Surveyor (per C7.1)
+      const allowed: Role[] = [Role.PM_FTTT, Role.ADMIN, Role.GENERAL_MANAGER, Role.FINANCE, Role.SURVEYOR_FTTT];
+      if (!allowed.includes(userRole)) {
+        throw new ForbiddenException('Tidak memiliki akses untuk mengunggah dokumen rekonsiliasi');
+      }
     }
 
     const existing = await this.prisma.ftttReconDoc.findUnique({

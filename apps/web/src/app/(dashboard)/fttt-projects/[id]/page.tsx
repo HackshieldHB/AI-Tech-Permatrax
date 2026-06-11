@@ -1571,7 +1571,8 @@ function ClosingSection({ project, onRefresh, userRole }: { project: FtttProject
   // C6-TI3: Only Admin can manage closing activities
   const canUpload    = ['ADMIN', 'GENERAL_MANAGER'].includes(userRole);
   const canApprove   = ['PM_FTTT', 'ADMIN', 'GENERAL_MANAGER'].includes(userRole);
-  const isFinance    = ['FINANCE', 'ADMIN', 'GENERAL_MANAGER'].includes(userRole);
+  // C7.3b: Finance ONLY owns Jaminan & Invoice upload — Admin is excluded
+  const isFinance    = userRole === 'FINANCE';
   const isTI         = project.ftttCompany === 'TELKOM_INFRA';
 
   // C6-TI3: Maintenance period gate — Admin must confirm before uploads are enabled
