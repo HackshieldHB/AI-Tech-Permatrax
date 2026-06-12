@@ -634,6 +634,38 @@ export class FtttProjectService {
         link:    `/fttt-projects/${id}`,
         entityId: id,
       });
+      // C7.4: Notify Finance when TI project enters Closing — Finance uploads Jaminan + Invoice Final
+      if (project.ftttCompany === FtttCompany.TELKOM_INFRA) {
+        await this.notifications.notifyUsersByRole(Role.FINANCE, {
+          title:   'FTTT — Upload Jaminan Pemeliharaan & Invoice Final Diperlukan',
+          message: `Project ${pName} (Telkom Infra) telah memasuki fase Project Closing. Silakan upload dokumen Jaminan Pemeliharaan dan Invoice Final.`,
+          type:    'FTTT_FINANCE_REQUIRED',
+          link:    `/fttt-projects/${id}`,
+          entityId: id,
+        });
+      }
+    }
+
+    // C7.4: Notify Finance when PST/iFORTE project enters Reconciliation — Finance uploads BAST_1 + Invoice
+    if (updated.currentPhase === FtttPhase.RECONCILIATION) {
+      if (project.ftttCompany === FtttCompany.PST) {
+        await this.notifications.notifyUsersByRole(Role.FINANCE, {
+          title:   'FTTT — Upload BAST 1 & Invoice Diperlukan',
+          message: `Project ${pName} (PST) telah memasuki fase Reconciliation & Billing. Silakan upload dokumen BAST 1 dan Invoice.`,
+          type:    'FTTT_FINANCE_REQUIRED',
+          link:    `/fttt-projects/${id}`,
+          entityId: id,
+        });
+      }
+      if (project.ftttCompany === FtttCompany.IFORTE) {
+        await this.notifications.notifyUsersByRole(Role.FINANCE, {
+          title:   'FTTT — Upload Invoice Diperlukan',
+          message: `Project ${pName} (iFORTE) telah memasuki fase Reconciliation & Billing. Silakan upload dokumen Invoice.`,
+          type:    'FTTT_FINANCE_REQUIRED',
+          link:    `/fttt-projects/${id}`,
+          entityId: id,
+        });
+      }
     }
 
     return updated;
