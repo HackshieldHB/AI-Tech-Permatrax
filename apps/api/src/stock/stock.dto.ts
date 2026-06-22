@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { PaginationQuerySchema } from '../common/dto/pagination.dto';
 
-export const MITRA_OPTIONS = ['FiberStar', 'iForte', 'Lintasarta', 'Icon+', 'Lainnya'] as const;
+export const MITRA_OPTIONS = ['FiberStar', 'iForte', 'Lintasarta', 'Icon+', 'Integra Lintas Teknologi (ILT)', 'Lainnya'] as const;
 export type MitraOption = (typeof MITRA_OPTIONS)[number];
 
 // NEW: DTO for creating a stock item
