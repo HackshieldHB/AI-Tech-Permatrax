@@ -12,7 +12,7 @@ import { toast } from 'sonner';
 import { usePagination } from '../../../hooks/usePagination';
 import { Pagination } from '../../../components/Pagination';
 
-const MITRA_OPTIONS = ['FiberStar', 'iForte', 'Lintasarta', 'Icon+', 'Lainnya'] as const;
+const MITRA_OPTIONS = ['FiberStar', 'iForte', 'Lintasarta', 'Icon+', 'Integra Lintas Teknologi (ILT)', 'Lainnya'] as const;
 
 const CATEGORY_FILTER = ['All', 'KABEL', 'PERANGKAT', 'AKSESORI', 'LAINNYA'] as const;
 
@@ -61,6 +61,7 @@ function StockPageInner() {
   const [addForm, setAddForm] = useState({
     name: '', code: '', category: '', unit: 'Pcs', mitra: '', currentQty: 0, minStockQty: 0, description: '',
   });
+  const [mitraOther, setMitraOther] = useState(''); // nama mitra manual saat memilih "Lainnya"
   const [adjust, setAdjust] = useState<{ id: string; name: string; current: number } | null>(null);
   const [adjQty, setAdjQty] = useState(0);
   const [adjReason, setAdjReason] = useState('');
@@ -136,11 +137,18 @@ function StockPageInner() {
       toast.error('Pilih mitra terlebih dahulu');
       return;
     }
+    if (addForm.mitra === 'Lainnya' && !mitraOther.trim()) {
+      toast.error('Isi nama mitra terlebih dahulu');
+      return;
+    }
+    // Saat memilih "Lainnya", kirim nama mitra yang diisi manual
+    const mitra = addForm.mitra === 'Lainnya' ? mitraOther.trim() : addForm.mitra;
     try {
       const res = await apiFetch('/stock', {
         method: 'POST',
         body: JSON.stringify({
           ...addForm,
+          mitra,
           code: addForm.code.toUpperCase(),
           currentQty: Number(addForm.currentQty),
           minStockQty: Number(addForm.minStockQty),
@@ -153,6 +161,7 @@ function StockPageInner() {
       toast.success('Barang ditambahkan');
       setShowAdd(false);
       setAddForm({ name: '', code: '', category: '', unit: 'Pcs', mitra: '', currentQty: 0, minStockQty: 0, description: '' });
+      setMitraOther('');
       fetchList();
       fetchSummary();
     } catch (e: any) {
@@ -496,6 +505,24 @@ function StockPageInner() {
                   <p className="text-[11px] text-red-600 mt-1">Pilih mitra terlebih dahulu</p>
                 ) : null}
               </div>
+              {addForm.mitra === 'Lainnya' ? (
+                <div>
+                  <label className="text-xs font-bold text-slate-500 uppercase">Nama Mitra *</label>
+                  <input
+                    required
+                    type="text"
+                    value={mitraOther}
+                    onChange={(e) => setMitraOther(e.target.value)}
+                    placeholder="Masukkan nama mitra"
+                    className={`mt-1 w-full rounded-xl border px-3 py-2 text-sm outline-none ${
+                      !mitraOther.trim() ? 'border-red-300/80' : 'border-slate-200'
+                    }`}
+                  />
+                  {!mitraOther.trim() ? (
+                    <p className="text-[11px] text-red-600 mt-1">Isi nama mitra terlebih dahulu</p>
+                  ) : null}
+                </div>
+              ) : null}
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="text-xs font-bold text-slate-500 uppercase">Stok awal</label>
