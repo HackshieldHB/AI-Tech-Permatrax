@@ -37,6 +37,40 @@ const config: Config = {
           hover: '#E05555',
           tint: '#FDE8E8',
         },
+        // "Connected Infrastructure" login brand palette
+        brand: {
+          indigo: '#211A4D',
+          navy: '#17123A',
+          purple: '#6D4AFF',
+          violet: '#8A63FF',
+          'violet-soft': '#A78BFA',
+          coral: '#F06A6A',
+          'coral-bright': '#FF6B6B',
+          peach: '#FFD4CC',
+          pink: '#F8B4C8',
+          focus: '#7C5CFC',
+        },
+      },
+      keyframes: {
+        'signal-pulse': {
+          '0%': { transform: 'scale(0.6)', opacity: '0.55' },
+          '70%': { opacity: '0' },
+          '100%': { transform: 'scale(1.9)', opacity: '0' },
+        },
+        'float-y': {
+          '0%, 100%': { transform: 'translateY(0)' },
+          '50%': { transform: 'translateY(-8px)' },
+        },
+        'glow-drift': {
+          '0%, 100%': { transform: 'translate3d(0,0,0)', opacity: '0.85' },
+          '50%': { transform: 'translate3d(2%, -3%, 0)', opacity: '1' },
+        },
+      },
+      animation: {
+        'signal-pulse': 'signal-pulse 3.6s cubic-bezier(0.22, 1, 0.36, 1) infinite',
+        'signal-pulse-slow': 'signal-pulse 5s cubic-bezier(0.22, 1, 0.36, 1) infinite',
+        'float-y': 'float-y 6s ease-in-out infinite',
+        'glow-drift': 'glow-drift 14s ease-in-out infinite',
       },
     },
   },

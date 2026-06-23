@@ -6,16 +6,19 @@ import { Toaster } from 'sonner'; // MODIFIED: root-level toaster only
 import './globals.css'; // MODIFIED: global styles only
 
 export const metadata: Metadata = {
-  title: 'PermaTrax — Fiber Construction Management', // MODIFIED: new product branding
-  description: 'Enterprise platform for fiber optic construction permit management', // MODIFIED
-  icons: {
-    icon: '/icon.svg',
+  title: {
+    default: 'PermaTrax',
+    template: '%s | PermaTrax',
   },
+  description:
+    'Integrated platform for permits, projects, GIS infrastructure, finance, procurement, and field operations.',
+  // Icons resolved from the file-based convention (app/icon.svg, app/apple-icon.svg).
+  // Avoid a hardcoded absolute path here — it would not respect basePath on the dev VPS.
 };
 
 const jakarta = Plus_Jakarta_Sans({ // NEW: requested typography setup
   subsets: ['latin'],
-  weight: ['400', '500', '600'],
+  weight: ['400', '500', '600', '700', '800'], // MODIFIED: add bold weights for login headlines
   variable: '--font-jakarta',
 });
 
