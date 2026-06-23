@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 180" width="180" height="180" role="img" aria-label="PermaTrax">
+  <defs>
+    <linearGradient id="pt-apple-bg" x1="20" y1="16" x2="160" y2="166" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FF6B6B"/>
+      <stop offset="0.5" stop-color="#D85BCB"/>
+      <stop offset="1" stop-color="#6D4AFF"/>
+    </linearGradient>
+  </defs>
+  <rect width="180" height="180" fill="#17123A"/>
+  <rect x="26" y="26" width="128" height="128" rx="34" fill="url(#pt-apple-bg)"/>
+  <path d="M62 52h34c18.6 0 32 12.2 32 30s-13.4 30-32 30H78v24H62V52Zm16 44h14c7.6 0 12.6-4.9 12.6-12.5S99.6 71 92 71H78v25Z" fill="#FFFFFF"/>
+</svg>

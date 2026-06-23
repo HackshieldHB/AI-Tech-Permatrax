@@ -1,13 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
-  <!-- Outer arc -->
-  <path d="M1.42 9a16 16 0 0 1 21.16 0"
-        stroke="#EF4444" stroke-width="3" stroke-linecap="round"/>
-  <!-- Middle arc -->
-  <path d="M5 12.55a11 11 0 0 1 14.08 0"
-        stroke="#EF4444" stroke-width="3" stroke-linecap="round"/>
-  <!-- Inner arc -->
-  <path d="M8.53 16.11a6 6 0 0 1 6.95 0"
-        stroke="#EF4444" stroke-width="3" stroke-linecap="round"/>
-  <!-- Dot -->
-  <circle cx="12" cy="20.5" r="2.2" fill="#EF4444"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="PermaTrax">
+  <defs>
+    <linearGradient id="pt-icon-bg" x1="8" y1="6" x2="56" y2="58" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FF6B6B"/>
+      <stop offset="0.5" stop-color="#D85BCB"/>
+      <stop offset="1" stop-color="#6D4AFF"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="16" fill="url(#pt-icon-bg)"/>
+  <path d="M22 16h13.5c7.2 0 12.5 4.7 12.5 11.6 0 6.9-5.3 11.6-12.5 11.6H30V48h-8V16Zm8 16.4h5c2.9 0 4.8-1.9 4.8-4.8 0-2.9-1.9-4.8-4.8-4.8h-5v9.6Z" fill="#FFFFFF"/>
 </svg>
