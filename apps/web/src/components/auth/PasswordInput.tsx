@@ -13,6 +13,7 @@ interface PasswordInputProps {
   describedBy?: string;
   placeholder?: string;
   autoComplete?: string;
+  label?: string;
 }
 
 /**
@@ -28,6 +29,7 @@ export function PasswordInput({
   describedBy,
   placeholder = 'Enter your password',
   autoComplete = 'current-password',
+  label = 'Password',
 }: PasswordInputProps) {
   const [show, setShow] = useState(false);
   const [capsLock, setCapsLock] = useState(false);
@@ -45,7 +47,7 @@ export function PasswordInput({
   return (
     <div>
       <label htmlFor={id} className="mb-2 block text-sm font-medium text-[#211A4D]">
-        Password
+        {label}
       </label>
       <div className="relative">
         <Lock

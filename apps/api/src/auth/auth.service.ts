@@ -7,6 +7,7 @@ import { verifyPassword, hashPassword } from './utils/password.util';
 import * as crypto from 'crypto';
 import { REDIS_CLIENT } from '../redis/redis.provider';
 import Redis from 'ioredis';
+import { MailQueueService } from '../mail/mail-queue.service';
 
 export type LoginResponse = {
   accessToken: string;
@@ -33,6 +34,7 @@ export class AuthService {
     // FIX: Inject globally provided Redis Client for distributed token blacklisting
     @Inject(REDIS_CLIENT) private readonly redis: Redis,
     private readonly storage: StorageService,
+    private readonly mailQueue: MailQueueService,
   ) {}
 
   private readonly profileSelect = {
@@ -245,6 +247,138 @@ export class AuthService {
     this.logger.log(`[AUDIT] changeOwnPassword - UserID: ${userId}`);
 
     return { success: true, message: 'Password berhasil diubah. Silakan login kembali.' };
+  }
+
+  /**
+   * Per-user signing secret for password-reset tokens. Binding the user's CURRENT
+   * password hash into the secret makes the token single-use: once the password is
+   * reset (or changed) the hash changes and any outstanding link can no longer be
+   * verified. No DB column / migration required.
+   */
+  private resetTokenSecret(passwordHash: string): string {
+    const base =
+      this.configService.get<string>('JWT_SECRET') ?? process.env.JWT_SECRET ?? '';
+    return `${base}:pwreset:${passwordHash}`;
+  }
+
+  /** Absolute base URL for building the reset link (handles comma-separated CORS lists + basePath). */
+  private frontendBaseUrl(): string {
+    const raw =
+      this.configService.get<string>('FRONTEND_URL') ??
+      process.env.FRONTEND_URL ??
+      'http://localhost:3000';
+    return raw.split(',')[0].trim().replace(/\/+$/, '');
+  }
+
+  /**
+   * Self-service password reset — step 1. Always resolves successfully so the
+   * response never reveals whether an account exists (no enumeration). When the
+   * email maps to an active account, a single-use reset link is emailed.
+   */
+  async forgotPassword(email: string): Promise<{ success: true }> {
+    const normalized = email.trim().toLowerCase();
+    const user = await this.prisma.user.findUnique({
+      where: { email: normalized },
+      select: { id: true, email: true, name: true, password: true, isActive: true },
+    });
+
+    if (user && user.isActive && user.password) {
+      const token = await this.jwtService.signAsync(
+        { sub: user.id, purpose: 'pwreset' },
+        { secret: this.resetTokenSecret(user.password), expiresIn: '30m' },
+      );
+      const link = `${this.frontendBaseUrl()}/reset-password?token=${encodeURIComponent(token)}`;
+      const from =
+        this.configService.get<string>('SMTP_FROM') ??
+        this.configService.get<string>('PROCUREMENT_FROM_EMAIL') ??
+        this.configService.get<string>('SMTP_USER') ??
+        process.env.SMTP_FROM ??
+        process.env.SMTP_USER;
+
+      await this.mailQueue.enqueue({
+        mailOptions: {
+          ...(from ? { from } : {}),
+          to: user.email,
+          subject: 'Reset Password PermaTrax',
+          text:
+            `Halo ${user.name},\n\n` +
+            `Kami menerima permintaan untuk mereset password akun PermaTrax Anda.\n` +
+            `Buka tautan berikut untuk membuat password baru (berlaku 30 menit):\n\n${link}\n\n` +
+            `Jika Anda tidak meminta ini, abaikan email ini — password Anda tidak akan berubah.`,
+          html:
+            `<div style="font-family:Arial,Helvetica,sans-serif;max-width:520px;margin:0 auto;color:#202124">` +
+            `<h2 style="color:#211A4D;margin:0 0 12px">Reset Password</h2>` +
+            `<p>Halo <strong>${user.name}</strong>,</p>` +
+            `<p>Kami menerima permintaan untuk mereset password akun PermaTrax Anda. ` +
+            `Klik tombol di bawah untuk membuat password baru. Tautan ini berlaku selama <strong>30 menit</strong>.</p>` +
+            `<p style="text-align:center;margin:28px 0">` +
+            `<a href="${link}" style="background:linear-gradient(90deg,#FF6B6B,#7C5CFC);color:#fff;` +
+            `text-decoration:none;padding:12px 28px;border-radius:12px;font-weight:600;display:inline-block">` +
+            `Reset Password</a></p>` +
+            `<p style="font-size:13px;color:#6E6A78">Jika tombol tidak berfungsi, salin tautan ini ke browser Anda:<br>` +
+            `<a href="${link}" style="color:#7C5CFC;word-break:break-all">${link}</a></p>` +
+            `<hr style="border:none;border-top:1px solid #E4E0EA;margin:24px 0">` +
+            `<p style="font-size:12px;color:#9A94A6">Jika Anda tidak meminta reset password, abaikan email ini — ` +
+            `password Anda tidak akan berubah.</p></div>`,
+        },
+      });
+
+      this.logger.log(`[AUDIT] forgotPassword requested - UserID: ${user.id}`);
+    } else {
+      // No account match — log without leaking the address back to the caller.
+      this.logger.debug('[Auth] forgotPassword for unknown/inactive email');
+    }
+
+    return { success: true };
+  }
+
+  /**
+   * Self-service password reset — step 2. Validates the single-use token, sets the
+   * new password and invalidates all active sessions.
+   */
+  async resetPassword(
+    token: string,
+    newPassword: string,
+  ): Promise<{ success: boolean; message: string }> {
+    const invalid = () =>
+      new BadRequestException('Tautan reset tidak valid atau sudah kedaluwarsa');
+
+    const decoded = this.jwtService.decode(token) as
+      | { sub?: string; purpose?: string }
+      | null;
+    const userId = decoded?.sub;
+    if (!userId || decoded?.purpose !== 'pwreset') throw invalid();
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, password: true, isActive: true },
+    });
+    if (!user || !user.isActive || !user.password) throw invalid();
+
+    try {
+      await this.jwtService.verifyAsync(token, {
+        secret: this.resetTokenSecret(user.password),
+      });
+    } catch {
+      throw invalid();
+    }
+
+    const sameAsOld = await verifyPassword(newPassword, user.password);
+    if (sameAsOld) {
+      throw new BadRequestException('Password baru tidak boleh sama dengan password lama');
+    }
+
+    const newHash = await hashPassword(newPassword);
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        password: newHash,
+        refreshToken: null, // invalidate all active sessions
+      },
+    });
+
+    this.logger.log(`[AUDIT] resetPassword success - UserID: ${user.id}`);
+    return { success: true, message: 'Password berhasil diubah. Silakan login.' };
   }
 
   async updateProfile(
