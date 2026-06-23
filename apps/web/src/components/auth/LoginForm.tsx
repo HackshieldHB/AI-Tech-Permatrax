@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useRef, useState } from 'react';
+import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Mail, ArrowRight, ShieldCheck, Loader2, AlertCircle, Info } from 'lucide-react';
 import { toast } from 'sonner';
@@ -278,7 +279,12 @@ export function LoginForm() {
             />
             <span className="text-sm text-[#6E6A78]">Remember me</span>
           </label>
-          <span className="text-sm text-[#9A94A6]">Forgot password? Contact your admin</span>
+          <Link
+            href="/forgot-password"
+            className="rounded text-sm font-medium text-[#7C5CFC] transition-colors hover:text-[#6D4AFF] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#7C5CFC]/40"
+          >
+            Forgot password?
+          </Link>
         </div>
 
         {/* Form-level error */}

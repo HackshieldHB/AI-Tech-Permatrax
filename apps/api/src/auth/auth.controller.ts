@@ -22,6 +22,7 @@ import { Public } from './decorators/public.decorator';
 import { AuthGuard } from '@nestjs/passport';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { SelfChangePasswordSchema } from '../user/user.dto';
+import { ForgotPasswordSchema, ResetPasswordSchema } from './dto/password-reset.dto';
 import { z } from 'zod';
 
 const UpdateProfileSchema = z.object({
@@ -108,5 +109,34 @@ export class AuthController {
   async changeOwnPassword(@Req() req: any, @Body() body: unknown) {
     const { currentPassword, newPassword } = SelfChangePasswordSchema.parse(body);
     return this.authService.changeOwnPassword(req.user.userId, currentPassword, newPassword);
+  }
+
+  /**
+   * Self-service password reset — step 1: request a reset link by email.
+   * Always returns 200 with a generic body (no account enumeration).
+   */
+  @Public()
+  @Post('forgot-password')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { ttl: 60000, limit: 5 } }) // Max 5x per menit per IP
+  @ApiOperation({ summary: 'Minta tautan reset password via email' })
+  async forgotPassword(@Body() body: unknown) {
+    const { email } = ForgotPasswordSchema.parse(body);
+    await this.authService.forgotPassword(email);
+    // Generic response — never reveal whether the email exists.
+    return { success: true, message: 'Jika email terdaftar, tautan reset telah dikirim.' };
+  }
+
+  /**
+   * Self-service password reset — step 2: set a new password using the emailed token.
+   */
+  @Public()
+  @Post('reset-password')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { ttl: 60000, limit: 5 } }) // Max 5x per menit per IP
+  @ApiOperation({ summary: 'Reset password dengan token dari email' })
+  async resetPassword(@Body() body: unknown) {
+    const { token, newPassword } = ResetPasswordSchema.parse(body);
+    return this.authService.resetPassword(token, newPassword);
   }
 }

@@ -5,6 +5,8 @@ import { ConfigService } from '@nestjs/config'; // MODIFIED: config mock
 import { AuthService } from './auth.service'; // MODIFIED: service under test
 import { PrismaService } from '../prisma/prisma.service'; // MODIFIED: prisma mock token
 import { REDIS_CLIENT } from '../redis/redis.provider'; // MODIFIED: redis injection token
+import { StorageService } from '../storage/storage.service'; // avatar storage dep
+import { MailQueueService } from '../mail/mail-queue.service'; // password-reset mail dep
 import { hashPassword, verifyPassword } from './utils/password.util'; // MODIFIED: utility roundtrip tests
 
 describe('AuthService', () => { // MODIFIED: grouped by requested behavior blocks
@@ -21,6 +23,12 @@ describe('AuthService', () => { // MODIFIED: grouped by requested behavior block
   const mockRedis = { // MODIFIED: redis blacklist mock
     get: jest.fn().mockResolvedValue(null),
     setex: jest.fn().mockResolvedValue('OK'),
+  };
+  const mockStorage = { // avatar storage mock
+    uploadMulterFile: jest.fn().mockResolvedValue('https://files/avatar.png'),
+  };
+  const mockMailQueue = { // password-reset mail queue mock
+    enqueue: jest.fn().mockResolvedValue(undefined),
   };
   const baseUser = { // MODIFIED: shared user fixture
     id: 'user-1',
@@ -42,6 +50,8 @@ describe('AuthService', () => { // MODIFIED: grouped by requested behavior block
         { provide: JwtService, useValue: mockJwt },
         { provide: ConfigService, useValue: { get: jest.fn() } },
         { provide: REDIS_CLIENT, useValue: mockRedis },
+        { provide: StorageService, useValue: mockStorage },
+        { provide: MailQueueService, useValue: mockMailQueue },
       ],
     }).compile();
     service = module.get<AuthService>(AuthService);

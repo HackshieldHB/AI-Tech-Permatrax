@@ -9,12 +9,14 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { RedisModule } from '../redis/redis.module'; // FIX: Add Redis module explicitly
 import { PrismaModule } from '../prisma/prisma.module';
 import { StorageModule } from '../storage/storage.module';
+import { MailModule } from '../mail/mail.module'; // password-reset emails
 
 @Module({
   imports: [
-    RedisModule, // FIX: Implicit provision explicitly guaranteed 
+    RedisModule, // FIX: Implicit provision explicitly guaranteed
     PrismaModule,
     StorageModule,
+    MailModule, // enqueue password-reset emails via the shared mail queue
     PassportModule.register({ defaultStrategy: 'jwt' }), // FIX: Configure default passport strategy
     JwtModule.registerAsync({
       imports: [ConfigModule],

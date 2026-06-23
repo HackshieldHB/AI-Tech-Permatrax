@@ -2,11 +2,11 @@ import React, { Suspense } from 'react';
 import type { Metadata } from 'next';
 import { Loader2 } from 'lucide-react';
 import { AuthShell } from '../../components/auth/AuthShell';
-import { LoginForm } from '../../components/auth/LoginForm';
+import { ResetPasswordForm } from '../../components/auth/ResetPasswordForm';
 
 export const metadata: Metadata = {
-  title: 'Sign in',
-  description: 'Sign in to PermaTrax — connected infrastructure management.',
+  title: 'Reset password',
+  description: 'Choose a new password for your PermaTrax account.',
 };
 
 const FormFallback = (
@@ -17,15 +17,14 @@ const FormFallback = (
 );
 
 /**
- * "Connected Infrastructure" login screen.
- * Server component shell; the interactive form is an isolated client island
- * wrapped in Suspense because it reads search params (required for App Router prerender).
+ * Reset-password screen. The form reads the token from search params, so it is an
+ * isolated client island wrapped in Suspense for App Router prerendering.
  */
-export default function LoginPage() {
+export default function ResetPasswordPage() {
   return (
     <AuthShell>
       <Suspense fallback={FormFallback}>
-        <LoginForm />
+        <ResetPasswordForm />
       </Suspense>
     </AuthShell>
   );
