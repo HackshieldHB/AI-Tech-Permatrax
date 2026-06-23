@@ -177,17 +177,20 @@ const NAV_ITEMS: NavItem[] = [
     href: '/document-list', // FIX: path
     label: 'Daftar Dokumen', // FIX: label
     icon: FolderOpen, // FIX: icon
-    featureKey: 'DOCUMENT_LIST', // FIX: GM flag
+    // Standardized access: gated by role only (mirrors backend DOCUMENT_LIST_VIEW).
+    // The DOCUMENT_LIST feature flag was removed here — its DB-seeded grants were
+    // inconsistent (missing surveyor/ops/finance/admin-stock/purchasing), which hid
+    // the menu for roles that actually had backend access.
     section: 'DOKUMEN', // FIX: section
     roles: [
-      'SURVEYOR_FTTH', 'SURVEYOR_FTTB', 'SURVEYOR_FTTT', // FIX: surveyors
-      'PM_FTTH', 'PM_FTTB', 'PM_FTTT', 'PM_SENIOR', // FIX: PMs
-      'DESIGNER', // FIX: designer
-      'ADMIN', // FIX: admin
-      'GENERAL_MANAGER', // FIX: GM
-      'OPERATIONAL_MANAGER', // FIX: ops
-      'FINANCE', // FIX: finance
-      'ADMIN_STOCK', // FIX: admin stok
+      'SURVEYOR_FTTH', 'SURVEYOR_FTTB', 'SURVEYOR_FTTT', // surveyors
+      'PM_FTTH', 'PM_FTTB', 'PM_FTTT', 'PM_SENIOR', // PMs
+      'DESIGNER', // designer
+      'ADMIN', 'ADMIN_STOCK', // admin + stock admin
+      'GENERAL_MANAGER', // GM
+      'OPERATIONAL_MANAGER', // ops
+      'FINANCE', // finance
+      'PURCHASING', // FIX: purchasing — was missing, now standardized
     ],
   },
   { href: '/dashboard-gm', label: 'Dashboard', icon: BarChart3, section: 'DASHBOARD', dashboardForAllRoles: true }, // FIX: href resolved via getDashboardHref

@@ -125,7 +125,7 @@ async function seedFeatureFlags(gmUserId: string) {
     { featureKey: 'GIS_MAP', description: 'Peta GIS jaringan fiber', roles: Object.values(Role) },
     { featureKey: 'SETTINGS', description: 'Pengaturan sistem', roles: ['GENERAL_MANAGER'] },
     { featureKey: 'PERMIT_PIPELINE', description: 'Tracking pipeline perizinan', roles: ['PM_FTTH', 'PM_FTTB', 'PM_FTTT', 'PM_SENIOR', 'ADMIN', 'GENERAL_MANAGER', 'SURVEYOR_FTTH', 'SURVEYOR_FTTB', 'SURVEYOR_FTTT', 'DESIGNER', 'OPERATIONAL_MANAGER'] },
-    { featureKey: 'DOCUMENT_LIST', description: 'Daftar dokumen yang disetujui', roles: ['ADMIN', 'PM_SENIOR', 'GENERAL_MANAGER', 'PM_FTTH', 'PM_FTTB', 'PM_FTTT', 'DESIGNER'] },
+    { featureKey: 'DOCUMENT_LIST', description: 'Daftar dokumen (akses terstandarisasi semua role operasional)', roles: ['ADMIN', 'ADMIN_STOCK', 'PM_SENIOR', 'GENERAL_MANAGER', 'PM_FTTH', 'PM_FTTB', 'PM_FTTT', 'DESIGNER', 'SURVEYOR_FTTH', 'SURVEYOR_FTTB', 'SURVEYOR_FTTT', 'FINANCE', 'PURCHASING', 'OPERATIONAL_MANAGER'] },
     { featureKey: 'CASH_OPERATION', description: 'Cash advance & reimbursement', roles: Object.values(Role) },
   ];
 

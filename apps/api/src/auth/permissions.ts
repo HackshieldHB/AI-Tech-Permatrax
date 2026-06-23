@@ -96,12 +96,15 @@ export const PERMISSIONS = {
   ],
 
   // NEW: Phase 5 — Document list + email (ACC bundle)
+  // Standardized: every operational role can view the centralized Daftar Dokumen.
+  // Detail-level actions (e.g. email-to-ISP) stay restricted via DOCUMENT_EMAIL_SEND.
   DOCUMENT_LIST_VIEW: [
     Role.ADMIN, Role.PM_SENIOR, Role.GENERAL_MANAGER,
     Role.PM_FTTH, Role.PM_FTTB, Role.PM_FTTT,
     Role.SURVEYOR_FTTH, Role.SURVEYOR_FTTB, Role.SURVEYOR_FTTT, // FIX: surveyor visibility
     Role.DESIGNER, // FIX: designer pipeline docs
     Role.FINANCE, // FIX: finance oversight
+    Role.PURCHASING, // FIX: purchasing document tracking
     Role.ADMIN_STOCK, // FIX: stock admin
     Role.OPERATIONAL_MANAGER, // FIX: ops
   ],
