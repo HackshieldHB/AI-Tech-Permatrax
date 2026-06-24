@@ -52,6 +52,30 @@ export type DocumentListClusterPayload = {
   };
 };
 
+/** One row in the grouped Daftar Dokumen list (shared by FTTH permit clusters and FTTT projects). */
+export type DocListClusterRow = {
+  id: string;
+  clusterCode: string;
+  fiberType: string;
+  currentPhase: string;
+  status: string;
+  rwName: string | null;
+  kelurahan: string | null;
+  kecamatan: string | null;
+  kotaKabupaten: string | null;
+  docCount: number;
+  approvedDocs: number;
+  bakpStatus: string | null;
+  claimStatus: string | null;
+};
+
+/** One ISP/operator group in the grouped list. */
+export type DocListGroup = {
+  ispName: string;
+  clusters: DocListClusterRow[];
+  docCount: number;
+};
+
 @Injectable()
 export class DocumentListService {
   constructor(
@@ -80,6 +104,10 @@ export class DocumentListService {
 
   /** FIX: comprehensive per-cluster document list */
   async getDocumentListForCluster(clusterId: string): Promise<DocumentListClusterPayload> {
+    // FTTT projects live in a separate model tree — serve them from the dedicated builder.
+    const ftttPayload = await this.tryGetFtttDocumentList(clusterId);
+    if (ftttPayload) return ftttPayload;
+
     const cluster = await this.prisma.permitCluster.findUnique({
       where: { id: clusterId }, // FIX: by id
       include: {
@@ -950,28 +978,7 @@ export class DocumentListService {
 
     const total = await this.prisma.permitCluster.count({ where }); // FIX: total
 
-    const grouped: Record<
-      string,
-      {
-        ispName: string; // FIX
-        clusters: Array<{
-          id: string; // FIX
-          clusterCode: string; // FIX
-          fiberType: string; // FIX
-          currentPhase: string; // FIX
-          status: string; // FIX
-          rwName: string | null; // FIX
-          kelurahan: string | null; // FIX
-          kecamatan: string | null; // FIX
-          kotaKabupaten: string | null; // FIX
-          docCount: number; // FIX
-          approvedDocs: number; // FIX
-          bakpStatus: string | null; // FIX
-          claimStatus: string | null; // FIX
-        }>; // FIX
-        docCount: number; // FIX
-      }
-    > = {}; // FIX: map
+    const grouped: Record<string, DocListGroup> = {}; // FIX: map (shared FTTH/FTTT row type)
 
     for (const c of clusters) {
       const isp = c.ispCustomer || 'Unknown'; // FIX: key
@@ -1011,12 +1018,253 @@ export class DocumentListService {
       grouped[isp].docCount += docCount; // FIX
     }
 
+    // Merge FTTT projects (separate model tree) so Daftar Dokumen is a single,
+    // centralized repository for both FTTH (permit clusters) and FTTT lifecycles.
+    const ftttCount = await this.appendFtttGroups(grouped, { search, fiberType });
+    const grandTotal = total + ftttCount;
+
     return {
       groups: Object.values(grouped), // FIX
-      total, // FIX
+      total: grandTotal, // FIX: FTTH + FTTT
       page, // FIX
       limit, // FIX
-      totalPages: Math.ceil(total / limit) || 0, // FIX
+      totalPages: Math.ceil(grandTotal / limit) || 0, // FIX
+    };
+  }
+
+  // ─── FTTT integration ───────────────────────────────────────────────────────
+  // FTTT projects are NOT permit clusters; their documents live in dedicated tables.
+  // These helpers surface FTTT documents in the same Daftar Dokumen list + detail UI.
+
+  private ftttCompanyLabel(c: string | null | undefined): string {
+    switch (c) {
+      case 'TELKOM_INFRA': return 'Telkom Infra';
+      case 'IFORTE': return 'iForte';
+      case 'PST': return 'PST';
+      default: return c || 'FTTT';
+    }
+  }
+
+  private ftttDocType(url: string | null | undefined): 'pdf' | 'image' | 'file' {
+    if (!url) return 'file';
+    const u = url.toLowerCase().split('?')[0];
+    if (u.endsWith('.pdf')) return 'pdf';
+    if (/\.(png|jpe?g|webp|gif|bmp|svg)$/.test(u)) return 'image';
+    return 'file';
+  }
+
+  /** Normalize FTTT approval enum to the badge values the detail UI understands. */
+  private ftttApproval(status: string | null | undefined): 'APPROVED' | 'REJECTED' | 'PENDING' {
+    return status === 'APPROVED' ? 'APPROVED' : status === 'REJECTED' ? 'REJECTED' : 'PENDING';
+  }
+
+  /** Append every FTTT project (grouped by operator) to the shared Daftar Dokumen list. */
+  private async appendFtttGroups(
+    grouped: Record<string, DocListGroup>,
+    params: { search?: string; fiberType?: string },
+  ): Promise<number> {
+    // Respect the fiber-type filter: FTTT rows only when filter is empty or FTTT.
+    if (params.fiberType && params.fiberType !== 'FTTT') return 0;
+
+    const where: Prisma.FtttProjectWhereInput = {};
+    if (params.search?.trim()) {
+      const q = params.search.trim();
+      where.OR = [
+        { projectName: { contains: q, mode: 'insensitive' } },
+        {
+          cleanList: {
+            is: {
+              OR: [
+                { kelurahan: { contains: q, mode: 'insensitive' } },
+                { kecamatan: { contains: q, mode: 'insensitive' } },
+                { kotaKabupaten: { contains: q, mode: 'insensitive' } },
+                { rwCode: { contains: q, mode: 'insensitive' } },
+              ],
+            },
+          },
+        },
+      ];
+    }
+
+    const projects = await this.prisma.ftttProject.findMany({
+      where,
+      include: {
+        cleanList: true,
+        surveyUploads: { select: { fileUrl: true } },
+        drmDocuments: { select: { fileUrl: true } },
+        sanggahs: { select: { fileUrl: true } },
+        jaminans: { select: { fileUrl: true } },
+        documents: { select: { fileUrl: true, formContent: true, approvalStatus: true } },
+        implementationLogs: { select: { fileUrl: true } },
+        reconDocs: { select: { fileUrl: true, formContent: true, approvalStatus: true } },
+        closingLogs: { select: { fileUrl: true, formContent: true, approvalStatus: true } },
+      },
+      orderBy: [{ ftttCompany: 'asc' }, { createdAt: 'desc' }],
+      take: 500,
+    });
+
+    for (const p of projects) {
+      const groupKey = `${this.ftttCompanyLabel(p.ftttCompany)} (FTTT)`;
+      if (!grouped[groupKey]) grouped[groupKey] = { ispName: groupKey, clusters: [], docCount: 0 };
+
+      let docCount = p.triggerDocUrl ? 1 : 0;
+      docCount += p.surveyUploads.filter((d) => d.fileUrl).length;
+      docCount += p.drmDocuments.filter((d) => d.fileUrl).length;
+      docCount += p.sanggahs.filter((d) => d.fileUrl).length;
+      docCount += p.jaminans.filter((d) => d.fileUrl).length;
+      docCount += p.documents.filter((d) => d.fileUrl || d.formContent).length;
+      docCount += p.implementationLogs.filter((d) => d.fileUrl).length;
+      docCount += p.reconDocs.filter((d) => d.fileUrl || d.formContent).length;
+      docCount += p.closingLogs.filter((d) => d.fileUrl || d.formContent).length;
+
+      const approvedDocs = [...p.documents, ...p.reconDocs, ...p.closingLogs].filter(
+        (d) => d.approvalStatus === 'APPROVED',
+      ).length;
+
+      const cl = p.cleanList;
+      grouped[groupKey].clusters.push({
+        id: p.id,
+        clusterCode: p.projectName || `FTTT-${p.id.slice(-6)}`,
+        fiberType: 'FTTT',
+        currentPhase: p.currentPhase,
+        status: p.status,
+        rwName: cl?.rwCode ?? null,
+        kelurahan: cl?.kelurahan ?? null,
+        kecamatan: cl?.kecamatan ?? null,
+        kotaKabupaten: cl?.kotaKabupaten ?? null,
+        docCount,
+        approvedDocs,
+        bakpStatus: null,
+        claimStatus: null,
+      });
+      grouped[groupKey].docCount += docCount;
+    }
+
+    return projects.length;
+  }
+
+  /** Build the document-list detail payload for an FTTT project (null if id is not an FTTT project). */
+  private async tryGetFtttDocumentList(projectId: string): Promise<DocumentListClusterPayload | null> {
+    const p = await this.prisma.ftttProject.findUnique({
+      where: { id: projectId },
+      include: {
+        cleanList: true,
+        surveyUploads: { orderBy: { createdAt: 'asc' } },
+        drmDocuments: { orderBy: { uploadedAt: 'asc' } },
+        sanggahs: { orderBy: { attemptNumber: 'asc' } },
+        jaminans: { orderBy: { createdAt: 'asc' } },
+        documents: { orderBy: { createdAt: 'asc' } },
+        implementationLogs: { orderBy: { createdAt: 'asc' } },
+        reconDocs: { orderBy: { createdAt: 'asc' } },
+        closingLogs: { orderBy: { createdAt: 'asc' } },
+      },
+    });
+    if (!p) return null;
+
+    const mk = (
+      key: string,
+      label: string,
+      url: string | null | undefined,
+      opts?: { approval?: string | null; generated?: boolean },
+    ): DocumentListDocRow => {
+      const available = Boolean(url) || Boolean(opts?.generated);
+      return {
+        key,
+        label,
+        url: url ?? null,
+        type: opts?.generated && !url ? 'json' : this.ftttDocType(url),
+        status: available ? 'AVAILABLE' : 'PENDING',
+        ...(opts?.approval
+          ? { approvals: { admin: this.ftttApproval(opts.approval), pm: this.ftttApproval(opts.approval) } }
+          : {}),
+      };
+    };
+
+    const phases: DocumentListPhaseRow[] = [];
+
+    phases.push({
+      phase: 'INITIATION', phaseNum: 1, label: 'Inisiasi',
+      documents: [mk('trigger', `Dokumen Pemicu (${p.triggerDocType.replace(/_/g, ' ')})`, p.triggerDocUrl)],
+    });
+
+    if (p.surveyUploads.length) {
+      phases.push({
+        phase: 'SURVEY', phaseNum: 2, label: 'Survey',
+        documents: p.surveyUploads.map((s, i) =>
+          mk(`survey-${i}`, s.caption || s.fileType || `Survey ${i + 1}`, s.fileUrl)),
+      });
+    }
+
+    const prep: DocumentListDocRow[] = [
+      ...p.drmDocuments.map((d, i) => mk(`drm-${i}`, `${d.docType.replace(/_/g, ' ')} v${d.version}`, d.fileUrl)),
+      ...p.sanggahs.map((s, i) => mk(`sanggah-${i}`, `Sanggah #${s.attemptNumber} (${s.status})`, s.fileUrl)),
+      ...p.jaminans.map((j, i) => mk(`jaminan-${i}`, j.jaminanType.replace(/_/g, ' '), j.fileUrl)),
+    ];
+    if (prep.length) phases.push({ phase: 'PREPARATION', phaseNum: 3, label: 'Persiapan', documents: prep });
+
+    if (p.implementationLogs.length) {
+      phases.push({
+        phase: 'IMPLEMENTATION', phaseNum: 4, label: 'Implementasi',
+        documents: p.implementationLogs.map((l, i) =>
+          mk(`impl-${i}`, l.caption || l.logType.replace(/_/g, ' '), l.fileUrl)),
+      });
+    }
+
+    if (p.documents.length) {
+      phases.push({
+        phase: 'DOCUMENTATION', phaseNum: 5, label: 'Dokumentasi & Acceptance',
+        documents: p.documents.map((d, i) =>
+          mk(`doc-${i}`, d.docType.replace(/_/g, ' '), d.fileUrl, { approval: d.approvalStatus, generated: Boolean(d.formContent) })),
+      });
+    }
+
+    if (p.reconDocs.length) {
+      phases.push({
+        phase: 'RECONCILIATION', phaseNum: 6, label: 'Rekonsiliasi & Billing',
+        documents: p.reconDocs.map((d, i) =>
+          mk(`recon-${i}`, d.docKey.replace(/_/g, ' '), d.fileUrl, { approval: d.approvalStatus, generated: Boolean(d.formContent) })),
+      });
+    }
+
+    if (p.closingLogs.length) {
+      phases.push({
+        phase: 'CLOSING', phaseNum: 7, label: 'Project Closing',
+        documents: p.closingLogs.map((d, i) =>
+          mk(`closing-${i}`, d.caption || d.logType.replace(/_/g, ' '), d.fileUrl, { approval: d.approvalStatus, generated: Boolean(d.formContent) })),
+      });
+    }
+
+    const allDocs = phases.flatMap((ph) => ph.documents);
+    const available = allDocs.filter((d) => d.status === 'AVAILABLE').length;
+    const pending = allDocs.filter((d) => d.status === 'PENDING').length;
+    const approved = allDocs.filter((d) => d.approvals?.pm === 'APPROVED').length;
+    const totalDocs = allDocs.length;
+    const cl = p.cleanList;
+
+    return {
+      cluster: {
+        id: p.id,
+        clusterCode: p.projectName || `FTTT-${p.id.slice(-6)}`,
+        ispCustomer: this.ftttCompanyLabel(p.ftttCompany),
+        fiberType: 'FTTT',
+        currentPhase: p.currentPhase,
+        status: p.status,
+        rwName: cl?.rwCode ?? null,
+        kelurahan: cl?.kelurahan ?? null,
+        kecamatan: cl?.kecamatan ?? null,
+        kotaKabupaten: cl?.kotaKabupaten ?? null,
+        latitude: null,
+        longitude: null,
+      },
+      phases,
+      summary: {
+        totalDocs,
+        available,
+        pending,
+        missing: 0,
+        approved,
+        completionPercent: totalDocs ? Math.round((available / totalDocs) * 100) : 0,
+      },
     };
   }
 
