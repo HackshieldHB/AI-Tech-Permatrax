@@ -295,31 +295,59 @@ export class AuthService {
         process.env.SMTP_FROM ??
         process.env.SMTP_USER;
 
+      // Escape the display name before embedding it in HTML.
+      const safeName = (user.name || 'Pengguna').replace(
+        /[<>&"]/g,
+        (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c] as string),
+      );
+      const year = new Date().getFullYear();
+
       await this.mailQueue.enqueue({
         mailOptions: {
-          ...(from ? { from } : {}),
+          ...(from ? { from: `PermaTrax <${from}>` } : {}),
           to: user.email,
-          subject: 'Reset Password PermaTrax',
+          subject: 'Reset Password Akun PermaTrax Anda',
           text:
+            `PermaTrax — Reset Password\n\n` +
             `Halo ${user.name},\n\n` +
             `Kami menerima permintaan untuk mereset password akun PermaTrax Anda.\n` +
-            `Buka tautan berikut untuk membuat password baru (berlaku 30 menit):\n\n${link}\n\n` +
-            `Jika Anda tidak meminta ini, abaikan email ini — password Anda tidak akan berubah.`,
-          html:
-            `<div style="font-family:Arial,Helvetica,sans-serif;max-width:520px;margin:0 auto;color:#202124">` +
-            `<h2 style="color:#211A4D;margin:0 0 12px">Reset Password</h2>` +
-            `<p>Halo <strong>${user.name}</strong>,</p>` +
-            `<p>Kami menerima permintaan untuk mereset password akun PermaTrax Anda. ` +
-            `Klik tombol di bawah untuk membuat password baru. Tautan ini berlaku selama <strong>30 menit</strong>.</p>` +
-            `<p style="text-align:center;margin:28px 0">` +
-            `<a href="${link}" style="background:linear-gradient(90deg,#FF6B6B,#7C5CFC);color:#fff;` +
-            `text-decoration:none;padding:12px 28px;border-radius:12px;font-weight:600;display:inline-block">` +
-            `Reset Password</a></p>` +
-            `<p style="font-size:13px;color:#6E6A78">Jika tombol tidak berfungsi, salin tautan ini ke browser Anda:<br>` +
-            `<a href="${link}" style="color:#7C5CFC;word-break:break-all">${link}</a></p>` +
-            `<hr style="border:none;border-top:1px solid #E4E0EA;margin:24px 0">` +
-            `<p style="font-size:12px;color:#9A94A6">Jika Anda tidak meminta reset password, abaikan email ini — ` +
-            `password Anda tidak akan berubah.</p></div>`,
+            `Buka tautan berikut untuk membuat password baru:\n\n${link}\n\n` +
+            `Link ini berlaku selama 30 menit.\n\n` +
+            `Jika Anda tidak meminta reset password, abaikan email ini — password Anda tidak akan berubah.\n\n` +
+            `Best regards,\n` +
+            `PT Integra Aplikasi Artifisial (AITECH)\n` +
+            `https://aitech-ilt.co.id`,
+          html: `
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#F4F2F8;margin:0;padding:24px 12px;font-family:Arial,Helvetica,sans-serif">
+  <tr><td align="center">
+    <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#FFFFFF;border-radius:16px;overflow:hidden;border:1px solid #E4E0EA">
+      <tr><td style="background:#211A4D;padding:22px 32px">
+        <span style="color:#FFFFFF;font-size:22px;font-weight:800;letter-spacing:-0.5px">Perma<span style="color:#FF8A7A">Trax</span></span>
+      </td></tr>
+      <tr><td style="padding:32px 32px 8px">
+        <h1 style="margin:0 0 6px;font-size:22px;color:#211A4D">Reset Password</h1>
+        <p style="margin:0 0 18px;font-size:15px;color:#202124">Halo <strong>${safeName}</strong>,</p>
+        <p style="margin:0 0 26px;font-size:15px;line-height:1.6;color:#4B4858">Kami menerima permintaan untuk mereset password akun <strong>PermaTrax</strong> Anda. Klik tombol di bawah ini untuk membuat password baru.</p>
+        <table role="presentation" cellpadding="0" cellspacing="0" align="center" style="margin:0 auto 22px"><tr>
+          <td align="center" bgcolor="#7C5CFC" style="border-radius:12px">
+            <a href="${link}" target="_blank" style="display:inline-block;padding:15px 40px;font-size:16px;font-weight:700;color:#FFFFFF;text-decoration:none;border-radius:12px">Reset Password</a>
+          </td>
+        </tr></table>
+        <p style="margin:0 0 22px;font-size:13px;color:#6E6A78;text-align:center">Link ini berlaku selama <strong>30 menit</strong>.</p>
+        <p style="margin:0 0 8px;font-size:13px;color:#6E6A78">Jika tombol tidak berfungsi, salin dan tempel tautan berikut ke browser Anda:</p>
+        <p style="margin:0 0 24px;padding:12px 14px;background:#F4F2F8;border-radius:8px;font-size:12px;word-break:break-all"><a href="${link}" style="color:#7C5CFC;text-decoration:none">${link}</a></p>
+        <p style="margin:0;font-size:13px;color:#9A94A6">Jika Anda tidak meminta reset password, abaikan email ini — password Anda tidak akan berubah.</p>
+      </td></tr>
+      <tr><td style="padding:22px 32px;background:#FBFAFD;border-top:1px solid #E4E0EA">
+        <p style="margin:0 0 4px;font-size:13px;color:#4B4858">Best regards,</p>
+        <p style="margin:0 0 2px;font-size:14px;font-weight:700;color:#211A4D">PT Integra Aplikasi Artifisial (AITECH)</p>
+        <p style="margin:0 0 10px;font-size:12px;color:#9A94A6">Integrated permit, project, GIS, finance &amp; field operations platform</p>
+        <p style="margin:0;font-size:12px;color:#9A94A6"><a href="https://aitech-ilt.co.id" target="_blank" style="color:#7C5CFC;text-decoration:none">aitech-ilt.co.id</a></p>
+        <p style="margin:12px 0 0;font-size:11px;color:#C4C0CE">© ${year} PermaTrax · AITECH. Email otomatis — mohon tidak membalas.</p>
+      </td></tr>
+    </table>
+  </td></tr>
+</table>`,
         },
       });
 
