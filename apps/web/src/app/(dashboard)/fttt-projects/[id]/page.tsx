@@ -13,6 +13,8 @@ import {
   FtttPhase,
   FtttPhaseStatus,
   FtttClosingLog,
+  FtttSpan,
+  FtttSpanLogCategory,
   FTTT_COMPANY_LABELS,
   FTTT_PHASE_LABELS,
   FTTT_PROJECT_STATUS_LABELS,
@@ -779,18 +781,14 @@ function JaminanSection({ project, onRefresh }: { project: FtttProject; onRefres
 }
 
 // ─── Documentation & Acceptance — per-lifecycle card-based section ───────────
-// Each lifecycle (Telkom Infra / PST / iFORTE) has its own required document set.
-// Upload docs: Surveyor uploads file.  Generate Form docs: Surveyor fills textarea.
-// PM then reviews, Admin confirms.
+// Admin Project uploads; PM FTTT reviews and approves/rejects.
 function DocumentationSection({ project, onRefresh, userRole }: { project: FtttProject; onRefresh: () => void; userRole: string }) {
   const { user } = useAuthStore();
-  // C6-TI2: PM FTTT owns Documentation & Acceptance; Surveyor no longer uploads here
-  // Approval flow: PM uploads → PENDING_PM (PM self-approves/any PM reviews) → PENDING_ADMIN → Admin final approve
-  const canUploadDocs  = userRole === 'PM_FTTT' || userRole === 'GENERAL_MANAGER';
-  // C7.2: Admin is reviewer only — cannot replace rejected docs (only PM can)
-  const canReplaceDocs = userRole === 'PM_FTTT' || userRole === 'GENERAL_MANAGER';
+  // Admin uploads; PM FTTT reviews/approves/rejects
+  const canUploadDocs  = userRole === 'ADMIN' || userRole === 'GENERAL_MANAGER';
+  const canReplaceDocs = userRole === 'ADMIN' || userRole === 'GENERAL_MANAGER';
   const canPmApprove   = userRole === 'PM_FTTT';
-  const canAdminApprove = userRole === 'ADMIN' || userRole === 'GENERAL_MANAGER';
+  const canAdminApprove = false; // PM is now final approver — no Admin approval step
 
   // Per-doc state maps: key → value
   const [formContents, setFormContents] = useState<Record<string, string>>({});
@@ -899,7 +897,7 @@ function DocumentationSection({ project, onRefresh, userRole }: { project: FtttP
         </div>
         <p style={{ margin: '3px 0 0', fontSize: 11, color: '#57606a' }}>
           Dokumen dikonfigurasi sesuai lifecycle {project.ftttCompany === 'TELKOM_INFRA' ? 'Telkom Infra' : project.ftttCompany === 'PST' ? 'PST' : 'iFORTE'}.
-          Upload dokumen dilakukan oleh PM FTTT; review dan approval oleh Admin.
+          Upload dokumen dilakukan oleh Admin Project; review dan approval oleh PM FTTT.
         </p>
       </div>
 
@@ -988,7 +986,7 @@ function DocumentationSection({ project, onRefresh, userRole }: { project: FtttP
                       onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleReplaceFile(latestDoc!.id, f); }} />
                     <button type="button" onClick={() => replaceRefs.current[doc.key]?.click()} disabled={isUploading}
                       style={{ padding: '3px 8px', borderRadius: 4, border: '1px solid #FFA500', background: '#FFF8F0', color: '#7d5a00', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>
-                      {isUploading ? '…' : '🔄 Ganti File'}
+                      {isUploading ? '…' : '🔄 Upload Ulang'}
                     </button>
                   </>
                 )}
@@ -1070,10 +1068,10 @@ function DocumentationSection({ project, onRefresh, userRole }: { project: FtttP
         </div>
       )}
 
-      {/* Info for Admin — review-only notice */}
-      {canAdminApprove && !canUploadDocs && (
+      {/* Info for PM — review-only notice */}
+      {canPmApprove && !canUploadDocs && (
         <div style={{ background: '#F0F8FF', border: '1px solid #0969DA', borderRadius: 8, padding: 10, marginTop: 6, fontSize: 12, color: '#0969DA' }}>
-          ℹ️ Anda dapat mereview dan approve/reject dokumen pada setiap card di atas. Upload dokumen baru hanya dapat dilakukan oleh PM FTTT.
+          ℹ️ Anda dapat mereview dan approve/reject dokumen pada setiap card di atas. Upload dokumen baru hanya dapat dilakukan oleh Admin Project.
         </div>
       )}
     </div>
@@ -1082,13 +1080,164 @@ function DocumentationSection({ project, onRefresh, userRole }: { project: FtttP
 
 // ─── Implementation phase section ─────────────────────────────────────────────
 // C5-Issue4: MONITORING_DOC is Admin-only; Surveyor+PM can only upload photos+notes
+// ─── Span-based Daily Implementation Log (Telkom Infra only) ─────────────────
+const SPAN_LOG_CATEGORY_LABELS: Record<string, string> = {
+  GALIAN: 'Galian', VIDEO_GALIAN: 'Video Galian', PERBAIKAN: 'Perbaikan',
+  HANDHOLE: 'Handhole', JEMBATAN: 'Jembatan', JOIN_TERMINASI: 'Join Terminasi', MARKING_POS: 'Marking Pos',
+};
+
+function SpanSection({ project, onRefresh, isAdmin }: { project: FtttProject; onRefresh: () => void; isAdmin: boolean }) {
+  const { user } = useAuthStore();
+  const spans: FtttSpan[] = project.spans ?? [];
+  const [newSpanNumber, setNewSpanNumber] = useState('');
+  const [creatingSpan, setCreatingSpan] = useState(false);
+  const [expandedSpan, setExpandedSpan] = useState<string | null>(null);
+  const [uploadingLog, setUploadingLog] = useState<string | null>(null);
+  const [logCategory, setLogCategory] = useState<string>('GALIAN');
+  const [logCaption, setLogCaption] = useState('');
+  const logFileRef = useRef<HTMLInputElement>(null);
+
+  const handleCreateSpan = async () => {
+    if (!newSpanNumber.trim()) return;
+    setCreatingSpan(true);
+    try {
+      const res = await apiFetch(`/fttt-projects/${project.id}/spans`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ spanNumber: newSpanNumber.trim() }),
+      }, user?.id);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
+      setNewSpanNumber(''); toast.success('Span berhasil dibuat'); onRefresh();
+    } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
+    finally { setCreatingSpan(false); }
+  };
+
+  const handleDeleteSpan = async (spanId: string) => {
+    if (!confirm('Hapus span ini beserta seluruh log-nya?')) return;
+    try {
+      const res = await apiFetch(`/fttt-projects/spans/${spanId}`, { method: 'DELETE' }, user?.id);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
+      toast.success('Span dihapus'); onRefresh();
+    } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
+  };
+
+  const handleAddLog = async (spanId: string, file: File) => {
+    setUploadingLog(spanId);
+    const fd = new FormData();
+    fd.append('category', logCategory);
+    if (logCaption) fd.append('caption', logCaption);
+    fd.append('file', file);
+    try {
+      const res = await apiFetch(`/fttt-projects/spans/${spanId}/logs`, { method: 'POST', body: fd }, user?.id);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
+      setLogCaption(''); toast.success('Log span berhasil diunggah'); onRefresh();
+    } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
+    finally { setUploadingLog(null); }
+  };
+
+  const handleDeleteLog = async (logId: string) => {
+    if (!confirm('Hapus log ini?')) return;
+    try {
+      const res = await apiFetch(`/fttt-projects/span-logs/${logId}`, { method: 'DELETE' }, user?.id);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
+      toast.success('Log dihapus'); onRefresh();
+    } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
+  };
+
+  return (
+    <div style={{ marginBottom: 20 }}>
+      <p style={{ fontWeight: 700, fontSize: 13, marginBottom: 8 }}>📍 Daily Implementation Log — Span</p>
+
+      {/* Create Span */}
+      {isAdmin && (
+        <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+          <input value={newSpanNumber} onChange={(e) => setNewSpanNumber(e.target.value)}
+            placeholder="Nomor Span (mis. SP-001)"
+            style={{ flex: 1, padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12 }} />
+          <button type="button" onClick={() => void handleCreateSpan()} disabled={creatingSpan || !newSpanNumber.trim()}
+            style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: '#0969DA', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 12 }}>
+            {creatingSpan ? '…' : '+ Tambah Span'}
+          </button>
+        </div>
+      )}
+
+      {spans.length === 0 && (
+        <p style={{ fontSize: 12, color: '#57606a' }}>Belum ada span. {isAdmin ? 'Tambahkan span pertama di atas.' : 'Admin akan membuat span.'}</p>
+      )}
+
+      {spans.map((span) => (
+        <div key={span.id} style={{ border: '1px solid #D0D7DE', borderRadius: 10, marginBottom: 10, overflow: 'hidden' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 12px', background: '#F6F8FA', cursor: 'pointer' }}
+            onClick={() => setExpandedSpan(expandedSpan === span.id ? null : span.id)}>
+            <div>
+              <span style={{ fontWeight: 700, fontSize: 13 }}>Span {span.spanNumber}</span>
+              <span style={{ fontSize: 11, color: '#57606a', marginLeft: 8 }}>{span.spanLogs.length} log</span>
+            </div>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              {isAdmin && (
+                <button type="button" onClick={(e) => { e.stopPropagation(); void handleDeleteSpan(span.id); }}
+                  style={{ padding: '3px 8px', borderRadius: 4, border: 'none', background: '#FFEBE9', color: '#cf222e', cursor: 'pointer', fontSize: 11 }}>
+                  Hapus
+                </button>
+              )}
+              <span style={{ fontSize: 12, color: '#57606a' }}>{expandedSpan === span.id ? '▲' : '▼'}</span>
+            </div>
+          </div>
+
+          {expandedSpan === span.id && (
+            <div style={{ padding: 12 }}>
+              {/* Existing logs */}
+              {span.spanLogs.map((log) => (
+                <div key={log.id} style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '6px 0', borderBottom: '1px solid #EAEEF2' }}>
+                  <span style={{ fontSize: 11, fontWeight: 600, minWidth: 100 }}>{SPAN_LOG_CATEGORY_LABELS[log.category] ?? log.category}</span>
+                  <div style={{ flex: 1 }}>
+                    {log.caption && <span style={{ fontSize: 11, color: '#57606a' }}>{log.caption}</span>}
+                  </div>
+                  {log.fileUrl && (
+                    <a href={fixFileUrl(log.fileUrl)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: '#0969DA' }}>Lihat</a>
+                  )}
+                  {isAdmin && (
+                    <button type="button" onClick={() => void handleDeleteLog(log.id)}
+                      style={{ padding: '2px 6px', borderRadius: 4, border: 'none', background: '#FFEBE9', color: '#cf222e', cursor: 'pointer', fontSize: 10 }}>×</button>
+                  )}
+                </div>
+              ))}
+
+              {/* Add log form */}
+              {isAdmin && (
+                <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                  <select value={logCategory} onChange={(e) => setLogCategory(e.target.value)}
+                    style={{ padding: '5px 8px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 11 }}>
+                    {Object.entries(SPAN_LOG_CATEGORY_LABELS).map(([k, v]) => (
+                      <option key={k} value={k}>{v}</option>
+                    ))}
+                  </select>
+                  <input value={logCaption} onChange={(e) => setLogCaption(e.target.value)}
+                    placeholder="Keterangan (opsional)"
+                    style={{ flex: 1, minWidth: 120, padding: '5px 8px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 11 }} />
+                  <input ref={logFileRef} type="file" accept=".jpg,.jpeg,.png,.webp,.mp4,.pdf" style={{ display: 'none' }}
+                    onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleAddLog(span.id, f); }} />
+                  <button type="button" onClick={() => logFileRef.current?.click()} disabled={uploadingLog === span.id}
+                    style={{ padding: '5px 12px', borderRadius: 6, border: 'none', background: '#0969DA', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 11 }}>
+                    {uploadingLog === span.id ? '…' : '+ Upload'}
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function ImplementationSection({ project, onRefresh, userRole }: { project: FtttProject; onRefresh: () => void; userRole: string }) {
   const { user } = useAuthStore();
   const isAdmin      = userRole === 'ADMIN' || userRole === 'GENERAL_MANAGER';
   const isSurveyor   = userRole === 'SURVEYOR_FTTT';
   const isPmFttt     = userRole === 'PM_FTTT';
-  // C7-TI5: PM FTTT can now upload PHOTO logs (same as Surveyor)
-  const canUpload    = isSurveyor || isAdmin || isPmFttt;
+  const isTI         = project.ftttCompany === 'TELKOM_INFRA';
+  // Issue 2: TI Implementation — Admin only; PST/iFORTE — Surveyor/PM/Admin
+  const canUpload    = isTI ? isAdmin : (isSurveyor || isAdmin || isPmFttt);
   const canMonitoring = isAdmin;
   const canNote      = canUpload;
 
@@ -1162,6 +1311,9 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
 
   return (
     <div>
+      {/* Issue 1: TI uses Span-based daily log */}
+      {isTI && <SpanSection project={project} onRefresh={onRefresh} isAdmin={isAdmin} />}
+
       <p style={{ fontWeight: 600, fontSize: 13, marginBottom: 8 }}>Log Implementasi ({logs.length})</p>
 
       {/* List existing logs */}
@@ -1206,8 +1358,8 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
         </div>
       )}
 
-      {/* C7-TI5: Surveyor button — mark lapangan done (PST flow: Surveyor sends to Admin) */}
-      {isSurveyor && !lapanganDone && logs.length > 0 && (
+      {/* Mark lapangan done — PST/iFORTE: Surveyor sends to Admin; TI: Admin-only button below */}
+      {isSurveyor && !isTI && !lapanganDone && logs.length > 0 && (
         <div style={{ background: '#DAFBE1', border: '1px solid #2DA44E', borderRadius: 8, padding: 10, marginTop: 8, marginBottom: 8 }}>
           <p style={{ margin: '0 0 6px', fontSize: 12, fontWeight: 600, color: '#1a7f37' }}>
             Pekerjaan lapangan sudah selesai?
@@ -1282,26 +1434,24 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
 }
 
 // ─── Documentation & Acceptance — per-lifecycle config ───────────────────────
-// C5-Issue1: All Generate Form removed — all docs now use Upload File
+// Admin Project uploads; PM FTTT reviews/approves
 const DOCUMENTATION_DOCS: Record<string, {
   key: string; label: string; desc: string;
   generateForm: boolean; required: boolean;
 }[]> = {
   TELKOM_INFRA: [
-    { key: 'KONTRAK',             label: 'Kontrak',                        desc: 'Dokumen kontrak project dari Telkom Infra',                    generateForm: false, required: true  },
-    { key: 'PO',                  label: 'PO',                             desc: 'Purchase Order dari Telkom Infra',                              generateForm: false, required: true  },
-    { key: 'AMANDEMEN_1',         label: 'Amandemen 1',                    desc: 'Dokumen Amandemen 1 dari Telkom Infra',                         generateForm: false, required: true  },
-    { key: 'DOK_PERUBAHAN_WAKTU', label: 'Dok. Perubahan Waktu (NPWP)',    desc: 'Dokumen perubahan waktu pelaksanaan project di NPWP',          generateForm: false, required: true  },
-    { key: 'BAUT_REKONSILIASI',   label: 'BA Rekonsiliasi',                desc: 'Berita Acara Rekonsiliasi — upload file',                       generateForm: false, required: true  },
-    { key: 'BAUT',                label: 'BAUT',                           desc: 'Berita Acara Uji Terima — upload file',                         generateForm: false, required: true  },
+    { key: 'BACT',            label: 'BACT',          desc: 'Berita Acara Commissioning Test dari Telkom Infra',   generateForm: false, required: true },
+    { key: 'BAUT',            label: 'BAUT',           desc: 'Berita Acara Uji Terima — upload file',               generateForm: false, required: true },
+    { key: 'BAUT_REKONSILIASI', label: 'BA Rekonsiliasi', desc: 'Berita Acara Rekonsiliasi — upload file',          generateForm: false, required: true },
   ],
   PST: [
-    { key: 'ATP',                 label: 'ATP',                            desc: 'Acceptance Test Protocol dari PST',                             generateForm: false, required: true  },
-    { key: 'BAUT',                label: 'BAUT',                           desc: 'Berita Acara Uji Terima — upload file',                         generateForm: false, required: true  },
+    { key: 'BACT',            label: 'BACT',          desc: 'Berita Acara Commissioning Test dari PST',             generateForm: false, required: true },
+    { key: 'BAUT',            label: 'BAUT',           desc: 'Berita Acara Uji Terima — upload file',               generateForm: false, required: true },
+    { key: 'BAUT_REKONSILIASI', label: 'BA Rekonsiliasi', desc: 'Berita Acara Rekonsiliasi — upload file',          generateForm: false, required: true },
   ],
   IFORTE: [
-    { key: 'ATP',                 label: 'ATP',                            desc: 'Acceptance Test Protocol dari iFORTE',                          generateForm: false, required: true  },
-    { key: 'EVIDENCE',            label: 'Evidence',                       desc: 'Dokumentasi evidence dan foto project',                         generateForm: false, required: true  },
+    { key: 'ATP',     label: 'ATP',      desc: 'Acceptance Test Protocol dari iFORTE',       generateForm: false, required: true },
+    { key: 'EVIDENCE', label: 'Evidence', desc: 'Dokumentasi evidence dan foto project',     generateForm: false, required: true },
   ],
 };
 
@@ -1313,24 +1463,25 @@ const RECON_DOCS: Record<string, {
   uploaderRole: string[]; requiresApproval: boolean;
 }[]> = {
   TELKOM_INFRA: [
-    // C7.2: ALL TI recon docs require Admin approval (PM uploads → PENDING_ADMIN → Admin approves)
-    { key: 'RISALAH_RAPAT_MOM', label: 'Risalah Rapat / MOM',           desc: 'Minutes of Meeting rekonsiliasi project bersama Telkom Infra',  uploaderRole: ['PM_FTTT'], requiresApproval: true },
-    { key: 'BOQ_PERHITUNGAN',   label: 'BOQ Perhitungan',                desc: 'BOQ final sesuai kondisi lapangan aktual',                       uploaderRole: ['PM_FTTT'], requiresApproval: true },
-    { key: 'BA_PENUTUPAN',      label: 'BA Penutupan',                   desc: 'Berita Acara Penutupan Project',                                 uploaderRole: ['PM_FTTT'], requiresApproval: true },
-    { key: 'BAPP_TI',           label: 'BAPP',                           desc: 'Berita Acara Pemeriksaan Pekerjaan',                             uploaderRole: ['PM_FTTT'], requiresApproval: true },
-    { key: 'BAST_1_TI',         label: 'BAST 1',                         desc: 'Berita Acara Serah Terima 1 dari Telkom Infra',                  uploaderRole: ['PM_FTTT'], requiresApproval: true },
-    { key: 'BAPWPP_TI',         label: 'BAPWPP',                         desc: 'Berita Acara Perubahan Waktu Pelaksanaan Project',               uploaderRole: ['PM_FTTT'], requiresApproval: true },
-    { key: 'SURAT_WASPANG',     label: 'Surat Waspang',                  desc: 'Surat Waspang dari Telkom Infra',                                uploaderRole: ['PM_FTTT'], requiresApproval: true },
-    { key: 'PO_TI',             label: 'PO',                             desc: 'Purchase Order dari Telkom Infra',                               uploaderRole: ['PM_FTTT'], requiresApproval: true },
-    { key: 'AMANDEMEN_1_TI',    label: 'Amandemen 1',                    desc: 'Dokumen Amandemen 1 dari Telkom Infra',                          uploaderRole: ['PM_FTTT'], requiresApproval: true },
-    { key: 'AMANDEMEN_2_TI',    label: 'Amandemen 2',                    desc: 'Dokumen Amandemen 2 dari Telkom Infra',                          uploaderRole: ['PM_FTTT'], requiresApproval: true },
+    // Admin Project uploads; PM FTTT reviews/approves
+    { key: 'RISALAH_RAPAT_MOM',       label: 'Risalah Rapat / MOM',      desc: 'Minutes of Meeting rekonsiliasi project bersama Telkom Infra', uploaderRole: ['ADMIN', 'GENERAL_MANAGER'], requiresApproval: true },
+    { key: 'BOQ_REKONSILIASI',         label: 'BOQ Rekonsiliasi',          desc: 'BOQ final hasil rekonsiliasi sesuai kondisi lapangan aktual',  uploaderRole: ['ADMIN', 'GENERAL_MANAGER'], requiresApproval: true },
+    { key: 'BA_PENUTUPAN',             label: 'BA Penutupan',              desc: 'Berita Acara Penutupan Project',                               uploaderRole: ['ADMIN', 'GENERAL_MANAGER'], requiresApproval: true },
+    { key: 'BAPP_TI',                  label: 'BAPP',                      desc: 'Berita Acara Pemeriksaan Pekerjaan',                           uploaderRole: ['ADMIN', 'GENERAL_MANAGER'], requiresApproval: true },
+    { key: 'BAST_1_TI',                label: 'BAST 1',                    desc: 'Berita Acara Serah Terima 1 dari Telkom Infra',                uploaderRole: ['ADMIN', 'GENERAL_MANAGER'], requiresApproval: true },
+    { key: 'NOTA_DINAS',               label: 'Nota Dinas',                desc: 'Nota Dinas terkait rekonsiliasi project',                      uploaderRole: ['ADMIN', 'GENERAL_MANAGER'], requiresApproval: true },
+    { key: 'NOTA_DINAS_TIM_UJI_TERIMA', label: 'Nota Dinas Tim Uji Terima', desc: 'Nota Dinas Tim Uji Terima dari Telkom Infra',               uploaderRole: ['ADMIN', 'GENERAL_MANAGER'], requiresApproval: true },
+    { key: 'PO_TI',                    label: 'PO',                        desc: 'Purchase Order dari Telkom Infra',                             uploaderRole: ['ADMIN', 'GENERAL_MANAGER'], requiresApproval: true },
+    { key: 'AMANDEMEN_1_TI',           label: 'Amandemen 1',               desc: 'Dokumen Amandemen 1 dari Telkom Infra',                        uploaderRole: ['ADMIN', 'GENERAL_MANAGER'], requiresApproval: true },
+    { key: 'AMANDEMEN_2_TI',           label: 'Amandemen 2',               desc: 'Dokumen Amandemen 2 dari Telkom Infra',                        uploaderRole: ['ADMIN', 'GENERAL_MANAGER'], requiresApproval: true },
     // NOTE: Jaminan Pemeliharaan & Invoice Final are in Project Closing phase (not here)
   ],
   PST: [
-    { key: 'REKONSILIASI', label: 'Rekonsiliasi',          desc: 'Penyamaan DRM sebelum implementasi vs actual lapangan',      uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: true },
-    { key: 'BAST_1',      label: 'BAST 1',                 desc: 'Jaminan Pemeliharaan & Jaminan Pelaksanaan',                 uploaderRole: ['FINANCE'], requiresApproval: false },
-    { key: 'GOOD_RECEIPT_PST', label: 'Good Receipt',      desc: 'Completion Cert. GERN & Lampiran Smile',                    uploaderRole: ['ADMIN'], requiresApproval: false },
-    { key: 'INVOICE_PST', label: 'Invoice',                desc: 'Tagihan & Jaminan Masa Pemeliharaan',                       uploaderRole: ['FINANCE'], requiresApproval: false },
+    // Admin Project uploads; PM FTTT reviews/approves
+    { key: 'REKONSILIASI',     label: 'Rekonsiliasi',  desc: 'Penyamaan DRM sebelum implementasi vs actual lapangan',  uploaderRole: ['ADMIN', 'GENERAL_MANAGER'], requiresApproval: true },
+    { key: 'BAST',             label: 'BAST',          desc: 'Berita Acara Serah Terima PST',                          uploaderRole: ['ADMIN', 'GENERAL_MANAGER'], requiresApproval: true },
+    { key: 'GOOD_RECEIPT_PST', label: 'Good Receipt',  desc: 'Completion Cert. GERN & Lampiran Smile',                 uploaderRole: ['ADMIN', 'GENERAL_MANAGER'], requiresApproval: true },
+    // NOTE: Invoice PST moved to Project Closing phase
   ],
   IFORTE: [
     { key: 'PUNCHLIST',   label: 'Punchlist',              desc: 'Minor issue ditemukan — catatan & foto sebelum & sesudah diperbaiki', uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: false },
@@ -1504,7 +1655,8 @@ function ReconciliationSection({ project, onRefresh, userRole }: { project: Fttt
 // ─── Procurement Section (PST-5: PM uploads PO between Preparation and Implementation) ─
 function ProcurementSection({ project, onRefresh, userRole }: { project: FtttProject; onRefresh: () => void; userRole: string }) {
   const { user } = useAuthStore();
-  const canUpload = ['PM_FTTT', 'ADMIN', 'GENERAL_MANAGER'].includes(userRole);
+  // Issue 8: Finance uploads PO (not PM FTTT)
+  const canUpload = userRole === 'FINANCE' || userRole === 'GENERAL_MANAGER';
   const [uploading, setUploadingKey] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -1528,7 +1680,7 @@ function ProcurementSection({ project, onRefresh, userRole }: { project: FtttPro
     <div>
       <p style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>Procurement — Purchase Order</p>
       <p style={{ fontSize: 12, color: '#57606a', marginBottom: 12 }}>
-        PM FTTT wajib meng-upload dokumen Purchase Order (PO) sebelum fase ini dapat diselesaikan dan project berlanjut ke Implementation.
+        Finance wajib meng-upload dokumen Purchase Order (PO) sebelum fase ini dapat diselesaikan dan project berlanjut ke Implementation.
       </p>
 
       <div style={{ background: '#F6F8FA', borderRadius: 10, padding: 12, border: '1px solid #EAEEF2' }}>
@@ -1536,7 +1688,7 @@ function ProcurementSection({ project, onRefresh, userRole }: { project: FtttPro
           <div>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
               <span style={{ fontSize: 13, fontWeight: 700 }}>📄 Purchase Order (PO)</span>
-              <span style={{ fontSize: 11, color: '#57606a', background: '#EDF2F4', padding: '2px 6px', borderRadius: 4 }}>PM FTTT</span>
+              <span style={{ fontSize: 11, color: '#57606a', background: '#EDF2F4', padding: '2px 6px', borderRadius: 4 }}>Finance</span>
               {poProcurement
                 ? <span style={{ fontSize: 10, fontWeight: 700, color: '#1a7f37' }}>✓ Diunggah</span>
                 : <span style={{ fontSize: 10, color: '#cf222e', fontWeight: 600 }}>⚠️ WAJIB — belum diunggah</span>}
@@ -1564,16 +1716,17 @@ function ProcurementSection({ project, onRefresh, userRole }: { project: FtttPro
 }
 
 // ─── Project Closing Section ──────────────────────────────────────────────────
-// C5: BAST II Upload; Jaminan+Invoice for TI
-// C6-TI3: Admin-only; maintenance period confirmation gate
+// Issue 7 (TI): Only Jaminan Pemeliharaan + Invoice Final (Finance); no BAST II/Evidence/Catatan
+// Issue 12 (PST): Finance uploads Invoice + Jaminan Pemeliharaan + Jaminan Pelaksanaan; Admin confirms
 function ClosingSection({ project, onRefresh, userRole }: { project: FtttProject; onRefresh: () => void; userRole: string }) {
   const { user } = useAuthStore();
-  // C6-TI3: Only Admin can manage closing activities
+  // Admin can manage closing activities (BAST II for iFORTE)
   const canUpload    = ['ADMIN', 'GENERAL_MANAGER'].includes(userRole);
   const canApprove   = ['PM_FTTT', 'ADMIN', 'GENERAL_MANAGER'].includes(userRole);
-  // C7.3b: Finance ONLY owns Jaminan & Invoice upload — Admin is excluded
   const isFinance    = userRole === 'FINANCE';
   const isTI         = project.ftttCompany === 'TELKOM_INFRA';
+  const isPST        = project.ftttCompany === 'PST';
+  const isIforte     = project.ftttCompany === 'IFORTE';
 
   // C6-TI3: Maintenance period gate — Admin must confirm before uploads are enabled
   const [maintenanceConfirmed, setMaintenanceConfirmed] = useState(false);
@@ -1585,8 +1738,12 @@ function ClosingSection({ project, onRefresh, userRole }: { project: FtttProject
   const notes_list= logs.filter((l) => l.logType === 'NOTE');
 
   // TI closing docs stored in reconDocs
-  const jaminanPemeliharaan = project.reconDocs?.find((d) => d.docKey === 'JAMINAN_PEMELIHARAAN') ?? null;
-  const invoiceFinal        = project.reconDocs?.find((d) => d.docKey === 'INVOICE_FINAL') ?? null;
+  const jaminanPemeliharaan    = project.reconDocs?.find((d) => d.docKey === 'JAMINAN_PEMELIHARAAN') ?? null;
+  const invoiceFinal           = project.reconDocs?.find((d) => d.docKey === 'INVOICE_FINAL') ?? null;
+  // PST closing docs stored in reconDocs
+  const invoicePstClosing      = project.reconDocs?.find((d) => d.docKey === 'INVOICE_PST_CLOSING') ?? null;
+  const jaminanPemeliharaanPst = project.reconDocs?.find((d) => d.docKey === 'JAMINAN_PEMELIHARAAN_PST') ?? null;
+  const jaminanPelaksanaanPst  = project.reconDocs?.find((d) => d.docKey === 'JAMINAN_PELAKSANAAN_PST') ?? null;
 
   const [logType, setLogType] = useState<'BAST_II' | 'EVIDENCE' | 'NOTE'>('BAST_II');
   const [caption, setCaption] = useState('');
@@ -1596,10 +1753,12 @@ function ClosingSection({ project, onRefresh, userRole }: { project: FtttProject
   const [uploadingReconKey, setUploadingReconKey] = useState<string | null>(null);
   const [rejectTarget, setRejectTarget] = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState('');
-  const fileRef          = useRef<HTMLInputElement>(null);
-  const bastiiFileRef    = useRef<HTMLInputElement>(null);
-  const jaminanFileRef   = useRef<HTMLInputElement>(null);
-  const invoiceFileRef   = useRef<HTMLInputElement>(null);
+  const bastiiFileRef        = useRef<HTMLInputElement>(null);
+  const jaminanFileRef       = useRef<HTMLInputElement>(null);
+  const invoiceFileRef       = useRef<HTMLInputElement>(null);
+  const jaminanPemPstRef     = useRef<HTMLInputElement>(null);
+  const jaminanPelPstRef     = useRef<HTMLInputElement>(null);
+  const invoicePstRef        = useRef<HTMLInputElement>(null);
 
   const STATUS_COLORS: Record<string, string> = { PENDING_PM: '#9a6700', APPROVED: '#1a7f37', REJECTED: '#cf222e' };
   const STATUS_LABELS: Record<string, string> = { PENDING_PM: 'Menunggu PM', APPROVED: 'Disetujui', REJECTED: 'Ditolak' };
@@ -1665,8 +1824,8 @@ function ClosingSection({ project, onRefresh, userRole }: { project: FtttProject
         Serah terima project kepada client setelah masa pemeliharaan selesai. Hanya Admin yang dapat mengelola dokumen fase ini.
       </p>
 
-      {/* C6-TI3: Maintenance period confirmation gate */}
-      {canUpload && !maintenanceConfirmed && (
+      {/* Maintenance period confirmation gate — iFORTE only (BAST II / Evidence) */}
+      {isIforte && canUpload && !maintenanceConfirmed && (
         <div style={{ background: '#FFF8C5', border: '1px solid #d4a017', borderRadius: 10, padding: 14, marginBottom: 16 }}>
           <p style={{ margin: '0 0 6px', fontWeight: 700, fontSize: 13, color: '#9a6700' }}>
             ⚠️ Konfirmasi Masa Pemeliharaan
@@ -1683,18 +1842,22 @@ function ClosingSection({ project, onRefresh, userRole }: { project: FtttProject
           </label>
         </div>
       )}
-      {canUpload && maintenanceConfirmed && (
+      {isIforte && canUpload && maintenanceConfirmed && (
         <div style={{ background: '#DAFBE1', border: '1px solid #2DA44E', borderRadius: 8, padding: 10, marginBottom: 14, fontSize: 12, color: '#1a7f37' }}>
           ✅ Masa pemeliharaan dikonfirmasi — seluruh aktivitas penutupan project dapat dilakukan.
         </div>
       )}
-      {!canUpload && !isFinance && (
+      {!canUpload && !isFinance && isIforte && (
         <div style={{ background: '#F6F8FA', border: '1px solid #D0D7DE', borderRadius: 8, padding: 10, marginBottom: 14, fontSize: 12, color: '#57606a' }}>
           🔒 Pengelolaan dokumen Project Closing hanya dapat dilakukan oleh Admin Project.
         </div>
       )}
-      {/* C7.3: Finance info banner — Finance can upload Jaminan/Invoice without maintenance confirmation */}
-      {isFinance && !canUpload && (
+      {!isFinance && (isTI || isPST) && (
+        <div style={{ background: '#F6F8FA', border: '1px solid #D0D7DE', borderRadius: 8, padding: 10, marginBottom: 14, fontSize: 12, color: '#57606a' }}>
+          ℹ️ Dokumen Project Closing diunggah oleh Finance.
+        </div>
+      )}
+      {isFinance && !canUpload && isIforte && (
         <div style={{ background: '#F0F8FF', border: '1px solid #0969DA', borderRadius: 8, padding: 10, marginBottom: 14, fontSize: 12, color: '#0969DA' }}>
           ℹ️ Finance dapat meng-upload dokumen Jaminan Pemeliharaan dan Invoice Final kapan saja pada fase Project Closing.
         </div>
@@ -1767,108 +1930,151 @@ function ClosingSection({ project, onRefresh, userRole }: { project: FtttProject
         </>
       )}
 
-      {/* ── BAST II — Upload File (C5-Issue1: Generate Form removed) ── */}
-      <div style={{ background: '#F6F8FA', borderRadius: 10, padding: 12, marginBottom: 10, border: '1px solid #EAEEF2' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-          <div style={{ flex: 1 }}>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-              <span style={{ fontSize: 13, fontWeight: 700 }}>📄 BAST II</span>
-              <span style={{ fontSize: 11, color: '#57606a', background: '#EDF2F4', padding: '2px 6px', borderRadius: 4 }}>Admin</span>
-              {bastII?.approvalStatus && (
-                <span style={{ fontSize: 10, fontWeight: 700, color: STATUS_COLORS[bastII.approvalStatus] }}>
-                  {STATUS_LABELS[bastII.approvalStatus]}
-                </span>
-              )}
-              {!bastII && <span style={{ fontSize: 10, color: '#8c959f' }}>Belum diunggah</span>}
+      {/* ── PST Closing: Finance uploads Invoice + Jaminan Pemeliharaan + Jaminan Pelaksanaan ── */}
+      {isPST && (
+        <>
+          {[
+            { key: 'INVOICE_PST_CLOSING', label: '🧾 Invoice', desc: 'Tagihan akhir project PST', doc: invoicePstClosing, ref: invoicePstRef },
+            { key: 'JAMINAN_PEMELIHARAAN_PST', label: '🔒 Jaminan Pemeliharaan', desc: 'Dokumen jaminan masa pemeliharaan PST', doc: jaminanPemeliharaanPst, ref: jaminanPemPstRef },
+            { key: 'JAMINAN_PELAKSANAAN_PST', label: '🔒 Jaminan Pelaksanaan', desc: 'Dokumen jaminan pelaksanaan PST', doc: jaminanPelaksanaanPst, ref: jaminanPelPstRef },
+          ].map(({ key, label, desc, doc, ref }) => (
+            <div key={key} style={{ background: '#F6F8FA', borderRadius: 10, padding: 12, marginBottom: 10, border: '1px solid #EAEEF2' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <span style={{ fontSize: 13, fontWeight: 700 }}>{label}</span>
+                    <span style={{ fontSize: 11, color: '#57606a', background: '#EDF2F4', padding: '2px 6px', borderRadius: 4 }}>Finance</span>
+                    {doc ? <span style={{ fontSize: 10, fontWeight: 700, color: '#1a7f37' }}>✓ Diunggah</span>
+                         : <span style={{ fontSize: 10, color: '#cf222e', fontWeight: 600 }}>⚠️ WAJIB — belum diunggah</span>}
+                  </div>
+                  <p style={{ margin: '3px 0 0', fontSize: 11, color: '#57606a' }}>{desc}</p>
+                  {doc?.uploadedBy && <p style={{ margin: '2px 0 0', fontSize: 10, color: '#8c959f' }}>oleh {doc.uploadedBy.name}</p>}
+                </div>
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
+                  {doc?.fileUrl && <a href={fixFileUrl(doc.fileUrl)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: '#0969DA' }}>Lihat</a>}
+                  {isFinance && (
+                    <>
+                      <input ref={ref} type="file" accept=".pdf,.xlsx,.xls,.jpg,.jpeg,.png" style={{ display: 'none' }}
+                        onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleReconUpload(key, f); }} />
+                      <button type="button" onClick={() => ref.current?.click()} disabled={uploadingReconKey === key}
+                        style={{ padding: '4px 10px', borderRadius: 6, border: 'none', background: doc ? '#FFA500' : '#0969DA', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 11 }}>
+                        {uploadingReconKey === key ? '…' : doc ? '🔄 Ganti' : '+ Upload'}
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
             </div>
-            <p style={{ margin: '3px 0 0', fontSize: 11, color: '#57606a' }}>Berita Acara Serah Terima II — perlu disetujui PM FTTT</p>
-            {bastII?.notes && <p style={{ margin: '2px 0 0', fontSize: 11, color: '#57606a' }}>📝 {bastII.notes}</p>}
-            {bastII?.approvalStatus === 'REJECTED' && bastII.rejectionNotes && (
-              <p style={{ margin: '3px 0 0', fontSize: 11, color: '#cf222e', fontStyle: 'italic' }}>Ditolak: {bastII.rejectionNotes}</p>
-            )}
-            {bastII?.uploadedBy && <p style={{ margin: '2px 0 0', fontSize: 10, color: '#8c959f' }}>oleh {bastII.uploadedBy.name}</p>}
+          ))}
+        </>
+      )}
+
+      {/* ── iFORTE only: BAST II / Evidence / Catatan ── */}
+      {isIforte && (
+        <>
+          {/* BAST II */}
+          <div style={{ background: '#F6F8FA', borderRadius: 10, padding: 12, marginBottom: 10, border: '1px solid #EAEEF2' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 13, fontWeight: 700 }}>📄 BAST II</span>
+                  <span style={{ fontSize: 11, color: '#57606a', background: '#EDF2F4', padding: '2px 6px', borderRadius: 4 }}>Admin</span>
+                  {bastII?.approvalStatus && (
+                    <span style={{ fontSize: 10, fontWeight: 700, color: STATUS_COLORS[bastII.approvalStatus] }}>
+                      {STATUS_LABELS[bastII.approvalStatus]}
+                    </span>
+                  )}
+                  {!bastII && <span style={{ fontSize: 10, color: '#8c959f' }}>Belum diunggah</span>}
+                </div>
+                <p style={{ margin: '3px 0 0', fontSize: 11, color: '#57606a' }}>Berita Acara Serah Terima II — perlu disetujui PM FTTT</p>
+                {bastII?.notes && <p style={{ margin: '2px 0 0', fontSize: 11, color: '#57606a' }}>📝 {bastII.notes}</p>}
+                {bastII?.approvalStatus === 'REJECTED' && bastII.rejectionNotes && (
+                  <p style={{ margin: '3px 0 0', fontSize: 11, color: '#cf222e', fontStyle: 'italic' }}>Ditolak: {bastII.rejectionNotes}</p>
+                )}
+                {bastII?.uploadedBy && <p style={{ margin: '2px 0 0', fontSize: 10, color: '#8c959f' }}>oleh {bastII.uploadedBy.name}</p>}
+              </div>
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0, marginLeft: 8 }}>
+                {bastII?.fileUrl && <a href={fixFileUrl(bastII.fileUrl)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: '#0969DA' }}>Lihat</a>}
+                {canApprove && bastII?.approvalStatus === 'PENDING_PM' && (
+                  <>
+                    <button type="button" onClick={() => void handleApprove(bastII.id, true)}
+                      style={{ padding: '3px 8px', borderRadius: 4, border: 'none', background: '#DAFBE1', color: '#1a7f37', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>✓ Setujui</button>
+                    <button type="button" onClick={() => { setRejectTarget(bastII.id); setRejectReason(''); }}
+                      style={{ padding: '3px 8px', borderRadius: 4, border: 'none', background: '#FFEBE9', color: '#cf222e', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>✗ Tolak</button>
+                  </>
+                )}
+                {uploadEnabled && (!bastII || bastII.approvalStatus === 'REJECTED') && (
+                  <>
+                    <input ref={bastiiFileRef} type="file" accept=".pdf,.xlsx,.xls,.jpg,.jpeg,.png" style={{ display: 'none' }}
+                      onChange={(e) => { setLogType('BAST_II'); void handleUpload(e.target.files); }} />
+                    <button type="button" onClick={() => { setLogType('BAST_II'); bastiiFileRef.current?.click(); }} disabled={uploading}
+                      style={{ padding: '4px 10px', borderRadius: 6, border: 'none', background: bastII ? '#FFA500' : '#0969DA', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 11 }}>
+                      {uploading && logType === 'BAST_II' ? '…' : bastII ? '🔄 Ganti BAST II' : '+ Upload BAST II'}
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
           </div>
-          <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0, marginLeft: 8 }}>
-            {bastII?.fileUrl && <a href={fixFileUrl(bastII.fileUrl)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: '#0969DA' }}>Lihat</a>}
-            {canApprove && bastII?.approvalStatus === 'PENDING_PM' && (
+
+          {/* Evidence Photos */}
+          <div style={{ background: '#F6F8FA', borderRadius: 10, padding: 12, marginBottom: 10, border: '1px solid #EAEEF2' }}>
+            <p style={{ margin: '0 0 8px', fontSize: 13, fontWeight: 700 }}>
+              📷 Evidence Serah Terima
+              <span style={{ fontWeight: 400, fontSize: 12, color: '#57606a', marginLeft: 8 }}>({evidences.length} foto)</span>
+            </p>
+            {evidences.map((ev) => (
+              <div key={ev.id} style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '4px 0', borderBottom: '1px solid #EAEEF2', marginBottom: 4 }}>
+                <span style={{ fontSize: 16 }}>📷</span>
+                <div style={{ flex: 1 }}>
+                  {ev.caption && <p style={{ margin: 0, fontSize: 12 }}>{ev.caption}</p>}
+                  <p style={{ margin: 0, fontSize: 10, color: '#8c959f' }}>oleh {ev.uploadedBy.name}</p>
+                </div>
+                {ev.fileUrl && <a href={fixFileUrl(ev.fileUrl)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: '#0969DA' }}>Lihat</a>}
+              </div>
+            ))}
+            {uploadEnabled && (
               <>
-                <button type="button" onClick={() => void handleApprove(bastII.id, true)}
-                  style={{ padding: '3px 8px', borderRadius: 4, border: 'none', background: '#DAFBE1', color: '#1a7f37', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>✓ Setujui</button>
-                <button type="button" onClick={() => { setRejectTarget(bastII.id); setRejectReason(''); }}
-                  style={{ padding: '3px 8px', borderRadius: 4, border: 'none', background: '#FFEBE9', color: '#cf222e', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>✗ Tolak</button>
-              </>
-            )}
-            {uploadEnabled && (!bastII || bastII.approvalStatus === 'REJECTED') && (
-              <>
-                <input ref={bastiiFileRef} type="file" accept=".pdf,.xlsx,.xls,.jpg,.jpeg,.png" style={{ display: 'none' }}
-                  onChange={(e) => { setLogType('BAST_II'); void handleUpload(e.target.files); }} />
-                <button type="button" onClick={() => { setLogType('BAST_II'); bastiiFileRef.current?.click(); }} disabled={uploading}
-                  style={{ padding: '4px 10px', borderRadius: 6, border: 'none', background: bastII ? '#FFA500' : '#0969DA', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 11 }}>
-                  {uploading && logType === 'BAST_II' ? '…' : bastII ? '🔄 Ganti BAST II' : '+ Upload BAST II'}
+                <input type="file" id="evidence-file-input" multiple accept=".jpg,.jpeg,.png,.webp" style={{ display: 'none' }}
+                  onChange={(e) => { setLogType('EVIDENCE'); void handleUpload(e.target.files); }} />
+                <button type="button" onClick={() => { setLogType('EVIDENCE'); document.getElementById('evidence-file-input')?.click(); }}
+                  disabled={uploading}
+                  style={{ marginTop: 8, padding: '6px 14px', borderRadius: 6, border: 'none', background: '#0969DA', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 12 }}>
+                  {uploading && logType === 'EVIDENCE' ? (uploadProgress || 'Mengunggah…') : '📷 Upload Evidence (dapat pilih banyak)'}
                 </button>
               </>
             )}
           </div>
-        </div>
-      </div>
 
-      {/* ── Evidence Photos ── */}
-      <div style={{ background: '#F6F8FA', borderRadius: 10, padding: 12, marginBottom: 10, border: '1px solid #EAEEF2' }}>
-        <p style={{ margin: '0 0 8px', fontSize: 13, fontWeight: 700 }}>
-          📷 Evidence Serah Terima
-          <span style={{ fontWeight: 400, fontSize: 12, color: '#57606a', marginLeft: 8 }}>({evidences.length} foto)</span>
-          <span style={{ fontWeight: 400, fontSize: 11, color: '#57606a', marginLeft: 4 }}>— Dokumentasi penyerahan project ke Telkom Infra</span>
-        </p>
-        {evidences.map((ev) => (
-          <div key={ev.id} style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '4px 0', borderBottom: '1px solid #EAEEF2', marginBottom: 4 }}>
-            <span style={{ fontSize: 16 }}>📷</span>
-            <div style={{ flex: 1 }}>
-              {ev.caption && <p style={{ margin: 0, fontSize: 12 }}>{ev.caption}</p>}
-              <p style={{ margin: 0, fontSize: 10, color: '#8c959f' }}>oleh {ev.uploadedBy.name}</p>
-            </div>
-            {ev.fileUrl && <a href={fixFileUrl(ev.fileUrl)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: '#0969DA' }}>Lihat</a>}
+          {/* Closing Notes */}
+          <div style={{ background: '#F6F8FA', borderRadius: 10, padding: 12, marginBottom: 10, border: '1px solid #EAEEF2' }}>
+            <p style={{ margin: '0 0 8px', fontSize: 13, fontWeight: 700 }}>
+              📝 Catatan Penutupan
+              <span style={{ fontWeight: 400, fontSize: 12, color: '#57606a', marginLeft: 8 }}>({notes_list.length} catatan)</span>
+            </p>
+            {notes_list.map((n) => (
+              <div key={n.id} style={{ padding: '6px 8px', background: '#fff', borderRadius: 6, marginBottom: 4, border: '1px solid #EAEEF2' }}>
+                {n.caption && <p style={{ margin: 0, fontSize: 12, fontWeight: 600 }}>{n.caption}</p>}
+                {n.notes && <p style={{ margin: '2px 0 0', fontSize: 12, color: '#57606a' }}>{n.notes}</p>}
+                <p style={{ margin: '2px 0 0', fontSize: 10, color: '#8c959f' }}>oleh {n.uploadedBy.name}</p>
+              </div>
+            ))}
+            {uploadEnabled && (
+              <div style={{ marginTop: 8 }}>
+                <input value={caption} onChange={(e) => setCaption(e.target.value)} placeholder="Judul catatan (opsional)"
+                  style={{ width: '100%', padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12, marginBottom: 6, boxSizing: 'border-box' }} />
+                <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={3}
+                  placeholder="Validasi masa pemeliharaan selesai, kondisi akhir project, catatan serah terima…"
+                  style={{ width: '100%', padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12, marginBottom: 6, boxSizing: 'border-box', resize: 'vertical' }} />
+                <button type="button" onClick={() => { setLogType('NOTE'); void handleUpload(); }} disabled={uploading || (!caption.trim() && !notes.trim())}
+                  style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: '#0969DA', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 12 }}>
+                  {uploading && logType === 'NOTE' ? 'Menyimpan…' : '+ Simpan Catatan'}
+                </button>
+              </div>
+            )}
           </div>
-        ))}
-        {uploadEnabled && (
-          <>
-            <input type="file" id="evidence-file-input" multiple accept=".jpg,.jpeg,.png,.webp" style={{ display: 'none' }}
-              onChange={(e) => { setLogType('EVIDENCE'); void handleUpload(e.target.files); }} />
-            <button type="button" onClick={() => { setLogType('EVIDENCE'); document.getElementById('evidence-file-input')?.click(); }}
-              disabled={uploading}
-              style={{ marginTop: 8, padding: '6px 14px', borderRadius: 6, border: 'none', background: '#0969DA', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 12 }}>
-              {uploading && logType === 'EVIDENCE' ? (uploadProgress || 'Mengunggah…') : '📷 Upload Evidence (dapat pilih banyak)'}
-            </button>
-          </>
-        )}
-      </div>
-
-      {/* ── Closing Notes ── */}
-      <div style={{ background: '#F6F8FA', borderRadius: 10, padding: 12, marginBottom: 10, border: '1px solid #EAEEF2' }}>
-        <p style={{ margin: '0 0 8px', fontSize: 13, fontWeight: 700 }}>
-          📝 Catatan Penutupan
-          <span style={{ fontWeight: 400, fontSize: 12, color: '#57606a', marginLeft: 8 }}>({notes_list.length} catatan)</span>
-        </p>
-        {notes_list.map((n) => (
-          <div key={n.id} style={{ padding: '6px 8px', background: '#fff', borderRadius: 6, marginBottom: 4, border: '1px solid #EAEEF2' }}>
-            {n.caption && <p style={{ margin: 0, fontSize: 12, fontWeight: 600 }}>{n.caption}</p>}
-            {n.notes && <p style={{ margin: '2px 0 0', fontSize: 12, color: '#57606a' }}>{n.notes}</p>}
-            <p style={{ margin: '2px 0 0', fontSize: 10, color: '#8c959f' }}>oleh {n.uploadedBy.name}</p>
-          </div>
-        ))}
-        {uploadEnabled && (
-          <div style={{ marginTop: 8 }}>
-            <input value={caption} onChange={(e) => setCaption(e.target.value)} placeholder="Judul catatan (opsional)"
-              style={{ width: '100%', padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12, marginBottom: 6, boxSizing: 'border-box' }} />
-            <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={3}
-              placeholder="Validasi masa pemeliharaan selesai, kondisi akhir project, catatan serah terima…"
-              style={{ width: '100%', padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12, marginBottom: 6, boxSizing: 'border-box', resize: 'vertical' }} />
-            <button type="button" onClick={() => { setLogType('NOTE'); void handleUpload(); }} disabled={uploading || (!caption.trim() && !notes.trim())}
-              style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: '#0969DA', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 12 }}>
-              {uploading && logType === 'NOTE' ? 'Menyimpan…' : '+ Simpan Catatan'}
-            </button>
-          </div>
-        )}
-      </div>
+        </>
+      )}
 
       {/* Rejection reason dialog for BAST II */}
       {rejectTarget && (
@@ -1999,6 +2205,25 @@ export default function FtttProjectDetailPage() {
               <a href={fixFileUrl(project.triggerDocUrl)} target="_blank" rel="noopener noreferrer" style={{ color: '#0969DA' }}>
                 Lihat dokumen triggering ↗
               </a>
+              {/* Issue 13: Replace trigger doc in INITIATION phase */}
+              {project.currentPhase === 'INITIATION' && (userRole === 'ADMIN' || userRole === 'GENERAL_MANAGER' || userRole === 'PM_FTTT') && (
+                <>
+                  <input id="trigger-doc-replace" type="file" accept=".pdf,.doc,.docx,.jpg,.jpeg,.png" style={{ display: 'none' }}
+                    onChange={async (e) => {
+                      const f = e.target.files?.[0]; if (!f) return;
+                      const fd = new FormData(); fd.append('file', f);
+                      try {
+                        const res = await apiFetch(`/fttt-projects/${project.id}/trigger-doc`, { method: 'PUT', body: fd }, user?.id);
+                        if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
+                        toast.success('Dokumen triggering berhasil diganti'); void load();
+                      } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
+                    }} />
+                  <button type="button" onClick={() => document.getElementById('trigger-doc-replace')?.click()}
+                    style={{ marginLeft: 8, padding: '2px 8px', borderRadius: 4, border: '1px solid #D0D7DE', background: '#fff', fontSize: 11, cursor: 'pointer', color: '#57606a' }}>
+                    🔄 Ganti
+                  </button>
+                </>
+              )}
             </p>
           </div>
           {/* Hide "Selesaikan Fase" in specific role-gated scenarios */}

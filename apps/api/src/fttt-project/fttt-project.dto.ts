@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { FtttCompany, FtttDocType, FtttJaminanType, FtttDocumentType, FtttImplLogType, FtttClosingLogType } from '@prisma/client';
+import { FtttCompany, FtttDocType, FtttJaminanType, FtttDocumentType, FtttImplLogType, FtttClosingLogType, FtttSpanLogCategory } from '@prisma/client';
 
 // ─── Phase lifecycle config (hardcoded per company) ──────────────────────────
 import { FtttPhase } from '@prisma/client';
@@ -141,6 +141,18 @@ export const AddClosingLogDto = z.object({
   formContent: z.string().optional(),  // JSON string for Generate Form mode (BAST_II)
 });
 export type AddClosingLogDtoType = z.infer<typeof AddClosingLogDto>;
+
+// Span-based Implementation Log (Telkom Infra)
+export const AddSpanDto = z.object({
+  spanNumber: z.string().min(1).max(100),
+});
+export type AddSpanDtoType = z.infer<typeof AddSpanDto>;
+
+export const AddSpanLogDto = z.object({
+  category: z.nativeEnum(FtttSpanLogCategory),
+  caption:  z.string().max(500).optional(),
+});
+export type AddSpanLogDtoType = z.infer<typeof AddSpanLogDto>;
 
 export const FtttProjectFilterDto = z.object({
   company:  z.nativeEnum(FtttCompany).optional(),
