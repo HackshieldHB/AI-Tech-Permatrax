@@ -350,6 +350,8 @@ model User {
   ftttImplementationLogs FtttImplementationLog[]  @relation("FtttImplLogUploader")
   ftttReconDocs          FtttReconDoc[]           @relation("FtttReconDocUploader")
   ftttClosingLogs        FtttClosingLog[]         @relation("FtttClosingLogUploader")
+  ftttSpans              FtttSpan[]               @relation("FtttSpanCreator")
+  ftttSpanLogs           FtttSpanLog[]            @relation("FtttSpanLogUploader")
 }
 
 // Phase 4 — GM-controlled feature visibility per role
@@ -2957,7 +2959,8 @@ enum FtttDocumentType {
   EVIDENCE
   BAUT
   BAUT_REKONSILIASI
-  // Telkom Infra — Documentation & Acceptance upload docs
+  BACT               // Berita Acara Commissioning Test — TI + PST Documentation & Acceptance
+  // Telkom Infra — Documentation & Acceptance upload docs (legacy, kept for backward compat)
   KONTRAK
   PO
   AMANDEMEN_1
@@ -2999,6 +3002,7 @@ model FtttProject {
   implementationLogs FtttImplementationLog[]
   reconDocs          FtttReconDoc[]
   closingLogs        FtttClosingLog[]
+  spans              FtttSpan[]
 
   @@index([ftttCompany])
   @@index([currentPhase])
@@ -3153,6 +3157,50 @@ model FtttImplementationLog {
   createdAt    DateTime         @default(now())
   updatedAt    DateTime         @updatedAt
 
+  @@index([projectId])
+}
+
+// ─── Span-based Daily Implementation Log (Telkom Infra only) ─────────────────
+// Each span groups daily upload logs by category folder for chronological audit trail
+
+enum FtttSpanLogCategory {
+  GALIAN
+  VIDEO_GALIAN
+  PERBAIKAN
+  HANDHOLE
+  JEMBATAN
+  JOIN_TERMINASI
+  MARKING_POS
+}
+
+model FtttSpan {
+  id          String      @id @default(cuid())
+  projectId   String
+  project     FtttProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  spanNumber  String
+  createdById String
+  createdBy   User        @relation("FtttSpanCreator", fields: [createdById], references: [id])
+  createdAt   DateTime    @default(now())
+
+  spanLogs    FtttSpanLog[]
+
+  @@unique([projectId, spanNumber])
+  @@index([projectId])
+}
+
+model FtttSpanLog {
+  id           String              @id @default(cuid())
+  spanId       String
+  span         FtttSpan            @relation(fields: [spanId], references: [id], onDelete: Cascade)
+  projectId    String
+  category     FtttSpanLogCategory
+  fileUrl      String
+  caption      String?
+  uploadedById String
+  uploadedBy   User                @relation("FtttSpanLogUploader", fields: [uploadedById], references: [id])
+  createdAt    DateTime            @default(now())
+
+  @@index([spanId])
   @@index([projectId])
 }
 

@@ -15,45 +15,39 @@ import {
   Role,
 } from '@prisma/client';
 // ─── Reconciliation doc config (mirrors frontend RECON_DOCS) ─────────────────
-// docKeys that do NOT need PM/Admin approval — set to APPROVED on upload
+// docKeys that do NOT need PM approval — set to APPROVED on upload
 const RECON_NO_APPROVAL = new Set([
-  // C7.2: TI Recon docs removed — now go through Admin approval (PM uploads → PENDING_ADMIN)
   // Telkom Infra Closing — Finance uploads, auto-approved
   'JAMINAN_PEMELIHARAAN', 'INVOICE_FINAL',
-  // PST
-  'BAST_1', 'GOOD_RECEIPT_PST', 'INVOICE_PST',
-  // iFORTE
+  // PST Closing — Finance uploads, auto-approved
+  'INVOICE_PST_CLOSING', 'JAMINAN_PEMELIHARAAN_PST', 'JAMINAN_PELAKSANAAN_PST',
+  // iFORTE — no approval needed
   'PUNCHLIST', 'PO_FINAL', 'PSS', 'MCV', 'INVOICE_IFORTE',
-]);
-
-// C7.2: TI Recon docs uploaded by PM FTTT — skip PM self-approval, go directly to Admin review
-const RECON_PM_DIRECT_TO_ADMIN = new Set([
-  'BAST_1_TI', 'BAPWPP_TI', 'SURAT_WASPANG', 'PO_TI', 'AMANDEMEN_1_TI', 'AMANDEMEN_2_TI',
-  'RISALAH_RAPAT_MOM', 'BOQ_PERHITUNGAN', 'BA_PENUTUPAN', 'BAPP_TI',
 ]);
 
 // Required docs per company for RECONCILIATION phase readiness
 // Tuple: [docKey, needsApproval (true = must be APPROVED, false = just must exist)]
 const RECON_REQUIRED: Record<string, Array<[string, boolean, string]>> = {
   TELKOM_INFRA: [
-    // C7.2: ALL TI recon docs now require Admin approval (consistent workflow)
-    ['RISALAH_RAPAT_MOM',  true, 'Risalah Rapat/MOM'],
-    ['BOQ_PERHITUNGAN',    true, 'BOQ Perhitungan'],
-    ['BA_PENUTUPAN',       true, 'BA Penutupan'],
-    ['BAPP_TI',            true, 'BAPP'],
-    ['BAST_1_TI',          true, 'BAST 1'],
-    ['BAPWPP_TI',          true, 'BAPWPP'],
-    ['SURAT_WASPANG',      true, 'Surat Waspang'],
-    ['PO_TI',              true, 'PO'],
-    ['AMANDEMEN_1_TI',     true, 'Amandemen 1'],
-    ['AMANDEMEN_2_TI',     true, 'Amandemen 2'],
-    // NOTE: Jaminan Pemeliharaan & Invoice Final moved to CLOSING phase
+    // Admin uploads → PM approves (single-level approval)
+    ['RISALAH_RAPAT_MOM',           true, 'Risalah Rapat/MOM'],
+    ['BOQ_REKONSILIASI',            true, 'BOQ Rekonsiliasi'],
+    ['BA_PENUTUPAN',                true, 'BA Penutupan'],
+    ['BAPP_TI',                     true, 'BAPP'],
+    ['BAST_1_TI',                   true, 'BAST 1'],
+    ['NOTA_DINAS',                  true, 'Nota Dinas'],
+    ['NOTA_DINAS_TIM_UJI_TERIMA',   true, 'Nota Dinas Tim Uji Terima'],
+    ['PO_TI',                       true, 'PO'],
+    ['AMANDEMEN_1_TI',              true, 'Amandemen 1'],
+    ['AMANDEMEN_2_TI',              true, 'Amandemen 2'],
+    // NOTE: Jaminan Pemeliharaan & Invoice Final in CLOSING phase
   ],
   PST: [
-    ['REKONSILIASI',      true,  'Rekonsiliasi (perlu disetujui)'],
-    ['BAST_1',            false, 'BAST 1'],
-    ['GOOD_RECEIPT_PST',  false, 'Good Receipt'],
-    ['INVOICE_PST',       false, 'Invoice'],
+    // Admin uploads → PM approves
+    ['REKONSILIASI',      true, 'Rekonsiliasi'],
+    ['BAST',              true, 'BAST'],
+    ['GOOD_RECEIPT_PST',  true, 'Good Receipt'],
+    // Invoice moved to Closing phase
   ],
   IFORTE: [
     ['PUNCHLIST',         false, 'Punchlist'],
@@ -75,6 +69,8 @@ import {
   AddImplLogDtoType,
   AddJaminanDtoType,
   AddReconDocDtoType,
+  AddSpanDtoType,
+  AddSpanLogDtoType,
   AdvancePhaseDtoType,
   ApproveDocumentDtoType,
   CreateFtttProjectDtoType,
@@ -157,6 +153,24 @@ export class FtttProjectService {
     });
 
     return project;
+  }
+
+  // ─── Issue 13: Replace / delete triggering document (INITIATION phase only) ─
+  async replaceTriggerDoc(id: string, file: Express.Multer.File | undefined, userId: string, userRole: Role) {
+    if (userRole !== Role.ADMIN && userRole !== Role.GENERAL_MANAGER && userRole !== Role.PM_FTTT) {
+      throw new ForbiddenException('Hanya Admin atau PM FTTT yang dapat mengganti dokumen triggering');
+    }
+    const project = await this.prisma.ftttProject.findUniqueOrThrow({ where: { id }, select: { id: true, currentPhase: true, ftttCompany: true } });
+    if (project.currentPhase !== FtttPhase.INITIATION) {
+      throw new BadRequestException('Dokumen triggering hanya dapat diganti pada fase Project Initiation');
+    }
+    if (!file) throw new BadRequestException('File dokumen wajib diunggah');
+    const triggerDocUrl = await this.storage.uploadMulterFile(file, 'fttt-trigger', project.ftttCompany);
+    return this.prisma.ftttProject.update({
+      where: { id },
+      data: { triggerDocUrl },
+      include: this.fullInclude(),
+    });
   }
 
   // ─── List ─────────────────────────────────────────────────────────────────
@@ -272,14 +286,14 @@ export class FtttProjectService {
       }
     }
 
-    // C6-PST5: PROCUREMENT phase readiness — PM must have uploaded PO
+    // PST Procurement phase readiness — Finance must have uploaded PO
     if (phase === FtttPhase.PROCUREMENT) {
       const reconDocMap = new Map(
         (project as typeof project & { reconDocs: { docKey: string }[] })
           .reconDocs.map((d) => [d.docKey, true]),
       );
       if (!reconDocMap.has('PO_PROCUREMENT')) {
-        reasons.push('Dokumen Purchase Order (PO) belum diunggah oleh PM FTTT');
+        reasons.push('Dokumen Purchase Order (PO) belum diunggah oleh Finance');
       }
     }
 
@@ -302,14 +316,15 @@ export class FtttProjectService {
       // Per-lifecycle required document types for Documentation & Acceptance phase
       const DOC_REQUIRED: Record<string, Array<[string, string]>> = {
         TELKOM_INFRA: [
-          ['KONTRAK',             'Kontrak'],
-          ['PO',                  'PO'],
-          ['AMANDEMEN_1',         'Amandemen 1'],
-          ['DOK_PERUBAHAN_WAKTU', 'Dokumen Perubahan Waktu (NPWP)'],
-          ['BAUT_REKONSILIASI',   'BA Rekonsiliasi'],
-          ['BAUT',                'BAUT'],
+          ['BACT',            'BACT'],
+          ['BAUT',            'BAUT'],
+          ['BAUT_REKONSILIASI', 'BA Rekonsiliasi'],
         ],
-        PST:   [['ATP', 'ATP'], ['BAUT', 'BAUT']],
+        PST: [
+          ['BACT',            'BACT'],
+          ['BAUT',            'BAUT'],
+          ['BAUT_REKONSILIASI', 'BA Rekonsiliasi'],
+        ],
         IFORTE: [['ATP', 'ATP'], ['EVIDENCE', 'Evidence']],
       };
       const required = DOC_REQUIRED[company] ?? [];
@@ -322,36 +337,48 @@ export class FtttProjectService {
       }
     }
 
-    // CLOSING phase readiness — BAST II must be approved + evidence/note
+    // CLOSING phase readiness
     if (phase === FtttPhase.CLOSING) {
-      const closingLogs = (project as typeof project & {
-        closingLogs: { logType: string; approvalStatus: string | null }[];
-      }).closingLogs ?? [];
+      const reconDocMap = new Map(
+        (project as typeof project & { reconDocs: { docKey: string }[] })
+          .reconDocs.map((d) => [d.docKey, true]),
+      );
 
-      const bastII = closingLogs.find((l) => l.logType === 'BAST_II');
-      if (!bastII) {
-        reasons.push('Dokumen BAST II belum diunggah');
-      } else if (bastII.approvalStatus !== 'APPROVED') {
-        reasons.push('Dokumen BAST II belum disetujui PM FTTT');
-      }
-
-      const hasEvidence = closingLogs.some((l) => l.logType === 'EVIDENCE');
-      const hasNote     = closingLogs.some((l) => l.logType === 'NOTE');
-      if (!hasEvidence && !hasNote) {
-        reasons.push('Minimal satu evidence foto atau catatan serah terima wajib diunggah');
-      }
-
-      // C5-Issue3: Telkom Infra closing also requires Jaminan Pemeliharaan + Invoice Final
       if (company === FtttCompany.TELKOM_INFRA) {
-        const reconDocMap = new Map(
-          (project as typeof project & { reconDocs: { docKey: string }[] })
-            .reconDocs.map((d) => [d.docKey, true]),
-        );
+        // TI Closing: only Finance docs (BAST II / Evidence / Note removed)
         if (!reconDocMap.has('JAMINAN_PEMELIHARAAN')) {
-          reasons.push('Jaminan Pemeliharaan belum diunggah pada fase Closing');
+          reasons.push('Jaminan Pemeliharaan belum diunggah oleh Finance');
         }
         if (!reconDocMap.has('INVOICE_FINAL')) {
-          reasons.push('Invoice Final belum diunggah pada fase Closing');
+          reasons.push('Invoice Final belum diunggah oleh Finance');
+        }
+      } else if (company === FtttCompany.PST) {
+        // PST Closing: Finance uploads Invoice, Jaminan Pemeliharaan, Jaminan Pelaksanaan
+        if (!reconDocMap.has('INVOICE_PST_CLOSING')) {
+          reasons.push('Invoice belum diunggah oleh Finance');
+        }
+        if (!reconDocMap.has('JAMINAN_PEMELIHARAAN_PST')) {
+          reasons.push('Jaminan Pemeliharaan belum diunggah oleh Finance');
+        }
+        if (!reconDocMap.has('JAMINAN_PELAKSANAAN_PST')) {
+          reasons.push('Jaminan Pelaksanaan belum diunggah oleh Finance');
+        }
+      } else {
+        // iFORTE — BAST II must be approved + evidence/note
+        const closingLogs = (project as typeof project & {
+          closingLogs: { logType: string; approvalStatus: string | null }[];
+        }).closingLogs ?? [];
+
+        const bastII = closingLogs.find((l) => l.logType === 'BAST_II');
+        if (!bastII) {
+          reasons.push('Dokumen BAST II belum diunggah');
+        } else if (bastII.approvalStatus !== 'APPROVED') {
+          reasons.push('Dokumen BAST II belum disetujui PM FTTT');
+        }
+        const hasEvidence = closingLogs.some((l) => l.logType === 'EVIDENCE');
+        const hasNote     = closingLogs.some((l) => l.logType === 'NOTE');
+        if (!hasEvidence && !hasNote) {
+          reasons.push('Minimal satu evidence foto atau catatan serah terima wajib diunggah');
         }
       }
     }
@@ -439,14 +466,20 @@ export class FtttProjectService {
     }
   }
 
-  // ─── C6-PST4: Surveyor marks Implementation lapangan done ────────────────
+  // ─── Mark Implementation lapangan done ───────────────────────────────────
   async markImplementationLapanganDone(id: string, userId: string, userRole: Role) {
-    // C7-TI5: Surveyor marks lapangan done (PST flow); Admin also can (TI flow)
-    const allowed: Role[] = [Role.SURVEYOR_FTTT, Role.ADMIN, Role.GENERAL_MANAGER];
-    if (!allowed.includes(userRole)) {
-      throw new ForbiddenException('Hanya Surveyor FTTT atau Admin yang dapat menandai pekerjaan lapangan selesai');
-    }
     const project = await this.prisma.ftttProject.findUniqueOrThrow({ where: { id } });
+    // TI: Admin-only; PST/iFORTE: Surveyor or Admin
+    if (project.ftttCompany === FtttCompany.TELKOM_INFRA) {
+      if (userRole !== Role.ADMIN && userRole !== Role.GENERAL_MANAGER) {
+        throw new ForbiddenException('Hanya Admin yang dapat menandai pekerjaan lapangan selesai untuk project Telkom Infra');
+      }
+    } else {
+      const allowed: Role[] = [Role.SURVEYOR_FTTT, Role.ADMIN, Role.GENERAL_MANAGER];
+      if (!allowed.includes(userRole)) {
+        throw new ForbiddenException('Hanya Surveyor FTTT atau Admin yang dapat menandai pekerjaan lapangan selesai');
+      }
+    }
     if (project.currentPhase !== FtttPhase.IMPLEMENTATION) {
       throw new BadRequestException('Project tidak dalam fase Implementation');
     }
@@ -454,11 +487,9 @@ export class FtttProjectService {
       where: { projectId_phase: { projectId: id, phase: FtttPhase.IMPLEMENTATION } },
       data: { notes: 'SURVEYOR_DONE' },
     });
-    // C7-PST1: Notify Admin to upload Monitoring Doc
-    const implProj = await this.prisma.ftttProject.findUniqueOrThrow({ where: { id }, select: { projectName: true } });
     await this.notifications.notifyUsersByRole(Role.ADMIN, {
       title:   'FTTT — Pekerjaan Lapangan Selesai',
-      message: `Pekerjaan lapangan untuk project ${implProj.projectName ?? id.slice(-6)} telah ditandai selesai. Silakan upload Dokumen Monitoring dan selesaikan fase Implementation.`,
+      message: `Pekerjaan lapangan untuk project ${project.projectName ?? id.slice(-6)} telah ditandai selesai. Silakan upload Dokumen Monitoring dan selesaikan fase Implementation.`,
       type:    'FTTT_LAPANGAN_DONE',
       link:    `/fttt-projects/${id}`,
       entityId: id,
@@ -815,6 +846,7 @@ export class FtttProjectService {
   }
 
   // ─── Documentation upload ──────────────────────────────────────────────────
+  // Admin Project uploads; PM FTTT reviews and approves/rejects
   async uploadDocument(
     id: string,
     file: Express.Multer.File | undefined,
@@ -822,13 +854,11 @@ export class FtttProjectService {
     userId: string,
     userRole: Role,
   ) {
-    // C6-TI2: PM FTTT (not Surveyor) owns Documentation & Acceptance document upload
-    const docUploaderRoles: Role[] = [Role.PM_FTTT, Role.ADMIN, Role.GENERAL_MANAGER];
+    const docUploaderRoles: Role[] = [Role.ADMIN, Role.GENERAL_MANAGER];
     if (!docUploaderRoles.includes(userRole)) {
-      throw new ForbiddenException('Hanya PM FTTT yang dapat mengunggah dokumen pada fase Documentation and Acceptance');
+      throw new ForbiddenException('Hanya Admin Project yang dapat mengunggah dokumen pada fase Documentation and Acceptance');
     }
 
-    // Either a file or formContent must be provided
     if (!file && !dto.formContent?.trim()) {
       throw new BadRequestException('Dokumen harus berupa file upload atau Generate Form yang terisi');
     }
@@ -868,7 +898,6 @@ export class FtttProjectService {
           where: { id: docId },
           data: { approvalStatus: 'REJECTED', rejectionNotes: dto.rejectionNotes.trim() },
         });
-        // C7-PST1: Notify PM (uploader) that doc was rejected
         if (doc.uploadedById !== userId) {
           await this.notifications.createForUser(doc.uploadedById, {
             title:   'FTTT — Dokumen Ditolak',
@@ -880,22 +909,15 @@ export class FtttProjectService {
         }
         return updated;
       }
-      const updated = await this.prisma.ftttDocument.update({
+      // PM approves → APPROVED directly (Admin Project is the uploader, PM is final reviewer)
+      return this.prisma.ftttDocument.update({
         where: { id: docId },
-        data: { approvalStatus: 'PENDING_ADMIN', pmApprovedById: userId, pmApprovedAt: new Date(), rejectionNotes: null },
+        data: { approvalStatus: 'APPROVED', pmApprovedById: userId, pmApprovedAt: new Date(), rejectionNotes: null },
       });
-      // C7-PST1: Notify Admin that doc is awaiting their approval
-      await this.notifications.notifyUsersByRole(Role.ADMIN, {
-        title:   'FTTT — Dokumen Menunggu Persetujuan Admin',
-        message: `Dokumen project ${(doc as any).project?.projectName ?? ''} telah disetujui PM dan menunggu konfirmasi Admin.`,
-        type:    'FTTT_DOC_PENDING_ADMIN',
-        link:    `/fttt-projects/${(doc as any).project?.id}`,
-        entityId: (doc as any).project?.id,
-      });
-      return updated;
     }
 
-    if (userRole === Role.ADMIN) {
+    if (userRole === Role.ADMIN || userRole === Role.GENERAL_MANAGER) {
+      // Admin can still approve docs in PENDING_ADMIN state (legacy / iFORTE flow)
       if (doc.approvalStatus !== 'PENDING_ADMIN') {
         throw new BadRequestException('Dokumen tidak dalam status menunggu Admin');
       }
@@ -925,7 +947,8 @@ export class FtttProjectService {
     throw new ForbiddenException('Anda tidak berwenang menyetujui dokumen ini');
   }
 
-  // ─── Issue #6: Surveyor replaces a REJECTED document ─────────────────────
+  // ─── Replace a REJECTED document ─────────────────────────────────────────
+  // Admin Project is the document owner — replaces rejected docs; PM FTTT is reviewer only
   async replaceDocument(
     docId: string,
     file: Express.Multer.File | undefined,
@@ -934,10 +957,9 @@ export class FtttProjectService {
     notes?: string,
     formContent?: string,
   ) {
-    // C7.2: PM FTTT is document owner — only PM can replace rejected docs, Admin is reviewer only
-    const allowedRoles: Role[] = [Role.PM_FTTT, Role.GENERAL_MANAGER];
+    const allowedRoles: Role[] = [Role.ADMIN, Role.GENERAL_MANAGER];
     if (!allowedRoles.includes(userRole)) {
-      throw new ForbiddenException('Hanya PM FTTT yang dapat mengganti dokumen yang ditolak. Admin berperan sebagai reviewer saja.');
+      throw new ForbiddenException('Hanya Admin Project yang dapat mengganti dokumen yang ditolak. PM FTTT berperan sebagai reviewer saja.');
     }
 
     const doc = await this.prisma.ftttDocument.findUniqueOrThrow({ where: { id: docId } });
@@ -973,7 +995,7 @@ export class FtttProjectService {
     });
   }
 
-  // ─── Issue #4: Implementation phase — add log entry (photo/doc/note) ──────
+  // ─── Implementation phase — add log entry (photo/doc/note) ──────────────
   async addImplementationLog(
     id: string,
     dto: AddImplLogDtoType,
@@ -981,10 +1003,17 @@ export class FtttProjectService {
     userId: string,
     userRole: Role,
   ) {
-    // Surveyor FTTT, PM FTTT (as observer), Admin can add logs
-    const allowedRoles: Role[] = [Role.SURVEYOR_FTTT, Role.PM_FTTT, Role.ADMIN, Role.GENERAL_MANAGER];
-    if (!allowedRoles.includes(userRole)) {
-      throw new ForbiddenException('Tidak memiliki akses untuk menambahkan log implementasi');
+    const project = await this.prisma.ftttProject.findUniqueOrThrow({ where: { id }, select: { ftttCompany: true } });
+    // TI: Admin-only; PST/iFORTE: Surveyor, PM, Admin
+    if (project.ftttCompany === FtttCompany.TELKOM_INFRA) {
+      if (userRole !== Role.ADMIN && userRole !== Role.GENERAL_MANAGER) {
+        throw new ForbiddenException('Hanya Admin Project yang dapat menambahkan log implementasi untuk project Telkom Infra');
+      }
+    } else {
+      const allowedRoles: Role[] = [Role.SURVEYOR_FTTT, Role.PM_FTTT, Role.ADMIN, Role.GENERAL_MANAGER];
+      if (!allowedRoles.includes(userRole)) {
+        throw new ForbiddenException('Tidak memiliki akses untuk menambahkan log implementasi');
+      }
     }
 
     // File required for PHOTO and MONITORING_DOC
@@ -1045,6 +1074,47 @@ export class FtttProjectService {
     };
   }
 
+  // ─── Span management (Telkom Infra Implementation phase) ─────────────────
+  async createSpan(projectId: string, dto: AddSpanDtoType, userId: string, userRole: Role) {
+    if (userRole !== Role.ADMIN && userRole !== Role.GENERAL_MANAGER) {
+      throw new ForbiddenException('Hanya Admin yang dapat menambahkan Span');
+    }
+    const project = await this.prisma.ftttProject.findUniqueOrThrow({ where: { id: projectId } });
+    if (project.ftttCompany !== FtttCompany.TELKOM_INFRA) {
+      throw new BadRequestException('Span hanya tersedia untuk project Telkom Infra');
+    }
+    return this.prisma.ftttSpan.create({
+      data: { projectId, spanNumber: dto.spanNumber, createdById: userId },
+      include: { spanLogs: { include: { uploadedBy: { select: { id: true, name: true } } }, orderBy: { createdAt: 'asc' as const } }, createdBy: { select: { id: true, name: true } } },
+    });
+  }
+
+  async deleteSpan(spanId: string, userId: string, userRole: Role) {
+    if (userRole !== Role.ADMIN && userRole !== Role.GENERAL_MANAGER) {
+      throw new ForbiddenException('Hanya Admin yang dapat menghapus Span');
+    }
+    return this.prisma.ftttSpan.delete({ where: { id: spanId } });
+  }
+
+  async addSpanLog(spanId: string, dto: AddSpanLogDtoType, file: Express.Multer.File, userId: string, userRole: Role) {
+    if (userRole !== Role.ADMIN && userRole !== Role.GENERAL_MANAGER) {
+      throw new ForbiddenException('Hanya Admin yang dapat mengunggah dokumentasi Span');
+    }
+    const span = await this.prisma.ftttSpan.findUniqueOrThrow({ where: { id: spanId } });
+    const fileUrl = await this.storage.uploadMulterFile(file, 'fttt-span', span.projectId);
+    return this.prisma.ftttSpanLog.create({
+      data: { spanId, projectId: span.projectId, category: dto.category, fileUrl, caption: dto.caption ?? null, uploadedById: userId },
+      include: { uploadedBy: { select: { id: true, name: true } } },
+    });
+  }
+
+  async deleteSpanLog(logId: string, userId: string, userRole: Role) {
+    if (userRole !== Role.ADMIN && userRole !== Role.GENERAL_MANAGER) {
+      throw new ForbiddenException('Hanya Admin yang dapat menghapus log Span');
+    }
+    return this.prisma.ftttSpanLog.delete({ where: { id: logId } });
+  }
+
   // ─── Private helpers ──────────────────────────────────────────────────────
   private fullInclude() {
     return {
@@ -1059,10 +1129,17 @@ export class FtttProjectService {
       implementationLogs: { include: { uploadedBy: { select: { id: true, name: true, role: true } } }, orderBy: { createdAt: 'asc' as const } },
       reconDocs:          { include: { uploadedBy: { select: { id: true, name: true } } }, orderBy: { createdAt: 'asc' as const } },
       closingLogs:        { include: { uploadedBy: { select: { id: true, name: true } } }, orderBy: { createdAt: 'asc' as const } },
+      spans:              {
+        include: {
+          createdBy: { select: { id: true, name: true } },
+          spanLogs: { include: { uploadedBy: { select: { id: true, name: true } } }, orderBy: { createdAt: 'asc' as const } },
+        },
+        orderBy: { createdAt: 'asc' as const },
+      },
     } as const;
   }
 
-  // ─── Issue #4: Reconciliation & Billing — upload/replace doc ─────────────
+  // ─── Reconciliation & Billing / Closing — upload/replace doc ────────────
   async upsertReconDoc(
     projectId: string,
     dto: AddReconDocDtoType,
@@ -1070,15 +1147,21 @@ export class FtttProjectService {
     userId: string,
     userRole: Role,
   ) {
-    // C7.3b: Jaminan Pemeliharaan & Invoice Final are Finance-only (Admin excluded)
-    const FINANCE_ONLY_DOCS = new Set(['JAMINAN_PEMELIHARAAN', 'INVOICE_FINAL']);
-    if (FINANCE_ONLY_DOCS.has(dto.docKey)) {
+    // Finance-only docs (auto-approved, no PM review needed)
+    const FINANCE_ONLY_DOCS = new Set([
+      'JAMINAN_PEMELIHARAAN', 'INVOICE_FINAL',           // TI Closing
+      'INVOICE_PST_CLOSING', 'JAMINAN_PEMELIHARAAN_PST', // PST Closing
+      'JAMINAN_PELAKSANAAN_PST',                         // PST Closing
+    ]);
+    // PST Procurement PO — Finance only
+    const isPoProcurement = dto.docKey === 'PO_PROCUREMENT';
+    if (FINANCE_ONLY_DOCS.has(dto.docKey) || isPoProcurement) {
       if (userRole !== Role.FINANCE && userRole !== Role.GENERAL_MANAGER) {
-        throw new ForbiddenException('Hanya Finance yang dapat mengunggah dokumen Jaminan Pemeliharaan dan Invoice Final');
+        throw new ForbiddenException('Hanya Finance yang dapat mengunggah dokumen ini');
       }
     } else {
-      // Other recon docs: PM FTTT, Admin, GM, Finance, Surveyor (per C7.1)
-      const allowed: Role[] = [Role.PM_FTTT, Role.ADMIN, Role.GENERAL_MANAGER, Role.FINANCE, Role.SURVEYOR_FTTT];
+      // All other recon docs: Admin/GM (TI, PST), or Surveyor for iFORTE
+      const allowed: Role[] = [Role.ADMIN, Role.GENERAL_MANAGER, Role.FINANCE, Role.SURVEYOR_FTTT];
       if (!allowed.includes(userRole)) {
         throw new ForbiddenException('Tidak memiliki akses untuk mengunggah dokumen rekonsiliasi');
       }
@@ -1098,13 +1181,12 @@ export class FtttProjectService {
       throw new BadRequestException('Dokumen harus berupa file upload atau Generate Form yang terisi');
     }
 
-    // C7.2: TI recon docs uploaded by PM go directly to Admin (no PM self-approval step)
-    const resolveStatus = (docKey: string, uploaderRole: Role) => {
+    // Determine initial approval status: auto-approve Finance docs, PM reviews all others
+    const resolveStatus = (docKey: string) => {
       if (RECON_NO_APPROVAL.has(docKey)) return 'APPROVED';
-      if (RECON_PM_DIRECT_TO_ADMIN.has(docKey) && uploaderRole === Role.PM_FTTT) return 'PENDING_ADMIN';
       return 'PENDING_PM';
     };
-    const initialStatus = resolveStatus(dto.docKey, userRole);
+    const initialStatus = resolveStatus(dto.docKey);
 
     if (existing) {
       return this.prisma.ftttReconDoc.update({
@@ -1114,7 +1196,7 @@ export class FtttProjectService {
           formContent:    dto.formContent ?? null,
           notes:          dto.notes ?? null,
           uploadedById:   userId,
-          approvalStatus: resolveStatus(dto.docKey, userRole),
+          approvalStatus: resolveStatus(dto.docKey),
           rejectionNotes: null,
           pmApprovedById: null, pmApprovedAt: null,
           adminApprovedById: null, adminApprovedAt: null,
@@ -1146,15 +1228,17 @@ export class FtttProjectService {
 
     if (userRole === Role.PM_FTTT) {
       if (doc.approvalStatus !== 'PENDING_PM') throw new BadRequestException('Dokumen tidak dalam status menunggu PM');
+      // PM approves → APPROVED directly (Admin is uploader, PM is final reviewer)
       return this.prisma.ftttReconDoc.update({
         where: { id: docId },
         data: approved
-          ? { approvalStatus: 'PENDING_ADMIN', pmApprovedById: userId, pmApprovedAt: new Date(), rejectionNotes: null }
+          ? { approvalStatus: 'APPROVED', pmApprovedById: userId, pmApprovedAt: new Date(), rejectionNotes: null }
           : { approvalStatus: 'REJECTED', rejectionNotes: rejectionNotes!.trim() },
       });
     }
 
     if (userRole === Role.ADMIN || userRole === Role.GENERAL_MANAGER) {
+      // Admin can approve PENDING_ADMIN docs (iFORTE legacy flow or override)
       if (doc.approvalStatus !== 'PENDING_ADMIN') throw new BadRequestException('Dokumen tidak dalam status menunggu Admin');
       return this.prisma.ftttReconDoc.update({
         where: { id: docId },

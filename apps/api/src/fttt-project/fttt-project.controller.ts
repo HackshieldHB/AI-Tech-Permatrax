@@ -22,6 +22,8 @@ import {
   AddImplLogDto,
   AddJaminanDto,
   AddReconDocDto,
+  AddSpanDto,
+  AddSpanLogDto,
   AdvancePhaseDto,
   ApproveDocumentDto,
   CreateFtttProjectDto,
@@ -198,6 +200,17 @@ export class FtttProjectController {
     return this.service.addJaminan(id, dto, file, user.userId, user.role);
   }
 
+  // PUT /fttt-projects/:id/trigger-doc  (Issue 13: Admin/PM replaces trigger doc in INITIATION)
+  @Put(':id/trigger-doc')
+  @UseInterceptors(FileInterceptor('file', upload))
+  replaceTriggerDoc(
+    @Param('id') id: string,
+    @UploadedFile() file: Express.Multer.File | undefined,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.service.replaceTriggerDoc(id, file, user.userId, user.role);
+  }
+
   // POST /fttt-projects/:id/documents  (Surveyor FTTT only; file OR formContent required)
   @Post(':id/documents')
   @UseInterceptors(FileInterceptor('file', upload))
@@ -289,5 +302,47 @@ export class FtttProjectController {
     @CurrentUser() user: AuthUser,
   ) {
     return this.service.approveClosingLog(logId, approved, rejectionNotes, user.userId, user.role);
+  }
+
+  // ─── Span management (Telkom Infra Implementation phase) ──────────────────
+
+  // POST /fttt-projects/:id/spans
+  @Post(':id/spans')
+  createSpan(
+    @Param('id') id: string,
+    @Body(new ZodValidationPipe(AddSpanDto)) dto: any,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.service.createSpan(id, dto, user.userId, user.role);
+  }
+
+  // DELETE /fttt-projects/spans/:spanId
+  @Delete('spans/:spanId')
+  deleteSpan(
+    @Param('spanId') spanId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.service.deleteSpan(spanId, user.userId, user.role);
+  }
+
+  // POST /fttt-projects/spans/:spanId/logs
+  @Post('spans/:spanId/logs')
+  @UseInterceptors(FileInterceptor('file', upload))
+  addSpanLog(
+    @Param('spanId') spanId: string,
+    @UploadedFile() file: Express.Multer.File,
+    @Body(new ZodValidationPipe(AddSpanLogDto)) dto: any,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.service.addSpanLog(spanId, dto, file, user.userId, user.role);
+  }
+
+  // DELETE /fttt-projects/span-logs/:logId
+  @Delete('span-logs/:logId')
+  deleteSpanLog(
+    @Param('logId') logId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.service.deleteSpanLog(logId, user.userId, user.role);
   }
 }

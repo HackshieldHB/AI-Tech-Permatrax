@@ -985,9 +985,32 @@ export type FtttApprovalStatus = 'PENDING_PM' | 'PENDING_ADMIN' | 'APPROVED' | '
 export type FtttSanggahStatus = 'SUBMITTED' | 'ACCEPTED' | 'REJECTED';
 export type FtttJaminanType = 'JAMINAN_UANG_MUKA' | 'JAMINAN_PELAKSANAAN';
 export type FtttDocumentType =
-  | 'ATP' | 'EVIDENCE' | 'BAUT' | 'BAUT_REKONSILIASI'
+  | 'ATP' | 'EVIDENCE' | 'BAUT' | 'BAUT_REKONSILIASI' | 'BACT'
   | 'KONTRAK' | 'PO' | 'AMANDEMEN_1' | 'DOK_PERUBAHAN_WAKTU'
   | 'SUPPORTING'; // legacy
+
+export type FtttSpanLogCategory =
+  | 'GALIAN' | 'VIDEO_GALIAN' | 'PERBAIKAN' | 'HANDHOLE'
+  | 'JEMBATAN' | 'JOIN_TERMINASI' | 'MARKING_POS';
+
+export interface FtttSpanLog {
+  id:          string;
+  spanId:      string;
+  category:    FtttSpanLogCategory;
+  fileUrl:     string;
+  caption:     string | null;
+  createdAt:   string;
+  uploadedBy:  { id: string; name: string };
+}
+
+export interface FtttSpan {
+  id:          string;
+  projectId:   string;
+  spanNumber:  string;
+  createdAt:   string;
+  createdBy:   { id: string; name: string };
+  spanLogs:    FtttSpanLog[];
+}
 
 export const FTTT_COMPANY_LABELS: Record<FtttCompany, string> = {
   TELKOM_INFRA: 'Telkom Infra',
@@ -1052,6 +1075,7 @@ export interface FtttProject {
   implementationLogs: FtttImplementationLog[];
   reconDocs:          FtttReconDoc[];
   closingLogs:        FtttClosingLog[];
+  spans:              FtttSpan[];
 }
 
 export interface FtttSurveyUpload {
