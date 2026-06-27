@@ -33,6 +33,14 @@ function fmt(date: string | null) {
   return new Date(date).toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' });
 }
 
+// Date + time (WIB) — used for chronological log timestamps
+function fmtDateTimeWIB(date: string | null) {
+  if (!date) return '—';
+  const d = new Date(date);
+  return d.toLocaleDateString('id-ID', { day: '2-digit', month: '2-digit', year: 'numeric' }) + ' ' +
+         d.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) + ' WIB';
+}
+
 function PhaseIcon({ status }: { status: FtttPhaseStatus }) {
   if (status === 'COMPLETED') return <CheckCircle size={18} color="#1a7f37" />;
   if (status === 'ACTIVE')    return <Circle size={18} color="#0969DA" fill="#DDF4FF" />;
@@ -1171,6 +1179,7 @@ function SpanSection({ project, onRefresh, isAdmin }: { project: FtttProject; on
             <div>
               <span style={{ fontWeight: 700, fontSize: 13 }}>Span {span.spanNumber}</span>
               <span style={{ fontSize: 11, color: '#57606a', marginLeft: 8 }}>{span.spanLogs.length} log</span>
+              <span style={{ fontSize: 11, color: '#8c959f', marginLeft: 8 }}>· dibuat {fmt(span.createdAt)}</span>
             </div>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
               {isAdmin && (
@@ -1191,6 +1200,7 @@ function SpanSection({ project, onRefresh, isAdmin }: { project: FtttProject; on
                   <span style={{ fontSize: 11, fontWeight: 600, minWidth: 100 }}>{SPAN_LOG_CATEGORY_LABELS[log.category] ?? log.category}</span>
                   <div style={{ flex: 1 }}>
                     {log.caption && <span style={{ fontSize: 11, color: '#57606a' }}>{log.caption}</span>}
+                    <span style={{ display: 'block', fontSize: 10, color: '#8c959f' }}>🕒 {fmtDateTimeWIB(log.createdAt)}</span>
                   </div>
                   {log.fileUrl && (
                     <a href={fixFileUrl(log.fileUrl)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: '#0969DA' }}>Lihat</a>

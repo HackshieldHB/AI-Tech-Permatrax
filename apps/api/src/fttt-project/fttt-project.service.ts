@@ -675,6 +675,27 @@ export class FtttProjectService {
           entityId: id,
         });
       }
+      // Issue 12 (PST): Notify Finance — Finance uploads Invoice + Jaminan Pemeliharaan + Jaminan Pelaksanaan
+      if (project.ftttCompany === FtttCompany.PST) {
+        await this.notifications.notifyUsersByRole(Role.FINANCE, {
+          title:   'FTTT — Upload Invoice & Jaminan Diperlukan',
+          message: `Project ${pName} (PST) telah memasuki fase Project Closing. Silakan upload dokumen Invoice, Jaminan Pemeliharaan, dan Jaminan Pelaksanaan.`,
+          type:    'FTTT_FINANCE_REQUIRED',
+          link:    `/fttt-projects/${id}`,
+          entityId: id,
+        });
+      }
+    }
+
+    // Issue 8 (PST): Notify Finance when project enters Procurement — Finance uploads the Purchase Order
+    if (updated.currentPhase === FtttPhase.PROCUREMENT && project.ftttCompany === FtttCompany.PST) {
+      await this.notifications.notifyUsersByRole(Role.FINANCE, {
+        title:   'FTTT — Upload Purchase Order (PO) Diperlukan',
+        message: `Project ${pName} (PST) telah memasuki fase Procurement. Silakan upload dokumen Purchase Order (PO) untuk melanjutkan ke fase Implementation.`,
+        type:    'FTTT_FINANCE_REQUIRED',
+        link:    `/fttt-projects/${id}`,
+        entityId: id,
+      });
     }
 
     // C7.4: Notify Finance when PST/iFORTE project enters Reconciliation — Finance uploads BAST_1 + Invoice
