@@ -39,7 +39,21 @@ export type TopoExportData = {
   backbone?: [number, number]; // FIX
   odcPoint?: [number, number]; // FIX
   odpPositions?: [number, number][]; // FIX
-  homepassPoints?: Array<{ lng: number; lat: number; isOsm: boolean }>; // FIX
+  // JLM Issue 1/2: homepass enriched with ODP assignment + coverage status for KMZ + Excel export
+  homepassPoints?: Array<{
+    lng: number;
+    lat: number;
+    isOsm: boolean;
+    odpIndex?: number; // 1-based ODP serving this homepass (undefined when uncovered)
+    covered?: boolean; // Tercover (served by an ODP within coverage) vs Tidak Tercover
+  }>; // FIX
+  // JLM Issue 2: cable geometry so KMZ shows the actual network paths in Google Earth
+  feederCoords?: [number, number][]; // OLT → ODC
+  distRoutes?: [number, number][][]; // ODC → ODP cascade segments
+  closurePoints?: [number, number][]; // splice closures along feeder
+  // JLM Issue 3A: per-ODP port utilization (load / capacity)
+  odpLoad?: number[]; // homepass count per ODP (index-aligned with odpPositions)
+  odpCapacity?: number; // 8 or 16 — selected/derived port capacity
 }; // FIX
 
 // FIX: shape of POST /map/calculate response (enhanced FTTH topology)

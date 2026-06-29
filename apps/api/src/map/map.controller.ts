@@ -57,6 +57,11 @@ class CalculateFtthDto {
   @IsOptional()
   @IsNumber()
   polygonCentroidLon?: number;
+
+  // JLM Issue 3A: user-selected ODP port capacity (1:8 / 1:16) — drives ODP count
+  @IsOptional()
+  @IsIn([8, 16])
+  odpPortCapacity?: 8 | 16;
 }
 
 // FIX: roles that can access GIS map API

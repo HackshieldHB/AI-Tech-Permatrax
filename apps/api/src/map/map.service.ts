@@ -694,8 +694,9 @@ export class MapService {
     polygonAreaSqM?: number; // FIX: polygon mode — if provided, use polygon area instead of circle
     polygonCentroidLat?: number; // FIX: optional centroid from drawn polygon (client)
     polygonCentroidLon?: number; // FIX: optional centroid from drawn polygon (client)
+    odpPortCapacity?: 8 | 16; // JLM Issue 3A: user-selected ODP port capacity
   }) {
-    const { targetLat, targetLon, backboneLat, backboneLon, areaType, areaRadiusMeters, polygonAreaSqM } = params; // FIX
+    const { targetLat, targetLon, backboneLat, backboneLon, areaType, areaRadiusMeters, polygonAreaSqM, odpPortCapacity } = params; // FIX
 
     const haversine = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
       const R = 6371000; // FIX
@@ -757,8 +758,11 @@ export class MapService {
     const odcCapacity = 144; // FIX: 144-core ODC standard (referensi desain)
     const odcCount = Math.max(1, Math.ceil(estimatedHomepass / 192)); // FIX
 
+    // JLM Issue 3A: honor user-selected port capacity (1:8 / 1:16); else auto-derive
     const odpCapacity =
-      backboneDistanceM < 300 ? 8 : backboneDistanceM < 800 ? 16 : 16; // FIX
+      odpPortCapacity === 8 || odpPortCapacity === 16
+        ? odpPortCapacity
+        : backboneDistanceM < 300 ? 8 : 16; // FIX
     const odpCount = Math.max(1, Math.ceil(estimatedHomepass / odpCapacity)); // FIX
 
     const oltPortsNeeded = Math.ceil(activeHomepass / 64); // FIX

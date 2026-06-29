@@ -98,6 +98,8 @@ export function useCalculation(args: {
   const [targetPoint, setTargetPoint] = useState<[number, number] | null>(null);
   const [areaType, setAreaType] = useState<'URBAN' | 'SUBURBAN' | 'RURAL'>('URBAN');
   const [areaRadius, setAreaRadius] = useState(300);
+  // JLM Issue 3A: ODP port capacity selected before calculation (1:8 / 1:16)
+  const [odpPortCapacity, setOdpPortCapacity] = useState<8 | 16>(16);
   const [calcResult, setCalcResult] = useState<FtthCalcApiResponse | null>(null);
   const [calculating, setCalculating] = useState(false);
   const [nearestBackbone, setNearestBackbone] = useState<OsmElement | null>(null);
@@ -400,6 +402,7 @@ export function useCalculation(args: {
         backboneLon: backbonePoint[0], // FIX
         areaType, // FIX
         areaRadiusMeters: areaRadius, // FIX
+        odpPortCapacity, // JLM Issue 3A
         backboneOwner: tags?.operator || tags?.name || 'OSM Data', // FIX
         polygonAreaSqM: inputMode === 'polygon' ? polygonAreaSqM ?? undefined : undefined, // FIX
         polygonCentroidLat:
@@ -437,6 +440,7 @@ export function useCalculation(args: {
     targetPoint, // FIX
     areaType, // FIX
     areaRadius, // FIX
+    odpPortCapacity, // JLM Issue 3A
     nearestBackbone, // FIX
     inputMode, // FIX
     polygonAreaSqM, // FIX
@@ -457,6 +461,8 @@ export function useCalculation(args: {
     setAreaType,
     areaRadius,
     setAreaRadius,
+    odpPortCapacity,
+    setOdpPortCapacity,
     calcResult,
     setCalcResult,
     calculating,

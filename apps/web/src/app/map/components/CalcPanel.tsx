@@ -4,11 +4,12 @@
 'use client';
 
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react';
+import { useState } from 'react';
 import maplibregl from 'maplibre-gl';
 
 import type { FtthCalcApiResponse, OsmElement, TopoExportData } from '../hooks/types';
 import { clearPolygonFromMap } from '../hooks/useCalculation';
-import { exportKmz, exportMapImage, exportPdf } from '../hooks/useExports';
+import { exportExcel, exportKmz, exportMapImage, exportPdf, type ExcelAreaMeta } from '../hooks/useExports';
 import { toast } from 'sonner';
 
 export type CalcPanelProps = {
@@ -27,6 +28,9 @@ export type CalcPanelProps = {
   setAreaType: Dispatch<SetStateAction<string>>;
   areaRadius: number;
   setAreaRadius: Dispatch<SetStateAction<number>>;
+  // JLM Issue 3A: ODP port capacity (1:8 / 1:16)
+  odpPortCapacity: 8 | 16;
+  setOdpPortCapacity: Dispatch<SetStateAction<8 | 16>>;
 
   nearestBackbone: OsmElement | null;
   setNearestBackbone: Dispatch<SetStateAction<OsmElement | null>>;
@@ -82,6 +86,8 @@ export function CalcPanel(props: CalcPanelProps) {
     setAreaType,
     areaRadius,
     setAreaRadius,
+    odpPortCapacity,
+    setOdpPortCapacity,
     nearestBackbone,
     setNearestBackbone,
     calculating,
@@ -110,7 +116,145 @@ export function CalcPanel(props: CalcPanelProps) {
     setActivePanel,
   } = props;
 
+  // JLM Issue 1: Export to Excel dialog (area metadata, editable, best-effort geocode)
+  const [showExcel, setShowExcel] = useState(false);
+  const [geocoding, setGeocoding] = useState(false);
+  const [excelMeta, setExcelMeta] = useState<ExcelAreaMeta>({
+    name: '', rw: '', provinsi: '', kabupaten: '', kelurahan: '', kecamatan: '', alamat: '',
+  });
+
+  const openExcelDialog = async () => {
+    setShowExcel(true);
+    const hps = topoExportData?.homepassPoints ?? [];
+    let lat = targetPoint?.[1];
+    let lng = targetPoint?.[0];
+    if (hps.length) {
+      lat = hps.reduce((s, h) => s + h.lat, 0) / hps.length;
+      lng = hps.reduce((s, h) => s + h.lng, 0) / hps.length;
+    }
+    if (lat == null || lng == null) return;
+    setGeocoding(true);
+    const up = (v: unknown) => (v ? String(v).toUpperCase() : '');
+    try {
+      const res = await fetch(
+        `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}&zoom=16&addressdetails=1`,
+        { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(8000) },
+      );
+      if (res.ok) {
+        const data = (await res.json()) as { address?: Record<string, string> };
+        const a = data.address ?? {};
+        setExcelMeta((prev) => ({
+          ...prev,
+          provinsi: prev.provinsi || up(a.state),
+          kabupaten: prev.kabupaten || up(a.county || a.city),
+          kecamatan: prev.kecamatan || up(a.city_district || a.municipality || a.suburb),
+          kelurahan: prev.kelurahan || up(a.village || a.neighbourhood || a.hamlet),
+        }));
+      }
+    } catch {
+      /* offline / rate-limited — fields stay editable */
+    } finally {
+      setGeocoding(false);
+    }
+  };
+
+  const doExcelExport = async () => {
+    const hps = (topoExportData?.homepassPoints ?? []).map((h) => ({
+      lat: h.lat, lng: h.lng, odpIndex: h.odpIndex, covered: h.covered,
+    }));
+    if (!hps.length) {
+      toast.error('Belum ada data homepass untuk diexport');
+      return;
+    }
+    setExporting(true);
+    try {
+      await exportExcel({ homepass: hps, meta: excelMeta, filename: `JLM-DataListCustomer-${Date.now()}` });
+      toast.success('✅ Excel diunduh');
+      setShowExcel(false);
+    } catch (err: unknown) {
+      toast.error(`Export gagal: ${err instanceof Error ? err.message : 'Error'}`);
+    } finally {
+      setExporting(false);
+    }
+  };
+
   return (              <div style={{ padding: 16 }}>
+                {/* JLM Issue 1: Export to Excel dialog */}
+                {showExcel && (
+                  <div
+                    style={{
+                      position: 'fixed', inset: 0, zIndex: 2000,
+                      background: 'rgba(0,0,0,0.4)', display: 'flex',
+                      alignItems: 'center', justifyContent: 'center', padding: 16,
+                    }}
+                    onClick={() => setShowExcel(false)}
+                  >
+                    <div
+                      onClick={(e) => e.stopPropagation()}
+                      style={{
+                        background: 'white', borderRadius: 12, padding: 18,
+                        width: 380, maxWidth: '100%', maxHeight: '90vh', overflowY: 'auto',
+                        boxShadow: '0 10px 40px rgba(0,0,0,0.25)',
+                      }}
+                    >
+                      <div style={{ fontSize: 15, fontWeight: 800, color: '#111', marginBottom: 4 }}>
+                        📑 Export to Excel
+                      </div>
+                      <div style={{ fontSize: 11, color: '#6B7280', marginBottom: 12, lineHeight: 1.5 }}>
+                        Lengkapi data area. Kolom wilayah diisi otomatis bila tersedia — silakan koreksi
+                        bila perlu. {geocoding && <span style={{ color: '#00B89E' }}>⏳ mengambil wilayah…</span>}
+                      </div>
+                      {([
+                        ['name', 'Name (Area / Cluster)'],
+                        ['rw', 'RW'],
+                        ['provinsi', 'Provinsi'],
+                        ['kabupaten', 'Kabupaten'],
+                        ['kecamatan', 'Kecamatan'],
+                        ['kelurahan', 'Kelurahan'],
+                        ['alamat', 'Alamat (opsional)'],
+                      ] as const).map(([key, label]) => (
+                        <div key={key} style={{ marginBottom: 8 }}>
+                          <label style={{ fontSize: 10, fontWeight: 700, color: '#6B7280', display: 'block', marginBottom: 3 }}>
+                            {label}
+                          </label>
+                          <input
+                            value={excelMeta[key] ?? ''}
+                            onChange={(e) => setExcelMeta((prev) => ({ ...prev, [key]: e.target.value }))}
+                            style={{
+                              width: '100%', padding: '7px 9px', borderRadius: 7,
+                              border: '1px solid #E5E7EB', fontSize: 12, boxSizing: 'border-box',
+                            }}
+                          />
+                        </div>
+                      ))}
+                      <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
+                        <button
+                          type="button"
+                          onClick={() => setShowExcel(false)}
+                          style={{
+                            flex: 1, padding: '9px', borderRadius: 8, border: '1px solid #E5E7EB',
+                            background: 'white', cursor: 'pointer', fontSize: 12, color: '#6B7280',
+                          }}
+                        >
+                          Batal
+                        </button>
+                        <button
+                          type="button"
+                          disabled={exporting}
+                          onClick={() => void doExcelExport()}
+                          style={{
+                            flex: 2, padding: '9px', borderRadius: 8, border: 'none',
+                            background: exporting ? '#E5E7EB' : 'linear-gradient(135deg, #00D4B4, #00B89E)',
+                            color: exporting ? '#9CA3AF' : 'white', cursor: exporting ? 'not-allowed' : 'pointer',
+                            fontSize: 12, fontWeight: 700,
+                          }}
+                        >
+                          {exporting ? '⏳ Mengunduh…' : '⬇️ Download .xlsx'}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
                 {calcMode === 'idle' && !calcResult && (
                   <>
                     <p
@@ -241,6 +385,48 @@ export function CalcPanel(props: CalcPanelProps) {
                             {t}
                           </button>
                         ))}
+                      </div>
+                    </div>
+
+                    {/* JLM Issue 3A: ODP port capacity selector */}
+                    <div style={{ marginBottom: 12 }}>
+                      <label
+                        style={{
+                          fontSize: 11,
+                          fontWeight: 700,
+                          color: '#6B7280',
+                          display: 'block',
+                          marginBottom: 6,
+                          textTransform: 'uppercase',
+                          letterSpacing: '0.05em',
+                        }}
+                      >
+                        Kapasitas Port ODP
+                      </label>
+                      <div style={{ display: 'flex', gap: 4 }}>
+                        {([8, 16] as const).map((cap) => (
+                          <button
+                            key={cap}
+                            type="button"
+                            onClick={() => setOdpPortCapacity(cap)}
+                            style={{
+                              flex: 1,
+                              padding: '7px 4px',
+                              borderRadius: 7,
+                              border: `1.5px solid ${odpPortCapacity === cap ? '#00D4B4' : '#E5E7EB'}`,
+                              background: odpPortCapacity === cap ? '#00D4B415' : 'white',
+                              color: odpPortCapacity === cap ? '#00D4B4' : '#374151',
+                              cursor: 'pointer',
+                              fontSize: 12,
+                              fontWeight: 600,
+                            }}
+                          >
+                            📦 1:{cap}
+                          </button>
+                        ))}
+                      </div>
+                      <div style={{ fontSize: 10, color: '#9CA3AF', marginTop: 4, lineHeight: 1.4 }}>
+                        Maks. {odpPortCapacity} homepass per ODP. Jumlah ODP dihitung otomatis sesuai kapasitas.
                       </div>
                     </div>
 
@@ -561,12 +747,12 @@ export function CalcPanel(props: CalcPanelProps) {
                                       await exportPdf(opt.key, mapRef, calcResult); // FIX
                                       toast.success('✅ PDF diunduh'); // FIX
                                     } else if (opt.key === 'kmz') {
+                                      // JLM Issue 2: pass full topology incl. cable paths + snapped ODC
                                       await exportKmz(
                                         {
-                                          backbone: backbonePoint ?? undefined, // FIX
-                                          odcPoint: targetPoint ?? undefined, // FIX
-                                          odpPositions: topoExportData?.odpPositions || [], // FIX
-                                          homepassPoints: topoExportData?.homepassPoints || [], // FIX
+                                          ...topoExportData,
+                                          backbone: topoExportData?.backbone ?? backbonePoint ?? undefined, // FIX
+                                          odcPoint: topoExportData?.odcPoint ?? targetPoint ?? undefined, // FIX
                                         },
                                         fname,
                                       ); // FIX
@@ -606,6 +792,31 @@ export function CalcPanel(props: CalcPanelProps) {
                               )}
                             </button>
                           ))}
+                          {/* JLM Issue 1: Export to Excel */}
+                          <button
+                            type="button"
+                            disabled={exporting}
+                            onClick={() => void openExcelDialog()}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 8,
+                              padding: '8px 12px',
+                              borderRadius: 8,
+                              background: exporting
+                                ? 'var(--color-background-secondary)'
+                                : 'var(--color-background-primary)',
+                              cursor: exporting ? 'not-allowed' : 'pointer',
+                              fontSize: 12,
+                              fontWeight: 500,
+                              color: exporting ? '#9CA3AF' : 'var(--color-text-primary)',
+                              border: '0.5px solid var(--color-border-tertiary)',
+                              textAlign: 'left',
+                            }}
+                          >
+                            <span>📑</span>
+                            <span>Export to Excel (.xlsx)</span>
+                          </button>
                         </div>
                       </div>
                     )}

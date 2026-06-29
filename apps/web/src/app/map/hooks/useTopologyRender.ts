@@ -889,6 +889,25 @@ export function useTopologyRender(args: {
 
         const osmCount = validHomepass.length; // FIX
 
+        // ── JLM Issue 1/3A: coverage status (Tercover/Tidak Tercover) + per-ODP load ──
+        // A homepass is "Tercover" when its assigned ODP sits within drop-cable reach.
+        const odpCapacityVal = result.equipment.odp.capacity || 8; // 8 or 16 ports
+        const COVERAGE_RADIUS_M = Math.max(100, spacingM); // drop-cable coverage from ODP
+        const odpLoad: number[] = odpPositions.map(() => 0); // homepass count per ODP
+        const homepassExport = validHomepass.map((h) => {
+          const odp = odpPositions[h.odpIdx]; // FIX
+          const dist = odp ? haversineM(h.coords[1], h.coords[0], odp[1], odp[0]) : Infinity; // FIX
+          const covered = !!odp && dist <= COVERAGE_RADIUS_M; // FIX
+          if (covered) odpLoad[h.odpIdx] += 1; // FIX
+          return {
+            lng: h.coords[0], // FIX
+            lat: h.coords[1], // FIX
+            isOsm: true, // FIX
+            odpIndex: covered ? h.odpIdx + 1 : undefined, // 1-based ODP, undefined when uncovered
+            covered, // FIX
+          };
+        }); // FIX
+
         // ── STEP ⑥: Render all layers ───────────────────
         toast.info('⑥ Merender topologi di peta...'); // FIX
 
@@ -1223,6 +1242,9 @@ export function useTopologyRender(args: {
               properties: {
                 label: `ODP-${i + 1}`, // FIX
                 capacity: result.equipment.odp.capacity, // FIX
+                // JLM Issue 3A: port utilization (covered homepass served / total ports)
+                portUsage: odpLoad[i] ?? 0, // FIX
+                portCapacity: odpCapacityVal, // FIX
               },
             })), // FIX
           },
@@ -1249,8 +1271,10 @@ export function useTopologyRender(args: {
               'concat',
               ['get', 'label'],
               '\n',
-              '1:',
-              ['to-string', ['get', 'capacity']], // FIX: show splitter ratio
+              // JLM Issue 3A: show port utilization e.g. "6/8"
+              ['to-string', ['get', 'portUsage']],
+              '/',
+              ['to-string', ['get', 'portCapacity']],
             ] as maplibregl.ExpressionSpecification, // FIX
             'text-size': 9, // FIX
             'text-offset': [0, 1.8], // FIX
@@ -1377,16 +1401,17 @@ export function useTopologyRender(args: {
           ); // FIX
         }
 
-        // FIX: store for KMZ export
+        // FIX: store for KMZ + Excel export (JLM Issue 1/2/3A)
         setTopoExportData({
           backbone, // FIX
           odcPoint: [odcLng, odcLat], // FIX
           odpPositions, // FIX
-          homepassPoints: validHomepass.map((h) => ({
-            lng: h.coords[0], // FIX
-            lat: h.coords[1], // FIX
-            isOsm: true, // FIX: OSM buildings only
-          })), // FIX
+          homepassPoints: homepassExport, // FIX: incl. odpIndex + covered status
+          feederCoords, // JLM Issue 2: OLT → ODC path
+          distRoutes, // JLM Issue 2: ODC → ODP paths
+          closurePoints, // JLM Issue 2: splice closures
+          odpLoad, // JLM Issue 3A: per-ODP load
+          odpCapacity: odpCapacityVal, // JLM Issue 3A
         }); // FIX
 
         setTopologyRendered(true); // FIX
@@ -1679,11 +1704,40 @@ export function useTopologyRender(args: {
           });
         }
 
+        // JLM Issue 1/2/3A: enrich stored-design export — nearest-ODP assignment + coverage + cables
+        const storedCapacity =
+          typeof odpCapacity === 'number' ? odpCapacity : Number(odpCapacity) || 8;
+        const storedCoverageM = 100; // drop-cable coverage from ODP
+        const storedOdpLoad: number[] = odpPositions.map(() => 0);
+        const storedHomepass = homepassPoints.map((coords) => {
+          let bestIdx = -1;
+          let bestDist = Infinity;
+          odpPositions.forEach(([oLng, oLat], oi) => {
+            const d = haversineM(coords[1], coords[0], oLat, oLng);
+            if (d < bestDist) {
+              bestDist = d;
+              bestIdx = oi;
+            }
+          });
+          const covered = bestIdx >= 0 && bestDist <= storedCoverageM;
+          if (covered) storedOdpLoad[bestIdx] += 1;
+          return {
+            lng: coords[0],
+            lat: coords[1],
+            isOsm: true,
+            odpIndex: covered ? bestIdx + 1 : undefined,
+            covered,
+          };
+        });
         setTopoExportData({
           backbone: oltCoords,
           odcPoint: odcCoords,
           odpPositions,
-          homepassPoints: homepassPoints.map(coords => ({ lng: coords[0], lat: coords[1], isOsm: true })),
+          homepassPoints: storedHomepass,
+          feederCoords: feederCoords ?? undefined,
+          distRoutes,
+          odpLoad: storedOdpLoad,
+          odpCapacity: storedCapacity,
         });
         setTopologyRendered(true);
         setLastRenderedGeometry({

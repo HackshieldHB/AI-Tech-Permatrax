@@ -15,6 +15,7 @@ export type LeftSidebarPanels = {
     clusters: import('../hooks/types').ClusterPin[];
     layers: import('../hooks/types').GisLayer[];
     topologyRendered: boolean;
+    topoExportData?: import('../hooks/types').TopoExportData | null;
     categoryConfig: LegendCategoryConfig;
     clearTopology: () => void;
     mapRef: MutableRefObject<maplibregl.Map | null>;
@@ -162,6 +163,7 @@ export function LeftSidebar({
                 clusters={legendProps.clusters}
                 layers={legendProps.layers}
                 topologyRendered={legendProps.topologyRendered}
+                topoExportData={legendProps.topoExportData}
                 categoryConfig={legendProps.categoryConfig}
                 clearTopology={legendProps.clearTopology}
                 mapRef={legendProps.mapRef}

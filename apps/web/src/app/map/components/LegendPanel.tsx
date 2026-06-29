@@ -1,9 +1,10 @@
 'use client';
 
+import { useMemo } from 'react';
 import type { MutableRefObject } from 'react';
 import maplibregl from 'maplibre-gl';
 
-import type { ClusterPin, GisLayer } from '../hooks/types';
+import type { ClusterPin, GisLayer, TopoExportData } from '../hooks/types';
 
 export type LegendCategoryConfig = Record<
   string,
@@ -14,21 +15,73 @@ export type LegendPanelProps = {
   clusters: ClusterPin[];
   layers: GisLayer[];
   topologyRendered: boolean;
+  topoExportData?: TopoExportData | null;
   categoryConfig: LegendCategoryConfig;
   clearTopology: () => void;
   mapRef: MutableRefObject<maplibregl.Map | null>;
 };
+
+// JLM Issue 5: classify a KMZ/GeoJSON feature into a network object type
+type ObjType = 'OLT' | 'ODC' | 'ODP' | 'Closure' | 'Homepass' | 'Kabel';
+function classifyFeature(
+  props: Record<string, unknown> | null | undefined,
+  geomType?: string,
+): ObjType | null {
+  const hay = `${String(props?.type ?? props?.kind ?? props?.Type ?? '')} ${String(
+    props?.name ?? props?.Name ?? '',
+  )}`.toLowerCase();
+  if (/\bolt\b|backbone/.test(hay)) return 'OLT';
+  if (/\bodc\b/.test(hay)) return 'ODC';
+  if (/\bodp\b/.test(hay)) return 'ODP';
+  if (/closure|joint/.test(hay)) return 'Closure';
+  if (/homepass|\bhp\b|house|tercover/.test(hay)) return 'Homepass';
+  if (/feeder|distribu|cable|kabel|drop/.test(hay)) return 'Kabel';
+  if (geomType === 'LineString' || geomType === 'MultiLineString') return 'Kabel';
+  return null;
+}
 
 export function LegendPanel(props: LegendPanelProps) {
   const {
     clusters,
     layers,
     topologyRendered,
+    topoExportData,
     categoryConfig,
     clearTopology,
     mapRef,
   } = props;
   void mapRef;
+
+  // JLM Issue 5: object counts for ACTIVE (visible) layers + rendered topology only
+  const objectCounts = useMemo(() => {
+    const counts: Record<ObjType, number> = { OLT: 0, ODC: 0, ODP: 0, Closure: 0, Homepass: 0, Kabel: 0 };
+    layers
+      .filter((l) => l.isVisible && l.geoJson?.features)
+      .forEach((l) => {
+        l.geoJson.features.forEach((f) => {
+          const t = classifyFeature(
+            f.properties as Record<string, unknown> | null,
+            (f.geometry as { type?: string } | null)?.type,
+          );
+          if (t) counts[t] += 1;
+        });
+      });
+    if (topologyRendered && topoExportData) {
+      if (topoExportData.backbone) counts.OLT += 1;
+      if (topoExportData.odcPoint) counts.ODC += 1;
+      counts.ODP += topoExportData.odpPositions?.length ?? 0;
+      counts.Homepass += topoExportData.homepassPoints?.length ?? 0;
+      counts.Closure += topoExportData.closurePoints?.length ?? 0;
+      if (topoExportData.feederCoords?.length) counts.Kabel += 1;
+      counts.Kabel += topoExportData.distRoutes?.length ?? 0;
+    }
+    return counts;
+  }, [layers, topologyRendered, topoExportData]);
+
+  const hasObjects = Object.values(objectCounts).some((n) => n > 0);
+  const OBJ_COLORS: Record<ObjType, string> = {
+    OLT: '#1D4ED8', ODC: '#7C3AED', ODP: '#16A34A', Closure: '#F59E0B', Homepass: '#22C55E', Kabel: '#3B82F6',
+  };
 
   return (
               <div style={{ padding: 16 }}>
@@ -135,6 +188,60 @@ export function LegendPanel(props: LegendPanelProps) {
                       </span>
                     </div>
                   ))}
+                </div>
+
+                {/* JLM Issue 5: object counts by active (visible) layer/project */}
+                <div style={{ marginBottom: 16 }}>
+                  <div
+                    style={{
+                      fontSize: 11,
+                      fontWeight: 700,
+                      color: '#6B7280',
+                      marginBottom: 8,
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.05em',
+                    }}
+                  >
+                    Objek (Layer Aktif)
+                  </div>
+                  {!hasObjects && (
+                    <div style={{ fontSize: 11, color: '#9CA3AF', padding: '4px 0' }}>
+                      Aktifkan layer/project atau jalankan kalkulasi untuk melihat jumlah objek.
+                    </div>
+                  )}
+                  {hasObjects &&
+                    (['OLT', 'ODC', 'ODP', 'Closure', 'Homepass', 'Kabel'] as const)
+                      .filter((k) => objectCounts[k] > 0)
+                      .map((k) => (
+                        <div
+                          key={k}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            padding: '4px 8px',
+                            borderRadius: 6,
+                            marginBottom: 3,
+                            background: '#F9FAFB',
+                          }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <div
+                              style={{
+                                width: 12,
+                                height: 12,
+                                borderRadius: '50%',
+                                background: OBJ_COLORS[k],
+                                flexShrink: 0,
+                              }}
+                            />
+                            <span style={{ fontSize: 12, color: '#374151' }}>{k}</span>
+                          </div>
+                          <span style={{ fontSize: 12, fontWeight: 800, color: '#111' }}>
+                            {objectCounts[k]}
+                          </span>
+                        </div>
+                      ))}
                 </div>
 
                 <div

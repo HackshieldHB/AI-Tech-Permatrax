@@ -2,6 +2,21 @@ import type { RefObject } from 'react'; // FIX
 import { useState } from 'react'; // FIX
 import maplibregl from 'maplibre-gl'; // FIX
 import JSZip from 'jszip'; // FIX
+import type { TopoExportData } from './types'; // JLM Issue 1/2
+
+// JLM Issue 2: escape XML/KML special characters
+function escapeKml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+// JLM Issue 2: serialise a coordinate path to KML "lng,lat,0 …" form
+function kmlLine(coords: [number, number][]): string {
+  return coords.map(([lng, lat]) => `${lng},${lat},0`).join(' ');
+}
 
 // ════════════════════════════════════════════════════════════════════════════
 // State ownership (Phase 1): topoExportData is owned by useTopologyRender and
@@ -22,27 +37,47 @@ export async function exportMapImage(mapRef: RefObject<maplibregl.Map | null>, f
   document.body.removeChild(a); // FIX
 } // FIX
 
-// FIX: export topology GeoJSON as KMZ
+// JLM Issue 2: export full topology (points + cable paths) as KMZ for Google Earth
 export async function exportKmz(
-  topologyData: {
-    backbone?: [number, number]; // FIX
-    odcPoint?: [number, number]; // FIX
-    odpPositions?: [number, number][]; // FIX
-    homepassPoints?: Array<{ lng: number; lat: number; isOsm: boolean }>; // FIX
-  }, // FIX
+  topologyData: TopoExportData, // FIX
   filename: string, // FIX
 ) {
   const kmlHeader = `<?xml version="1.0" encoding="UTF-8"?>
 <kml xmlns="http://www.opengis.net/kml/2.2">
 <Document>
-<name>${filename}</name>
-<Style id="olt"><IconStyle><color>ffff0000</color></IconStyle></Style>
-<Style id="odc"><IconStyle><color>ffaa00ff</color></IconStyle></Style>
+<name>${escapeKml(filename)}</name>
+<Style id="olt"><IconStyle><color>ffff0000</color><scale>1.3</scale></IconStyle></Style>
+<Style id="odc"><IconStyle><color>ffaa00ff</color><scale>1.2</scale></IconStyle></Style>
 <Style id="odp"><IconStyle><color>ff00aa00</color></IconStyle></Style>
-<Style id="homepass"><IconStyle><color>ff00cc44</color></IconStyle></Style>
+<Style id="closure"><IconStyle><color>ff00a5ff</color><scale>0.8</scale></IconStyle></Style>
+<Style id="homepass"><IconStyle><color>ff44cc22</color><scale>0.6</scale></IconStyle></Style>
+<Style id="homepass_uncovered"><IconStyle><color>ffafa39c</color><scale>0.5</scale></IconStyle></Style>
+<Style id="feeder"><LineStyle><color>ff4444ef</color><width>4</width></LineStyle></Style>
+<Style id="distribution"><LineStyle><color>fff6823b</color><width>2.5</width></LineStyle></Style>
 `; // FIX
 
   let kmlBody = ''; // FIX
+
+  // ── Cable paths (the part that was missing before) ──────────────────────────
+  if (topologyData.feederCoords && topologyData.feederCoords.length >= 2) {
+    kmlBody += `<Placemark><name>Kabel Feeder (OLT→ODC)</name><styleUrl>#feeder</styleUrl>
+      <LineString><tessellate>1</tessellate><coordinates>${kmlLine(topologyData.feederCoords)}</coordinates></LineString></Placemark>\n`; // FIX
+  } // FIX
+  if (topologyData.distRoutes) {
+    topologyData.distRoutes.forEach((coords, i) => {
+      if (coords.length >= 2) {
+        kmlBody += `<Placemark><name>Kabel Distribusi ${i + 1}</name><styleUrl>#distribution</styleUrl>
+          <LineString><tessellate>1</tessellate><coordinates>${kmlLine(coords)}</coordinates></LineString></Placemark>\n`; // FIX
+      }
+    }); // FIX
+  } // FIX
+
+  if (topologyData.backbone) {
+    const [blng, blat] = topologyData.backbone; // FIX
+    kmlBody += `<Placemark><name>OLT / Backbone</name><styleUrl>#olt</styleUrl>
+      <description>Optical Line Terminal</description>
+      <Point><coordinates>${blng},${blat},0</coordinates></Point></Placemark>\n`; // FIX
+  } // FIX
 
   if (topologyData.odcPoint) {
     const [lng, lat] = topologyData.odcPoint; // FIX
@@ -52,24 +87,33 @@ export async function exportKmz(
 
   if (topologyData.odpPositions) {
     topologyData.odpPositions.forEach((pos: [number, number], i: number) => {
+      const load = topologyData.odpLoad?.[i]; // FIX
+      const cap = topologyData.odpCapacity; // FIX
+      const usage = load != null && cap != null ? ` (${load}/${cap} port)` : ''; // FIX
       kmlBody += `<Placemark><name>ODP-${i + 1}</name><styleUrl>#odp</styleUrl>
+        <description>${escapeKml(`ODP A${String(i + 1).padStart(2, '0')}${usage}`)}</description>
+        <Point><coordinates>${pos[0]},${pos[1]},0</coordinates></Point></Placemark>\n`; // FIX
+    }); // FIX
+  } // FIX
+
+  if (topologyData.closurePoints) {
+    topologyData.closurePoints.forEach((pos, i) => {
+      kmlBody += `<Placemark><name>Closure ${i + 1}</name><styleUrl>#closure</styleUrl>
         <Point><coordinates>${pos[0]},${pos[1]},0</coordinates></Point></Placemark>\n`; // FIX
     }); // FIX
   } // FIX
 
   if (topologyData.homepassPoints) {
     topologyData.homepassPoints.forEach((hp, i: number) => {
-      kmlBody += `<Placemark><name>HP-${i + 1}</name><styleUrl>#homepass</styleUrl>
-        <description>Homepass (OSM)</description>
+      const covered = hp.covered !== false; // FIX
+      const styleId = covered ? 'homepass' : 'homepass_uncovered'; // FIX
+      const desc = covered
+        ? `Tercover${hp.odpIndex ? ` — ODP A${String(hp.odpIndex).padStart(2, '0')}` : ''}`
+        : 'Tidak Tercover'; // FIX
+      kmlBody += `<Placemark><name>HP-${i + 1}</name><styleUrl>#${styleId}</styleUrl>
+        <description>${escapeKml(desc)}</description>
         <Point><coordinates>${hp.lng},${hp.lat},0</coordinates></Point></Placemark>\n`; // FIX
     }); // FIX
-  } // FIX
-
-  if (topologyData.backbone) {
-    const [blng, blat] = topologyData.backbone; // FIX
-    kmlBody += `<Placemark><name>OLT/Backbone</name><styleUrl>#olt</styleUrl>
-      <description>Optical Line Terminal</description>
-      <Point><coordinates>${blng},${blat},0</coordinates></Point></Placemark>\n`; // FIX
   } // FIX
 
   const kmlFooter = '</Document></kml>'; // FIX
@@ -86,6 +130,77 @@ export async function exportKmz(
   a.click(); // FIX
   document.body.removeChild(a); // FIX
   URL.revokeObjectURL(url); // FIX
+} // FIX
+
+// JLM Issue 1: export calculation result to Excel (.xlsx) matching the JLM template
+// Sheet 1 "Data List Customer" (raw rows) + Sheet 2 "DATA HOMEPASS" (pre-computed pivot).
+export type ExcelAreaMeta = {
+  name: string;
+  rw: string;
+  provinsi: string;
+  kabupaten: string;
+  kelurahan: string;
+  kecamatan: string;
+  alamat?: string;
+};
+
+export async function exportExcel(args: {
+  homepass: Array<{ lat: number; lng: number; odpIndex?: number; covered?: boolean }>;
+  meta: ExcelAreaMeta;
+  filename: string;
+}) {
+  const XLSX = await import('xlsx');
+  const odpLabel = (n: number) => `ODP A${String(n).padStart(2, '0')}`;
+  const { meta } = args;
+
+  // ── Sheet 1: Data List Customer (headers verbatim incl. template "Longtitude") ──
+  const header = [
+    'Name', 'RW', 'Name_Cst', 'Provinsi', 'Kabupaten', 'Kelurahan',
+    'Kecamatan', 'Latitude', 'Longtitude', 'ODP', 'Keterangan', 'Alamat',
+  ];
+  const seqByOdp: Record<number, number> = {};
+  const rows = args.homepass.map((hp) => {
+    const covered = hp.covered !== false && hp.odpIndex != null;
+    let nameCst = 'House';
+    let odpCol = 'Tidak Tercover';
+    let ket = 'Tidak Tercover';
+    if (covered) {
+      const n = hp.odpIndex as number;
+      seqByOdp[n] = (seqByOdp[n] ?? 0) + 1;
+      odpCol = odpLabel(n);
+      nameCst = `${odpLabel(n)} .${seqByOdp[n]}`;
+      ket = 'Tercover';
+    }
+    return [
+      meta.name, meta.rw, nameCst, meta.provinsi, meta.kabupaten, meta.kelurahan,
+      meta.kecamatan, hp.lat, hp.lng, odpCol, ket, meta.alamat ?? '',
+    ];
+  });
+  const ws1 = XLSX.utils.aoa_to_sheet([header, ...rows]);
+
+  // ── Sheet 2: DATA HOMEPASS pivot (dynamic ODP columns) ──────────────────────
+  const coveredOdps = Array.from(
+    new Set(args.homepass.filter((h) => h.covered !== false && h.odpIndex != null).map((h) => h.odpIndex as number)),
+  ).sort((a, b) => a - b);
+  const N = coveredOdps.length;
+  const perOdp = coveredOdps.map((n) => args.homepass.filter((h) => h.covered !== false && h.odpIndex === n).length);
+  const tercoverTotal = perOdp.reduce((a, b) => a + b, 0);
+  const tidakCount = args.homepass.filter((h) => h.covered === false || h.odpIndex == null).length;
+  const grand = tercoverTotal + tidakCount;
+
+  const totalCols = N + 5; // Name | ODP×N | Tercover Total | Tidak Tercover | TT Total | Grand Total
+  const blank = () => Array(totalCols).fill('') as (string | number)[];
+  const row2 = blank(); row2[0] = 'Count of Keterangan'; row2[1] = 'Keterangan'; row2[2] = 'ODP';
+  const row3 = blank(); row3[1] = 'Tercover'; row3[N + 1] = 'Tercover Total'; row3[N + 2] = 'Tidak Tercover'; row3[N + 3] = 'Tidak Tercover Total'; row3[N + 4] = 'Grand Total';
+  const row4 = blank(); row4[0] = 'Name'; coveredOdps.forEach((n, i) => { row4[1 + i] = odpLabel(n); }); row4[N + 2] = 'Tidak Tercover';
+  const dataRow = blank(); dataRow[0] = meta.name; perOdp.forEach((c, i) => { dataRow[1 + i] = c; }); dataRow[N + 1] = tercoverTotal; dataRow[N + 2] = tidakCount; dataRow[N + 3] = tidakCount; dataRow[N + 4] = grand;
+  const grandRow = blank(); grandRow[0] = 'Grand Total'; perOdp.forEach((c, i) => { grandRow[1 + i] = c; }); grandRow[N + 1] = tercoverTotal; grandRow[N + 2] = tidakCount; grandRow[N + 3] = tidakCount; grandRow[N + 4] = grand;
+  const ws2 = XLSX.utils.aoa_to_sheet([blank(), blank(), row2, row3, row4, dataRow, grandRow]);
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws1, 'Data List Customer');
+  XLSX.utils.book_append_sheet(wb, ws2, 'DATA HOMEPASS');
+  XLSX.writeFile(wb, `${args.filename}.xlsx`);
 } // FIX
 
 // FIX: complete PDF export with proper layout
