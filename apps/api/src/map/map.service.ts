@@ -695,8 +695,9 @@ export class MapService {
     polygonCentroidLat?: number; // FIX: optional centroid from drawn polygon (client)
     polygonCentroidLon?: number; // FIX: optional centroid from drawn polygon (client)
     odpPortCapacity?: 8 | 16; // JLM Issue 3A: user-selected ODP port capacity
+    poleSpacingMeters?: number; // JLM Issue B: user-configurable pole spacing
   }) {
-    const { targetLat, targetLon, backboneLat, backboneLon, areaType, areaRadiusMeters, polygonAreaSqM, odpPortCapacity } = params; // FIX
+    const { targetLat, targetLon, backboneLat, backboneLon, areaType, areaRadiusMeters, polygonAreaSqM, odpPortCapacity, poleSpacingMeters } = params; // FIX
 
     const haversine = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
       const R = 6371000; // FIX
@@ -819,13 +820,13 @@ export class MapService {
     const spliceAtOdp = odpCount * 2; // FIX
     const totalSplice = inlineClosure * splicePerClosure + spliceAtOdc + spliceAtOdp; // FIX
 
-    const poleSpacingM = 45; // FIX
+    // JLM Issue B: pole spacing is user-configurable (clamped to a sane range); default 45m
+    const poleSpacingM = Math.min(200, Math.max(20, Math.round(poleSpacingMeters ?? 45))); // FIX
     // FIX: realistic pole calculation — 75% existing PLN/Telkom poles
     const EXISTING_POLE_RATIO = 0.75; // FIX
-    const aerialRouteM =
-      installMethod.includes('Aerial') || installMethod.includes('aerial')
-        ? feederCableM + distributionCableM
-        : 0; // FIX
+    // JLM Issue B: poles are planned along the whole network (feeder + distribution),
+    // not only aerial spans, so the user always gets a pole plan at the chosen interval.
+    const aerialRouteM = feederCableM + distributionCableM; // FIX
     const totalPolesNeeded =
       aerialRouteM > 0 ? Math.ceil(aerialRouteM / poleSpacingM) : 0; // FIX
     const existingPolesUsed = Math.round(totalPolesNeeded * EXISTING_POLE_RATIO); // FIX

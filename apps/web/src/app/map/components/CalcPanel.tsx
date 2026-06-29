@@ -31,6 +31,9 @@ export type CalcPanelProps = {
   // JLM Issue 3A: ODP port capacity (1:8 / 1:16)
   odpPortCapacity: 8 | 16;
   setOdpPortCapacity: Dispatch<SetStateAction<8 | 16>>;
+  // JLM Issue B: pole spacing (meters)
+  poleSpacing: number;
+  setPoleSpacing: Dispatch<SetStateAction<number>>;
 
   nearestBackbone: OsmElement | null;
   setNearestBackbone: Dispatch<SetStateAction<OsmElement | null>>;
@@ -88,6 +91,8 @@ export function CalcPanel(props: CalcPanelProps) {
     setAreaRadius,
     odpPortCapacity,
     setOdpPortCapacity,
+    poleSpacing,
+    setPoleSpacing,
     nearestBackbone,
     setNearestBackbone,
     calculating,
@@ -427,6 +432,48 @@ export function CalcPanel(props: CalcPanelProps) {
                       </div>
                       <div style={{ fontSize: 10, color: '#9CA3AF', marginTop: 4, lineHeight: 1.4 }}>
                         Maks. {odpPortCapacity} homepass per ODP. Jumlah ODP dihitung otomatis sesuai kapasitas.
+                      </div>
+                    </div>
+
+                    {/* JLM Issue B: pole spacing selector */}
+                    <div style={{ marginBottom: 12 }}>
+                      <label
+                        style={{
+                          fontSize: 11,
+                          fontWeight: 700,
+                          color: '#6B7280',
+                          display: 'block',
+                          marginBottom: 6,
+                          textTransform: 'uppercase',
+                          letterSpacing: '0.05em',
+                        }}
+                      >
+                        Jarak Antar Tiang
+                      </label>
+                      <div style={{ display: 'flex', gap: 4 }}>
+                        {([40, 50, 60] as const).map((m) => (
+                          <button
+                            key={m}
+                            type="button"
+                            onClick={() => setPoleSpacing(m)}
+                            style={{
+                              flex: 1,
+                              padding: '7px 4px',
+                              borderRadius: 7,
+                              border: `1.5px solid ${poleSpacing === m ? '#00D4B4' : '#E5E7EB'}`,
+                              background: poleSpacing === m ? '#00D4B415' : 'white',
+                              color: poleSpacing === m ? '#00D4B4' : '#374151',
+                              cursor: 'pointer',
+                              fontSize: 12,
+                              fontWeight: 600,
+                            }}
+                          >
+                            🪝 {m}m
+                          </button>
+                        ))}
+                      </div>
+                      <div style={{ fontSize: 10, color: '#9CA3AF', marginTop: 4, lineHeight: 1.4 }}>
+                        Tiang digenerate otomatis setiap ±{poleSpacing}m sepanjang jalur jaringan.
                       </div>
                     </div>
 

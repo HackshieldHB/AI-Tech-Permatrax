@@ -18,6 +18,19 @@ function kmlLine(coords: [number, number][]): string {
   return coords.map(([lng, lat]) => `${lng},${lat},0`).join(' ');
 }
 
+// JLM Issue A: Google Earth rejects LineStrings without ≥2 distinct coordinates.
+// Drop consecutive duplicate points; return null when fewer than 2 distinct remain.
+function sanitizeLine(coords: [number, number][] | undefined | null): [number, number][] | null {
+  if (!coords || coords.length < 2) return null;
+  const out: [number, number][] = [];
+  for (const c of coords) {
+    if (!Array.isArray(c) || c.length < 2 || typeof c[0] !== 'number' || typeof c[1] !== 'number') continue;
+    const last = out[out.length - 1];
+    if (!last || last[0] !== c[0] || last[1] !== c[1]) out.push([c[0], c[1]]);
+  }
+  return out.length >= 2 ? out : null;
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // State ownership (Phase 1): topoExportData is owned by useTopologyRender and
 // passed into callbacks here alongside mapRef/calcResult — never global.
@@ -50,6 +63,7 @@ export async function exportKmz(
 <Style id="odc"><IconStyle><color>ffaa00ff</color><scale>1.2</scale><Icon><href>https://maps.google.com/mapfiles/kml/shapes/square.png</href></Icon></IconStyle></Style>
 <Style id="odp"><IconStyle><color>ff00aa00</color><scale>1.0</scale><Icon><href>https://maps.google.com/mapfiles/kml/shapes/donut.png</href></Icon></IconStyle></Style>
 <Style id="closure"><IconStyle><color>ff00a5ff</color><scale>0.9</scale><Icon><href>https://maps.google.com/mapfiles/kml/shapes/target.png</href></Icon></IconStyle></Style>
+<Style id="pole"><IconStyle><color>ffb6b6b6</color><scale>0.7</scale><Icon><href>https://maps.google.com/mapfiles/kml/shapes/triangle.png</href></Icon></IconStyle></Style>
 <Style id="homepass"><IconStyle><color>ff44cc22</color><scale>0.6</scale><Icon><href>https://maps.google.com/mapfiles/kml/shapes/placemark_circle.png</href></Icon></IconStyle></Style>
 <Style id="homepass_uncovered"><IconStyle><color>ffafa39c</color><scale>0.6</scale><Icon><href>https://maps.google.com/mapfiles/kml/shapes/open-diamond.png</href></Icon></IconStyle></Style>
 <Style id="feeder"><LineStyle><color>ff4444ef</color><width>4</width></LineStyle></Style>
@@ -58,16 +72,18 @@ export async function exportKmz(
 
   let kmlBody = ''; // FIX
 
-  // ── Cable paths (the part that was missing before) ──────────────────────────
-  if (topologyData.feederCoords && topologyData.feederCoords.length >= 2) {
+  // ── Cable paths (JLM Issue A: sanitize so every LineString has ≥2 distinct points) ──
+  const feederLine = sanitizeLine(topologyData.feederCoords);
+  if (feederLine) {
     kmlBody += `<Placemark><name>Kabel Feeder (OLT→ODC)</name><styleUrl>#feeder</styleUrl>
-      <LineString><tessellate>1</tessellate><coordinates>${kmlLine(topologyData.feederCoords)}</coordinates></LineString></Placemark>\n`; // FIX
+      <LineString><tessellate>1</tessellate><coordinates>${kmlLine(feederLine)}</coordinates></LineString></Placemark>\n`; // FIX
   } // FIX
   if (topologyData.distRoutes) {
     topologyData.distRoutes.forEach((coords, i) => {
-      if (coords.length >= 2) {
+      const line = sanitizeLine(coords); // FIX: skip degenerate segments
+      if (line) {
         kmlBody += `<Placemark><name>Kabel Distribusi ${i + 1}</name><styleUrl>#distribution</styleUrl>
-          <LineString><tessellate>1</tessellate><coordinates>${kmlLine(coords)}</coordinates></LineString></Placemark>\n`; // FIX
+          <LineString><tessellate>1</tessellate><coordinates>${kmlLine(line)}</coordinates></LineString></Placemark>\n`; // FIX
       }
     }); // FIX
   } // FIX
@@ -99,6 +115,14 @@ export async function exportKmz(
   if (topologyData.closurePoints) {
     topologyData.closurePoints.forEach((pos, i) => {
       kmlBody += `<Placemark><name>Closure ${i + 1}</name><styleUrl>#closure</styleUrl>
+        <Point><coordinates>${pos[0]},${pos[1]},0</coordinates></Point></Placemark>\n`; // FIX
+    }); // FIX
+  } // FIX
+
+  // JLM Issue B: poles
+  if (topologyData.polePoints) {
+    topologyData.polePoints.forEach((pos, i) => {
+      kmlBody += `<Placemark><name>Tiang ${i + 1}</name><styleUrl>#pole</styleUrl>
         <Point><coordinates>${pos[0]},${pos[1]},0</coordinates></Point></Placemark>\n`; // FIX
     }); // FIX
   } // FIX

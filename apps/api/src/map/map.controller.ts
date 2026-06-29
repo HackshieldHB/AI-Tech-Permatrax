@@ -62,6 +62,11 @@ class CalculateFtthDto {
   @IsOptional()
   @IsIn([8, 16])
   odpPortCapacity?: 8 | 16;
+
+  // JLM Issue B: user-configurable pole spacing (meters) for automatic pole planning
+  @IsOptional()
+  @IsNumber()
+  poleSpacingMeters?: number;
 }
 
 // FIX: roles that can access GIS map API

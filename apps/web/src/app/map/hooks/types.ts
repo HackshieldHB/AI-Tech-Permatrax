@@ -51,6 +51,7 @@ export type TopoExportData = {
   feederCoords?: [number, number][]; // OLT → ODC
   distRoutes?: [number, number][][]; // ODC → ODP cascade segments
   closurePoints?: [number, number][]; // splice closures along feeder
+  polePoints?: [number, number][]; // JLM Issue B: auto-generated poles at configurable interval
   // JLM Issue 3A: per-ODP port utilization (load / capacity)
   odpLoad?: number[]; // homepass count per ODP (index-aligned with odpPositions)
   odpCapacity?: number; // 8 or 16 — selected/derived port capacity

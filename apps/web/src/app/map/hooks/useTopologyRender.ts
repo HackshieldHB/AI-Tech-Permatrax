@@ -1025,15 +1025,12 @@ export function useTopologyRender(args: {
           }); // FIX
         }
 
-        // FIX: tiang — always attempt to render if aerial route
+        // JLM Issue B: poles are always planned at the user-configured interval
+        // (result.equipment.pole.spacingM echoes the value chosen in the calc panel).
         const poleSpacingM = result.equipment?.pole?.spacingM || 45; // FIX
-        const installMethod = result.cable?.installMethod || ''; // FIX
+        let polePointsForExport: [number, number][] = []; // JLM Issue B
 
-        if (
-          installMethod.includes('Aerial') || // FIX
-          installMethod.includes('aerial') || // FIX
-          (result.equipment?.pole?.total || 0) > 0 // FIX
-        ) {
+        {
           const tiangPoints: [number, number][] = []; // FIX
           let accumulated = 0; // FIX
           let nextPoleAt = poleSpacingM; // FIX
@@ -1087,6 +1084,7 @@ export function useTopologyRender(args: {
           const tiangSample = dedupedTiang
             .filter((_, i) => i % Math.max(1, Math.floor(dedupedTiang.length / 100)) === 0) // FIX
             .slice(0, 100); // FIX
+          polePointsForExport = tiangSample; // JLM Issue B: include poles in export result
 
           if (tiangSample.length > 0) {
             safeAddSource('topo-tiang', {
@@ -1411,6 +1409,7 @@ export function useTopologyRender(args: {
           feederCoords, // JLM Issue 2: OLT → ODC path
           distRoutes, // JLM Issue 2: ODC → ODP paths
           closurePoints, // JLM Issue 2: splice closures
+          polePoints: polePointsForExport, // JLM Issue B: auto-planned poles
           odpLoad, // JLM Issue 3A: per-ODP load
           odpCapacity: odpCapacityVal, // JLM Issue 3A
         }); // FIX
