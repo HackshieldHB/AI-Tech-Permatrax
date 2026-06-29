@@ -153,3 +153,44 @@ export function homepassPointsToFeatureCollection(points: [number, number][]): F
     })),
   };
 }
+
+// ── JLM Issue 4/5: shared network-object classification + symbology ──────────
+export type NetworkObjType = 'OLT' | 'ODC' | 'ODP' | 'Closure' | 'Homepass' | 'Kabel';
+
+// Distinct colour per object type (used by KMZ import styling + legend swatches)
+export const NETWORK_OBJECT_COLORS: Record<NetworkObjType, string> = {
+  OLT: '#1D4ED8',
+  ODC: '#7C3AED',
+  ODP: '#16A34A',
+  Closure: '#F59E0B',
+  Homepass: '#22C55E',
+  Kabel: '#3B82F6',
+};
+
+// Per-type circle radius so object hierarchy reads at a glance
+export const NETWORK_OBJECT_RADIUS: Record<NetworkObjType, number> = {
+  OLT: 12,
+  ODC: 10,
+  ODP: 8,
+  Closure: 6,
+  Homepass: 4.5,
+  Kabel: 5,
+};
+
+/** Classify a KML/GeoJSON feature into an FTTH network object type by props + geometry. */
+export function classifyNetworkObject(
+  props: Record<string, unknown> | null | undefined,
+  geomType?: string,
+): NetworkObjType | null {
+  const hay = `${String(props?.type ?? props?.kind ?? (props as Record<string, unknown>)?.Type ?? '')} ${String(
+    props?.name ?? (props as Record<string, unknown>)?.Name ?? '',
+  )}`.toLowerCase();
+  if (/\bolt\b|backbone/.test(hay)) return 'OLT';
+  if (/\bodc\b/.test(hay)) return 'ODC';
+  if (/\bodp\b/.test(hay)) return 'ODP';
+  if (/closure|joint/.test(hay)) return 'Closure';
+  if (/homepass|\bhp\b|house|tercover/.test(hay)) return 'Homepass';
+  if (/feeder|distribu|cable|kabel|drop/.test(hay)) return 'Kabel';
+  if (geomType === 'LineString' || geomType === 'MultiLineString') return 'Kabel';
+  return null;
+}

@@ -8,6 +8,22 @@ import maplibregl from 'maplibre-gl'; // FIX
 import { toast } from 'sonner'; // FIX
 import { apiPost, apiPatch, apiDelete } from '../../../lib/api'; // FIX
 import type { GisLayer } from './types'; // FIX
+import {
+  classifyNetworkObject,
+  NETWORK_OBJECT_COLORS,
+  NETWORK_OBJECT_RADIUS,
+} from '../utils/geojsonMapper'; // JLM Issue 4
+
+// JLM Issue 4: build a maplibre 'match' expr that maps tagged object type → value
+function objTypeMatch(
+  table: Record<string, string | number>,
+  fallback: string | number,
+): maplibregl.ExpressionSpecification {
+  const expr: unknown[] = ['match', ['get', '__objType']];
+  Object.entries(table).forEach(([k, v]) => expr.push(k, v));
+  expr.push(fallback);
+  return expr as maplibregl.ExpressionSpecification;
+}
 
 // FIX: extract every [lng, lat] from any GeoJSON geometry (module scope — not inside component)
 function getAllCoordinates(geometry: Geometry | null | undefined): [number, number][] {
@@ -161,8 +177,9 @@ export function useKmzLayers(params: {
           source: sourceId, // FIX
           filter: pointFilter, // FIX
           paint: {
-            'circle-radius': 7, // FIX
-            'circle-color': layer.color, // FIX
+            // JLM Issue 4: per-object colour/size (falls back to layer colour when untyped)
+            'circle-radius': objTypeMatch(NETWORK_OBJECT_RADIUS, 7), // FIX
+            'circle-color': objTypeMatch(NETWORK_OBJECT_COLORS, layer.color), // FIX
             'circle-stroke-color': 'white', // FIX
             'circle-stroke-width': 2, // FIX
             'circle-opacity': 0.9, // FIX
@@ -239,7 +256,8 @@ export function useKmzLayers(params: {
           source: sourceId, // FIX
           filter: lineFilter, // FIX
           paint: {
-            'line-color': layer.color, // FIX
+            // JLM Issue 4: cable lines keep the network "Kabel" colour
+            'line-color': objTypeMatch(NETWORK_OBJECT_COLORS, layer.color), // FIX
             'line-width': 2.5, // FIX
             'line-opacity': 0.85, // FIX
           },
@@ -307,6 +325,18 @@ export function useKmzLayers(params: {
       if (!geoJson.features?.length) {
         throw new Error('KMZ tidak mengandung data yang dapat ditampilkan'); // FIX
       }
+
+      // JLM Issue 4: tag each feature with its network object type so it keeps its
+      // own symbology on import (preserve object identity across export/import).
+      geoJson.features.forEach((f) => {
+        const t = classifyNetworkObject(
+          f.properties as Record<string, unknown> | null,
+          (f.geometry as { type?: string } | null)?.type,
+        );
+        if (t) {
+          f.properties = { ...(f.properties || {}), __objType: t };
+        }
+      });
 
       const colors = ['#FF6B00', '#9B59B6', '#2980B9', '#27AE60', '#E74C3C']; // FIX
       const color = colors[Math.floor(Math.random() * colors.length)]; // FIX

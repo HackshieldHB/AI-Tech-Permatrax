@@ -5,6 +5,11 @@ import type { MutableRefObject } from 'react';
 import maplibregl from 'maplibre-gl';
 
 import type { ClusterPin, GisLayer, TopoExportData } from '../hooks/types';
+import {
+  classifyNetworkObject,
+  NETWORK_OBJECT_COLORS,
+  type NetworkObjType,
+} from '../utils/geojsonMapper';
 
 export type LegendCategoryConfig = Record<
   string,
@@ -21,24 +26,7 @@ export type LegendPanelProps = {
   mapRef: MutableRefObject<maplibregl.Map | null>;
 };
 
-// JLM Issue 5: classify a KMZ/GeoJSON feature into a network object type
-type ObjType = 'OLT' | 'ODC' | 'ODP' | 'Closure' | 'Homepass' | 'Kabel';
-function classifyFeature(
-  props: Record<string, unknown> | null | undefined,
-  geomType?: string,
-): ObjType | null {
-  const hay = `${String(props?.type ?? props?.kind ?? props?.Type ?? '')} ${String(
-    props?.name ?? props?.Name ?? '',
-  )}`.toLowerCase();
-  if (/\bolt\b|backbone/.test(hay)) return 'OLT';
-  if (/\bodc\b/.test(hay)) return 'ODC';
-  if (/\bodp\b/.test(hay)) return 'ODP';
-  if (/closure|joint/.test(hay)) return 'Closure';
-  if (/homepass|\bhp\b|house|tercover/.test(hay)) return 'Homepass';
-  if (/feeder|distribu|cable|kabel|drop/.test(hay)) return 'Kabel';
-  if (geomType === 'LineString' || geomType === 'MultiLineString') return 'Kabel';
-  return null;
-}
+type ObjType = NetworkObjType;
 
 export function LegendPanel(props: LegendPanelProps) {
   const {
@@ -59,7 +47,7 @@ export function LegendPanel(props: LegendPanelProps) {
       .filter((l) => l.isVisible && l.geoJson?.features)
       .forEach((l) => {
         l.geoJson.features.forEach((f) => {
-          const t = classifyFeature(
+          const t = classifyNetworkObject(
             f.properties as Record<string, unknown> | null,
             (f.geometry as { type?: string } | null)?.type,
           );
@@ -79,9 +67,7 @@ export function LegendPanel(props: LegendPanelProps) {
   }, [layers, topologyRendered, topoExportData]);
 
   const hasObjects = Object.values(objectCounts).some((n) => n > 0);
-  const OBJ_COLORS: Record<ObjType, string> = {
-    OLT: '#1D4ED8', ODC: '#7C3AED', ODP: '#16A34A', Closure: '#F59E0B', Homepass: '#22C55E', Kabel: '#3B82F6',
-  };
+  const OBJ_COLORS: Record<ObjType, string> = NETWORK_OBJECT_COLORS;
 
   return (
               <div style={{ padding: 16 }}>

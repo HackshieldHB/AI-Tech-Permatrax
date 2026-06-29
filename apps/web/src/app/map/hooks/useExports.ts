@@ -46,12 +46,12 @@ export async function exportKmz(
 <kml xmlns="http://www.opengis.net/kml/2.2">
 <Document>
 <name>${escapeKml(filename)}</name>
-<Style id="olt"><IconStyle><color>ffff0000</color><scale>1.3</scale></IconStyle></Style>
-<Style id="odc"><IconStyle><color>ffaa00ff</color><scale>1.2</scale></IconStyle></Style>
-<Style id="odp"><IconStyle><color>ff00aa00</color></IconStyle></Style>
-<Style id="closure"><IconStyle><color>ff00a5ff</color><scale>0.8</scale></IconStyle></Style>
-<Style id="homepass"><IconStyle><color>ff44cc22</color><scale>0.6</scale></IconStyle></Style>
-<Style id="homepass_uncovered"><IconStyle><color>ffafa39c</color><scale>0.5</scale></IconStyle></Style>
+<Style id="olt"><IconStyle><color>ffff0000</color><scale>1.4</scale><Icon><href>https://maps.google.com/mapfiles/kml/shapes/electronics.png</href></Icon></IconStyle></Style>
+<Style id="odc"><IconStyle><color>ffaa00ff</color><scale>1.2</scale><Icon><href>https://maps.google.com/mapfiles/kml/shapes/square.png</href></Icon></IconStyle></Style>
+<Style id="odp"><IconStyle><color>ff00aa00</color><scale>1.0</scale><Icon><href>https://maps.google.com/mapfiles/kml/shapes/donut.png</href></Icon></IconStyle></Style>
+<Style id="closure"><IconStyle><color>ff00a5ff</color><scale>0.9</scale><Icon><href>https://maps.google.com/mapfiles/kml/shapes/target.png</href></Icon></IconStyle></Style>
+<Style id="homepass"><IconStyle><color>ff44cc22</color><scale>0.6</scale><Icon><href>https://maps.google.com/mapfiles/kml/shapes/placemark_circle.png</href></Icon></IconStyle></Style>
+<Style id="homepass_uncovered"><IconStyle><color>ffafa39c</color><scale>0.6</scale><Icon><href>https://maps.google.com/mapfiles/kml/shapes/open-diamond.png</href></Icon></IconStyle></Style>
 <Style id="feeder"><LineStyle><color>ff4444ef</color><width>4</width></LineStyle></Style>
 <Style id="distribution"><LineStyle><color>fff6823b</color><width>2.5</width></LineStyle></Style>
 `; // FIX

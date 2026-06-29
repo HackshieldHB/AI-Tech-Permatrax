@@ -700,6 +700,9 @@ export function useTopologyRender(args: {
       try {
         const odpCount = result.equipment.odp.count; // FIX
         const spacingM = result.equipment.odp.spacingM || 65; // FIX
+        // JLM Issue 3B: per-ODP port capacity — caps how many homepass each ODP serves
+        const odpCapacityVal = result.equipment.odp.capacity || 8; // 8 or 16 ports
+        const COVERAGE_RADIUS_M = Math.max(250, spacingM * 3); // homepass beyond this = Tidak Tercover
         const radiusM =
           result.summary.coverageRadiusMeters ?? result.summary.areaRadiusMeters ?? 300; // FIX
 
@@ -837,76 +840,69 @@ export function useTopologyRender(args: {
           ); // FIX
         }); // FIX
 
-        const buildingToOdp = new Map<number, number>(); // FIX: building idx → nearest ODP
-        osmBuildings.forEach((b, bi) => {
-          let minDist = Infinity; // FIX
-          let nearest = 0; // FIX
+        // ── JLM Issue 3B: capacity-aware assignment — each ODP serves at most odpCapacityVal ──
+        const odpLoad: number[] = odpPositions.map(() => 0); // ports used per ODP
+        // Serve the tightest-clustered buildings first so they get the nearby ODP ports;
+        // spillover beyond capacity / coverage becomes "Tidak Tercover".
+        const buildingsByNeed = osmBuildings
+          .map((b) => {
+            let nearest = Infinity; // FIX
+            odpPositions.forEach(([oLng, oLat]) => {
+              const d = haversineM(b.lat, b.lng, oLat, oLng); // FIX
+              if (d < nearest) nearest = d; // FIX
+            }); // FIX
+            return { b, nearest }; // FIX
+          })
+          .sort((a, z) => a.nearest - z.nearest); // FIX
+
+        const assignedHomepass: Array<{ coords: [number, number]; odpIdx: number; covered: boolean }> = [];
+        buildingsByNeed.forEach(({ b }) => {
+          let chosen = -1; // FIX: nearest ODP that is in range AND has a free port
+          let chosenDist = Infinity; // FIX
           odpPositions.forEach(([oLng, oLat], oi) => {
+            if (odpLoad[oi] >= odpCapacityVal) return; // ODP full — skip
             const d = haversineM(b.lat, b.lng, oLat, oLng); // FIX
-            if (d < minDist) {
-              minDist = d; // FIX
-              nearest = oi; // FIX
+            if (d <= COVERAGE_RADIUS_M && d < chosenDist) {
+              chosen = oi; // FIX
+              chosenDist = d; // FIX
             }
           }); // FIX
-          buildingToOdp.set(bi, nearest); // FIX
-        }); // FIX
-
-        type OsmBld = (typeof osmBuildings)[number]; // FIX
-        const odpBuildings = new Map<number, OsmBld[]>(); // FIX
-        odpPositions.forEach((_, i) => odpBuildings.set(i, [])); // FIX
-        osmBuildings.forEach((b, bi) => {
-          const odpIdx = buildingToOdp.get(bi) ?? 0; // FIX
-          odpBuildings.get(odpIdx)?.push(b); // FIX
-        }); // FIX
-
-        const allHomepass: Array<{
-          coords: [number, number]; // FIX
-          odpIdx: number; // FIX
-        }> = []; // FIX
-
-        odpPositions.forEach((odp, odpIdx) => {
-          const assigned = odpBuildings.get(odpIdx) || []; // FIX
-          assigned.forEach((b) => {
-            allHomepass.push({
-              coords: [b.lng, b.lat], // FIX: OSM only — no synthetic
-              odpIdx, // FIX
-            }); // FIX
-          }); // FIX
-        }); // FIX
-
-        const preservedHomepass = Array.isArray(result.homepassPoints)
-          ? result.homepassPoints
-          : [];
-        const validHomepass = [...allHomepass]; // FIX
-        const homepassKey = (hp: { coords: [number, number] }) => `${hp.coords[0]},${hp.coords[1]}`;
-        const seenHomepass = new Set(validHomepass.map(homepassKey));
-        preservedHomepass.forEach((hp) => {
-          if (!seenHomepass.has(homepassKey(hp))) {
-            seenHomepass.add(homepassKey(hp));
-            validHomepass.push(hp);
+          if (chosen >= 0) {
+            odpLoad[chosen] += 1; // FIX
+            assignedHomepass.push({ coords: [b.lng, b.lat], odpIdx: chosen, covered: true }); // FIX
+          } else {
+            assignedHomepass.push({ coords: [b.lng, b.lat], odpIdx: -1, covered: false }); // Tidak Tercover
           }
-        });
-
-        const osmCount = validHomepass.length; // FIX
-
-        // ── JLM Issue 1/3A: coverage status (Tercover/Tidak Tercover) + per-ODP load ──
-        // A homepass is "Tercover" when its assigned ODP sits within drop-cable reach.
-        const odpCapacityVal = result.equipment.odp.capacity || 8; // 8 or 16 ports
-        const COVERAGE_RADIUS_M = Math.max(100, spacingM); // drop-cable coverage from ODP
-        const odpLoad: number[] = odpPositions.map(() => 0); // homepass count per ODP
-        const homepassExport = validHomepass.map((h) => {
-          const odp = odpPositions[h.odpIdx]; // FIX
-          const dist = odp ? haversineM(h.coords[1], h.coords[0], odp[1], odp[0]) : Infinity; // FIX
-          const covered = !!odp && dist <= COVERAGE_RADIUS_M; // FIX
-          if (covered) odpLoad[h.odpIdx] += 1; // FIX
-          return {
-            lng: h.coords[0], // FIX
-            lat: h.coords[1], // FIX
-            isOsm: true, // FIX
-            odpIndex: covered ? h.odpIdx + 1 : undefined, // 1-based ODP, undefined when uncovered
-            covered, // FIX
-          };
         }); // FIX
+
+        // Preserve homepass coordinates carried across recalculations (keep their ODP if valid)
+        const preservedHomepass = Array.isArray(result.homepassPoints) ? result.homepassPoints : [];
+        const homepassKey = (c: [number, number]) => `${c[0]},${c[1]}`;
+        const validHomepass: Array<{ coords: [number, number]; odpIdx: number; covered: boolean }> = [
+          ...assignedHomepass,
+        ];
+        const seenHomepass = new Set(validHomepass.map((h) => homepassKey(h.coords)));
+        preservedHomepass.forEach((hp) => {
+          if (seenHomepass.has(homepassKey(hp.coords))) return; // FIX
+          seenHomepass.add(homepassKey(hp.coords)); // FIX
+          const idx =
+            typeof hp.odpIdx === 'number' && hp.odpIdx >= 0 && hp.odpIdx < odpPositions.length
+              ? hp.odpIdx
+              : -1; // FIX
+          if (idx >= 0) odpLoad[idx] += 1; // FIX
+          validHomepass.push({ coords: hp.coords, odpIdx: idx, covered: idx >= 0 }); // FIX
+        }); // FIX
+
+        const osmCount = validHomepass.filter((h) => h.covered).length; // covered homepass total
+
+        // Export shape for KMZ + Excel (Tercover/Tidak Tercover)
+        const homepassExport = validHomepass.map((h) => ({
+          lng: h.coords[0], // FIX
+          lat: h.coords[1], // FIX
+          isOsm: true, // FIX
+          odpIndex: h.covered ? h.odpIdx + 1 : undefined, // FIX
+          covered: h.covered, // FIX
+        })); // FIX
 
         // ── STEP ⑥: Render all layers ───────────────────
         toast.info('⑥ Merender topologi di peta...'); // FIX
@@ -978,14 +974,17 @@ export function useTopologyRender(args: {
           type: 'geojson', // FIX
           data: {
             type: 'FeatureCollection', // FIX
-            features: validHomepass.map((hp) => ({
-              type: 'Feature', // FIX
-              geometry: {
-                type: 'LineString', // FIX
-                coordinates: [odpPositions[hp.odpIdx], hp.coords], // FIX
-              },
-              properties: {}, // FIX
-            })), // FIX
+            // JLM Issue 3B: only covered homepass have a drop cable to an ODP
+            features: validHomepass
+              .filter((hp) => hp.covered && odpPositions[hp.odpIdx]) // FIX
+              .map((hp) => ({
+                type: 'Feature' as const, // FIX
+                geometry: {
+                  type: 'LineString' as const, // FIX
+                  coordinates: [odpPositions[hp.odpIdx], hp.coords], // FIX
+                },
+                properties: {}, // FIX
+              })), // FIX
           },
         }); // FIX
         safeAddLayer({
@@ -1140,7 +1139,8 @@ export function useTopologyRender(args: {
             features: validHomepass.map((hp) => ({
               type: 'Feature', // FIX
               geometry: { type: 'Point', coordinates: hp.coords }, // FIX
-              properties: { odpIndex: hp.odpIdx + 1 }, // FIX
+              // JLM Issue 3B: carry coverage so the map can distinguish Tercover/Tidak Tercover
+              properties: { odpIndex: hp.covered ? hp.odpIdx + 1 : 0, covered: hp.covered ? 1 : 0 }, // FIX
             })), // FIX
           },
         }); // FIX
@@ -1151,7 +1151,8 @@ export function useTopologyRender(args: {
           source: 'topo-homepass', // FIX
           paint: {
             'circle-radius': 5, // FIX: homepass medium green
-            'circle-color': '#22C55E', // FIX
+            // JLM Issue 3B: green = Tercover, gray = Tidak Tercover
+            'circle-color': ['case', ['==', ['get', 'covered'], 1], '#22C55E', '#9CA3AF'] as maplibregl.ExpressionSpecification, // FIX
             'circle-stroke-color': 'white', // FIX
             'circle-stroke-width': 1.5, // FIX
             'circle-opacity': 0.9, // FIX
@@ -1425,8 +1426,8 @@ export function useTopologyRender(args: {
           distRoutes,
         });
         toast.success(
-          `✅ Topologi selesai: ${odpPositions.length} ODP, ` + // FIX
-            `${osmCount} homepass (bangunan OSM)`, // FIX
+          `✅ Topologi selesai: ${odpPositions.length} ODP · ` + // FIX
+            `${osmCount} tercover / ${validHomepass.length} homepass (kapasitas 1:${odpCapacityVal})`, // FIX
         ); // FIX
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : 'Error'; // FIX
