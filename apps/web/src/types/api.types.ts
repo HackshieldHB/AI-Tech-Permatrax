@@ -629,6 +629,10 @@ export interface FinanceProjectListItem {
   code: string;
   name: string;
   description: string | null;
+  // JLM: FTTH vs FTTT + FTTT budget categories
+  projectType?: 'FTTH' | 'FTTT';
+  budgetPerizinan?: string | number | null;
+  budgetLainLain?: string | number | null;
   totalBudget: string | number;
   materialBudget: string | number | null;
   jasaBudget: string | number | null;
@@ -1012,6 +1016,28 @@ export interface FtttSpan {
   spanLogs:    FtttSpanLog[];
 }
 
+export type FtttCostCategory = 'PERIZINAN' | 'MATERIAL' | 'JASA' | 'LAIN_LAIN';
+
+export interface FtttTransaction {
+  id:          string;
+  category:    FtttCostCategory;
+  aktivitas:   string;
+  uom:         string | null;
+  qty:         string | number;
+  price:       string | number;
+  total:       string | number;
+  remarks:     string;
+  createdAt:   string;
+  createdBy:   { id: string; name: string };
+}
+
+export const FTTT_COST_CATEGORY_LABELS: Record<FtttCostCategory, string> = {
+  PERIZINAN: 'Perizinan',
+  MATERIAL:  'Material',
+  JASA:      'Jasa',
+  LAIN_LAIN: 'Lain-Lain',
+};
+
 export const FTTT_COMPANY_LABELS: Record<FtttCompany, string> = {
   TELKOM_INFRA: 'Telkom Infra',
   IFORTE:       'iForte',
@@ -1067,6 +1093,10 @@ export interface FtttProject {
   maintenanceEndDate?:       string | null;
   maintenanceConfirmedAt?:   string | null;
   maintenanceConfirmedById?: string | null;
+  // JLM: Finance Project link + Implementation transaction log
+  financeProjectId?:         string | null;
+  financeProject?:           { id: string; code: string; name: string; projectType?: string; totalBudget: string | number; budgetPerizinan?: string | number | null; materialBudget?: string | number | null; jasaBudget?: string | number | null; budgetLainLain?: string | number | null } | null;
+  transactions?:             FtttTransaction[];
   createdAt:      string;
   updatedAt:      string;
   pm:             { id: string; name: string; email: string };

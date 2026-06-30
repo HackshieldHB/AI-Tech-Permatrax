@@ -19,8 +19,14 @@ import {
   FTTT_PHASE_LABELS,
   FTTT_PROJECT_STATUS_LABELS,
   FTTT_DOC_TYPE_LABELS,
+  FTTT_COST_CATEGORY_LABELS,
+  type FtttCostCategory,
+  type FtttTransaction,
 } from '../../../../types/api.types';
 import { io, Socket } from 'socket.io-client';
+import {
+  ComposedChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RTooltip, Legend as RLegend, ResponsiveContainer,
+} from 'recharts';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const PHASE_ORDER: FtttPhase[] = [
@@ -1103,7 +1109,9 @@ function SpanSection({ project, onRefresh, isAdmin }: { project: FtttProject; on
   const [uploadingLog, setUploadingLog] = useState<string | null>(null);
   const [logCategory, setLogCategory] = useState<string>('GALIAN');
   const [logCaption, setLogCaption] = useState('');
+  const [uploadProgress, setUploadProgress] = useState('');
   const logFileRef = useRef<HTMLInputElement>(null);
+  const logFolderRef = useRef<HTMLInputElement>(null);
 
   const handleCreateSpan = async () => {
     if (!newSpanNumber.trim()) return;
@@ -1128,18 +1136,30 @@ function SpanSection({ project, onRefresh, isAdmin }: { project: FtttProject; on
     } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
   };
 
-  const handleAddLog = async (spanId: string, file: File) => {
+  // JLM: folder / multi-file upload — every file in the chosen folder is uploaded to the category
+  const handleAddLogs = async (spanId: string, files: FileList | File[]) => {
+    const arr = Array.from(files).filter((f) => f.size > 0);
+    if (arr.length === 0) return;
     setUploadingLog(spanId);
-    const fd = new FormData();
-    fd.append('category', logCategory);
-    if (logCaption) fd.append('caption', logCaption);
-    fd.append('file', file);
+    let ok = 0;
     try {
-      const res = await apiFetch(`/fttt-projects/spans/${spanId}/logs`, { method: 'POST', body: fd }, user?.id);
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
-      setLogCaption(''); toast.success('Log span berhasil diunggah'); onRefresh();
-    } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
-    finally { setUploadingLog(null); }
+      for (let i = 0; i < arr.length; i++) {
+        if (arr.length > 1) setUploadProgress(`Mengunggah ${i + 1}/${arr.length}…`);
+        const fd = new FormData();
+        fd.append('category', logCategory);
+        if (logCaption) fd.append('caption', logCaption);
+        fd.append('file', arr[i]);
+        const res = await apiFetch(`/fttt-projects/spans/${spanId}/logs`, { method: 'POST', body: fd }, user?.id);
+        if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error((e as { message?: string }).message ?? 'Gagal'); }
+        ok++;
+      }
+      setLogCaption('');
+      toast.success(arr.length > 1 ? `${ok} file berhasil diunggah` : 'Log span berhasil diunggah');
+      onRefresh();
+    } catch (err: unknown) {
+      toast.error(`${err instanceof Error ? err.message : 'Gagal'} (${ok}/${arr.length} terunggah)`);
+      onRefresh();
+    } finally { setUploadingLog(null); setUploadProgress(''); }
   };
 
   const handleDeleteLog = async (logId: string) => {
@@ -1194,6 +1214,20 @@ function SpanSection({ project, onRefresh, isAdmin }: { project: FtttProject; on
 
           {expandedSpan === span.id && (
             <div style={{ padding: 12 }}>
+              {/* JLM: file count per category */}
+              {span.spanLogs.length > 0 && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+                  {Object.entries(SPAN_LOG_CATEGORY_LABELS).map(([k, v]) => {
+                    const n = span.spanLogs.filter((l) => l.category === k).length;
+                    if (n === 0) return null;
+                    return (
+                      <span key={k} style={{ fontSize: 10, fontWeight: 600, color: '#374151', background: '#EDF2F4', padding: '2px 8px', borderRadius: 999 }}>
+                        {v}: {n} file
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
               {/* Existing logs */}
               {span.spanLogs.map((log) => (
                 <div key={log.id} style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '6px 0', borderBottom: '1px solid #EAEEF2' }}>
@@ -1224,11 +1258,19 @@ function SpanSection({ project, onRefresh, isAdmin }: { project: FtttProject; on
                   <input value={logCaption} onChange={(e) => setLogCaption(e.target.value)}
                     placeholder="Keterangan (opsional)"
                     style={{ flex: 1, minWidth: 120, padding: '5px 8px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 11 }} />
-                  <input ref={logFileRef} type="file" accept=".jpg,.jpeg,.png,.webp,.mp4,.pdf" style={{ display: 'none' }}
-                    onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleAddLog(span.id, f); }} />
+                  {/* JLM: multi-file + folder upload — all files go to the selected category */}
+                  <input ref={logFileRef} type="file" multiple accept=".jpg,.jpeg,.png,.webp,.mp4,.mov,.pdf" style={{ display: 'none' }}
+                    onChange={(e) => { if (e.target.files?.length) void handleAddLogs(span.id, e.target.files); e.target.value = ''; }} />
+                  {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+                  <input ref={logFolderRef} type="file" {...({ webkitdirectory: '', directory: '' } as any)} multiple style={{ display: 'none' }}
+                    onChange={(e) => { if (e.target.files?.length) void handleAddLogs(span.id, e.target.files); e.target.value = ''; }} />
+                  <button type="button" onClick={() => logFolderRef.current?.click()} disabled={uploadingLog === span.id}
+                    style={{ padding: '5px 12px', borderRadius: 6, border: 'none', background: '#1a7f37', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 11 }}>
+                    📁 Upload Folder
+                  </button>
                   <button type="button" onClick={() => logFileRef.current?.click()} disabled={uploadingLog === span.id}
                     style={{ padding: '5px 12px', borderRadius: 6, border: 'none', background: '#0969DA', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 11 }}>
-                    {uploadingLog === span.id ? '…' : '+ Upload'}
+                    {uploadingLog === span.id ? (uploadProgress || '…') : '📄 Upload File'}
                   </button>
                 </div>
               )}
@@ -1236,6 +1278,180 @@ function SpanSection({ project, onRefresh, isAdmin }: { project: FtttProject; on
           )}
         </div>
       ))}
+    </div>
+  );
+}
+
+// ─── JLM: Implementation Transaction Log + budget monitoring + S-Curve ──────────
+const TXN_CATEGORIES: FtttCostCategory[] = ['PERIZINAN', 'MATERIAL', 'JASA', 'LAIN_LAIN'];
+const txnInp: React.CSSProperties = { padding: '5px 8px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 11 };
+
+function SCurveMini({ title, data, keys, money }: { title: string; data: Record<string, unknown>[]; keys: [string, string, string][]; money?: boolean }) {
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <p style={{ fontSize: 12, fontWeight: 700, margin: '0 0 6px' }}>{title}</p>
+      <div style={{ height: 220, width: '100%' }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <ComposedChart data={data}>
+            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+            <XAxis dataKey="name" fontSize={10} tickLine={false} axisLine={false} />
+            <YAxis fontSize={10} tickLine={false} axisLine={false} tickFormatter={(v) => money ? `${Math.round(Number(v) / 1e6)}M` : `${v}%`} />
+            <RTooltip formatter={(v: number) => money ? 'Rp ' + Math.round(v).toLocaleString('id-ID') : `${v}%`} />
+            <RLegend verticalAlign="top" height={28} />
+            {keys.map(([k, label, color]) => (
+              <Line key={k} type="monotone" dataKey={k} name={label} stroke={color} strokeWidth={2} dot={false} />
+            ))}
+          </ComposedChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+
+function TransactionLogSection({ project, onRefresh, userRole }: { project: FtttProject; onRefresh: () => void; userRole: string }) {
+  const { user } = useAuthStore();
+  const isPm = userRole === 'PM_FTTT' || userRole === 'GENERAL_MANAGER';
+  const fp = project.financeProject ?? null;
+  const rab = fp ? Number(fp.totalBudget) : 0;
+  const txns: FtttTransaction[] = project.transactions ?? [];
+
+  const [scurve, setScurve] = useState<{ byCategory: { category: string; budget: number; spent: number; remaining: number }[]; costCurve: Record<string, unknown>[]; progressCurve: Record<string, unknown>[] } | null>(null);
+  const [openCat, setOpenCat] = useState<FtttCostCategory | null>(null);
+  const [form, setForm] = useState({ aktivitas: '', uom: '', qty: '', price: '', remarks: '' });
+  const [saving, setSaving] = useState(false);
+
+  const loadScurve = useCallback(async () => {
+    try {
+      const res = await apiFetch(`/fttt-projects/${project.id}/budget-scurve`, { method: 'GET' }, user?.id);
+      if (res.ok) setScurve(await res.json());
+    } catch { /* ignore */ }
+  }, [project.id, user?.id]);
+  useEffect(() => { void loadScurve(); }, [loadScurve, txns.length]);
+
+  const fmtIDR = (n: number) => 'Rp ' + Math.round(n).toLocaleString('id-ID');
+  const fmtDT = (iso: string) => new Date(iso).toLocaleString('id-ID', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) + ' WIB';
+
+  const handleAdd = async (category: FtttCostCategory) => {
+    if (!form.aktivitas.trim()) { toast.error('Aktivitas wajib diisi'); return; }
+    if (!form.remarks.trim()) { toast.error('Remarks wajib diisi'); return; }
+    const qty = Number(form.qty); const price = Number(form.price);
+    if (!(qty > 0)) { toast.error('Qty harus lebih dari 0'); return; }
+    setSaving(true);
+    try {
+      const res = await apiFetch(`/fttt-projects/${project.id}/transactions`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ category, aktivitas: form.aktivitas, uom: form.uom || undefined, qty, price, remarks: form.remarks }),
+      }, user?.id);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
+      toast.success('Transaksi tercatat');
+      setForm({ aktivitas: '', uom: '', qty: '', price: '', remarks: '' });
+      setOpenCat(null);
+      onRefresh(); void loadScurve();
+    } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
+    finally { setSaving(false); }
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!confirm('Hapus transaksi ini?')) return;
+    try {
+      const res = await apiFetch(`/fttt-projects/transactions/${id}`, { method: 'DELETE' }, user?.id);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
+      toast.success('Transaksi dihapus'); onRefresh(); void loadScurve();
+    } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
+  };
+
+  if (!fp) {
+    return (
+      <div style={{ background: '#FFF8C5', border: '1px solid #d4a017', borderRadius: 10, padding: 14, fontSize: 12, color: '#9a6700' }}>
+        ⚠️ Project ini belum terhubung dengan Finance Project (FTTT). Transaction Log & monitoring budget memerlukan link ke Finance Project (pilih saat Project Initiation).
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginBottom: 12, fontSize: 12, color: '#374151' }}>
+        <span>👤 <b>{user?.name ?? '—'}</b></span>
+        <span>📁 Project: <b>{fp.code} · {fp.name}</b></span>
+        <span>💰 Total RAB: <b>{fmtIDR(rab)}</b></span>
+      </div>
+
+      {!isPm && (
+        <div style={{ background: '#F6F8FA', border: '1px solid #D0D7DE', borderRadius: 8, padding: 10, marginBottom: 12, fontSize: 12, color: '#57606a' }}>
+          🔒 Hanya PM FTTT yang dapat mencatat Transaction Log.
+        </div>
+      )}
+
+      {scurve && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 8, marginBottom: 14 }}>
+          {scurve.byCategory.map((b) => (
+            <div key={b.category} style={{ border: '1px solid #EAEEF2', borderRadius: 8, padding: 10 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#374151' }}>{FTTT_COST_CATEGORY_LABELS[b.category as FtttCostCategory]}</div>
+              <div style={{ fontSize: 13, fontWeight: 800, color: b.remaining < 0 ? '#cf222e' : '#111' }}>{fmtIDR(b.spent)} <span style={{ fontSize: 10, color: '#8c959f', fontWeight: 500 }}>/ {fmtIDR(b.budget)}</span></div>
+              <div style={{ height: 4, background: '#EAEEF2', borderRadius: 2, marginTop: 4 }}>
+                <div style={{ height: '100%', borderRadius: 2, background: b.remaining < 0 ? '#cf222e' : '#1a7f37', width: `${b.budget > 0 ? Math.min(100, (b.spent / b.budget) * 100) : 0}%` }} />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {TXN_CATEGORIES.map((cat) => {
+        const catTxns = txns.filter((t) => t.category === cat);
+        return (
+          <div key={cat} style={{ border: '1px solid #D0D7DE', borderRadius: 10, marginBottom: 10, overflow: 'hidden' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', background: '#F6F8FA' }}>
+              <span style={{ fontWeight: 700, fontSize: 13 }}>{FTTT_COST_CATEGORY_LABELS[cat]} <span style={{ fontSize: 11, color: '#57606a' }}>({catTxns.length})</span></span>
+              {isPm && (
+                <button type="button" onClick={() => { setOpenCat(openCat === cat ? null : cat); setForm({ aktivitas: '', uom: '', qty: '', price: '', remarks: '' }); }}
+                  style={{ padding: '3px 10px', borderRadius: 6, border: 'none', background: '#0969DA', color: '#fff', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+                  + Add
+                </button>
+              )}
+            </div>
+            {isPm && openCat === cat && (
+              <div style={{ padding: 10, borderBottom: '1px solid #EAEEF2', display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr', gap: 6 }}>
+                <input placeholder="Aktivitas" value={form.aktivitas} onChange={(e) => setForm({ ...form, aktivitas: e.target.value })} style={txnInp} />
+                <input placeholder="UOM" value={form.uom} onChange={(e) => setForm({ ...form, uom: e.target.value })} style={txnInp} />
+                <input placeholder="Qty" type="number" value={form.qty} onChange={(e) => setForm({ ...form, qty: e.target.value })} style={txnInp} />
+                <input placeholder="Price" type="number" value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} style={txnInp} />
+                <input placeholder="Remarks (wajib)" value={form.remarks} onChange={(e) => setForm({ ...form, remarks: e.target.value })} style={{ ...txnInp, gridColumn: '1 / 4' }} />
+                <button type="button" disabled={saving} onClick={() => void handleAdd(cat)}
+                  style={{ borderRadius: 6, border: 'none', background: '#1a7f37', color: '#fff', fontWeight: 700, fontSize: 11, cursor: saving ? 'not-allowed' : 'pointer' }}>
+                  {saving ? '…' : 'Simpan'}
+                </button>
+                <div style={{ gridColumn: '1 / 5', fontSize: 11, color: '#57606a' }}>Total otomatis: <b>{fmtIDR((Number(form.qty) || 0) * (Number(form.price) || 0))}</b> · Timestamp dibuat otomatis saat disimpan</div>
+              </div>
+            )}
+            {catTxns.length === 0 ? (
+              <div style={{ padding: 10, fontSize: 11, color: '#8c959f' }}>Belum ada transaksi.</div>
+            ) : catTxns.map((t) => {
+              const total = Number(t.total);
+              const bobot = rab > 0 ? (total / rab) * 100 : 0;
+              return (
+                <div key={t.id} style={{ padding: '8px 12px', borderBottom: '1px solid #F0F3F6', fontSize: 12 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                    <span style={{ fontWeight: 600 }}>{t.aktivitas}</span>
+                    <span style={{ fontWeight: 700 }}>{fmtIDR(total)}</span>
+                  </div>
+                  <div style={{ fontSize: 11, color: '#57606a', marginTop: 2 }}>
+                    {Number(t.qty)} {t.uom ?? ''} × {fmtIDR(Number(t.price))} · Bobot {bobot.toFixed(2)}%
+                  </div>
+                  <div style={{ fontSize: 10, color: '#8c959f', marginTop: 2 }}>📝 {t.remarks} · 🕒 {fmtDT(t.createdAt)} · {t.createdBy?.name}</div>
+                  {isPm && <button type="button" onClick={() => void handleDelete(t.id)} style={{ marginTop: 2, fontSize: 10, color: '#cf222e', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>Hapus</button>}
+                </div>
+              );
+            })}
+          </div>
+        );
+      })}
+
+      {scurve && (
+        <div style={{ marginTop: 14 }}>
+          <SCurveMini title="📈 Kurva S Biaya (Cost — Planning vs Actual)" data={scurve.costCurve} keys={[['plannedCost', 'Planned', '#94A3B8'], ['actualCost', 'Actual', '#00B89E']]} money />
+          <SCurveMini title="📊 Kurva S Progress (Schedule — Planning vs Actual)" data={scurve.progressCurve} keys={[['plannedProgress', 'Planned %', '#94A3B8'], ['actualProgress', 'Actual %', '#0969DA']]} />
+        </div>
+      )}
     </div>
   );
 }
@@ -1279,6 +1495,8 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
   const [uploading, setUploading]   = useState(false);
   const [markingDone, setMarkingDone] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<string>('');
+  // JLM: Implementation tabs — Daily Log Span / Transaction Log / Log Aktivitas
+  const [implTab, setImplTab] = useState<'daily' | 'transaction' | 'activity'>('daily');
   const fileRef = useRef<HTMLInputElement>(null);
 
   const LOG_LABELS = { PHOTO: '📷 Foto Progress', MONITORING_DOC: '📊 Dokumen Monitoring', NOTE: '📝 Catatan Progress' };
@@ -1371,15 +1589,33 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
 
   return (
     <div>
-      {/* JLM: span-based daily log for TI and PST-Galian */}
-      {useSpanFlow && <SpanSection project={project} onRefresh={onRefresh} isAdmin={isAdmin} />}
-
       {isPST && implType && (
         <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 10px', borderRadius: 999, background: '#EDF2F4', fontSize: 11, fontWeight: 600, color: '#374151', marginBottom: 10 }}>
           Jenis Implementasi: {implType === 'GALIAN' ? '⛏️ Galian' : '🔌 KU (Kabel Udara)'}
         </div>
       )}
 
+      {/* JLM: Implementation tabs — Daily Log Span / Transaction Log / Log Aktivitas */}
+      <div style={{ display: 'flex', gap: 4, marginBottom: 12, borderBottom: '1px solid #EAEEF2' }}>
+        {([
+          { k: 'daily' as const, label: '📍 Daily Log Span' },
+          { k: 'transaction' as const, label: '💰 Transaction Log' },
+          { k: 'activity' as const, label: '🗂️ Log Aktivitas' },
+        ]).map((t) => (
+          <button key={t.k} type="button" onClick={() => setImplTab(t.k)}
+            style={{ padding: '7px 12px', border: 'none', background: 'none', borderBottom: `2px solid ${implTab === t.k ? '#0969DA' : 'transparent'}`, color: implTab === t.k ? '#0969DA' : '#57606a', fontWeight: implTab === t.k ? 700 : 500, fontSize: 12, cursor: 'pointer' }}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {implTab === 'transaction' && <TransactionLogSection project={project} onRefresh={onRefresh} userRole={userRole} />}
+
+      {/* JLM: span-based daily log for TI and PST-Galian */}
+      {implTab === 'daily' && useSpanFlow && <SpanSection project={project} onRefresh={onRefresh} isAdmin={isAdmin} />}
+
+      {implTab === 'activity' && (
+      <>
       <p style={{ fontWeight: 600, fontSize: 13, marginBottom: 8 }}>Log Implementasi ({logs.length})</p>
 
       {/* List existing logs */}
@@ -1450,8 +1686,11 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
         </div>
       )}
 
-      {/* Add log form */}
-      {(canUpload || canNote) && (
+      </>
+      )}
+
+      {/* Add log form — Daily Log Span tab */}
+      {implTab === 'daily' && (canUpload || canNote) && (
         <div style={{ border: '1px solid #D0D7DE', borderRadius: 8, padding: 12, marginTop: 8 }}>
           <p style={{ fontSize: 12, fontWeight: 600, margin: '0 0 8px' }}>Tambah Log Implementasi</p>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>

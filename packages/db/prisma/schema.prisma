@@ -353,6 +353,7 @@ model User {
   ftttSpans              FtttSpan[]               @relation("FtttSpanCreator")
   ftttSpanLogs           FtttSpanLog[]            @relation("FtttSpanLogUploader")
   ftttMaintConfirmations FtttProject[]            @relation("FtttMaintConfirmer")
+  ftttTransactions       FtttTransaction[]        @relation("FtttTransactionCreator")
 }
 
 // Phase 4 — GM-controlled feature visibility per role
@@ -2779,15 +2780,27 @@ enum BudgetTransferStatus {
   CANCELLED
 }
 
+// JLM: Finance project type — FTTH (existing) vs FTTT (new 4-category budget)
+enum FinanceProjectType {
+  FTTH
+  FTTT
+}
+
 model FinanceProject {
   id          String  @id @default(cuid())
   code        String  @unique
   name        String
   description String?
 
+  // JLM: project type — FTTH keeps existing 2-category budget; FTTT uses 4 categories
+  projectType FinanceProjectType @default(FTTH)
+
   totalBudget    Decimal  @db.Decimal(18, 2)
   materialBudget Decimal? @db.Decimal(18, 2)
   jasaBudget     Decimal? @db.Decimal(18, 2)
+  // JLM: FTTT-only budget categories (Perizinan + Lain-Lain); Material/Jasa reuse the fields above
+  budgetPerizinan Decimal? @db.Decimal(18, 2)
+  budgetLainLain  Decimal? @db.Decimal(18, 2)
 
   materialSpent Decimal @default(0) @db.Decimal(18, 2)
   jasaSpent     Decimal @default(0) @db.Decimal(18, 2)
@@ -2814,10 +2827,14 @@ model FinanceProject {
   transfersOut            BudgetTransfer[] @relation("TransferSourceProject")
   transfersIn             BudgetTransfer[] @relation("TransferTargetProject")
   plannings               FinanceProjectPlanning[]
+  // JLM: FTTT integration — linked FTTT projects + their implementation transactions
+  ftttProjects            FtttProject[]
+  ftttTransactions        FtttTransaction[]
 
   @@index([status])
   @@index([isDefaultUncategorized])
   @@index([code])
+  @@index([projectType])
 }
 
 model FinanceProjectPlanning {
@@ -2994,6 +3011,8 @@ model FtttProject {
   pmId           String
   projectName    String?
   notes          String?
+  // JLM: link to a Finance Project (Project Type = FTTT) — single source of truth for budget
+  financeProjectId String?
   // JLM: PST Implementation type (Galian → span-based; KU → existing). Null for TI/iFORTE.
   implementationType FtttImplementationType?
   // JLM: Project Closing maintenance confirmation + reminder (TI + PST)
@@ -3007,6 +3026,8 @@ model FtttProject {
   cleanList       CleanList?          @relation("FtttProjectCleanList", fields: [cleanListId], references: [id])
   pm              User                @relation("FtttProjectPM", fields: [pmId], references: [id])
   maintenanceConfirmedBy User?         @relation("FtttMaintConfirmer", fields: [maintenanceConfirmedById], references: [id])
+  financeProject  FinanceProject?     @relation(fields: [financeProjectId], references: [id])
+  transactions    FtttTransaction[]
 
   phaseProgresses FtttPhaseProgress[]
   surveyUploads      FtttSurveyUpload[]
@@ -3023,6 +3044,39 @@ model FtttProject {
   @@index([currentPhase])
   @@index([pmId])
   @@index([status])
+  @@index([financeProjectId])
+}
+
+// JLM: Implementation Transaction Log — daily expenditure entries by PM FTTT.
+// Source data for Finance budget monitoring + S-Curve. Timestamp is immutable.
+enum FtttCostCategory {
+  PERIZINAN
+  MATERIAL
+  JASA
+  LAIN_LAIN
+}
+
+model FtttTransaction {
+  id               String           @id @default(cuid())
+  ftttProjectId    String
+  financeProjectId String?
+  category         FtttCostCategory
+  aktivitas        String
+  uom              String?
+  qty              Decimal          @db.Decimal(18, 2)
+  price            Decimal          @db.Decimal(18, 2)
+  total            Decimal          @db.Decimal(18, 2) // server-computed = qty × price
+  remarks          String
+  createdById      String
+  createdAt        DateTime         @default(now()) // immutable, real-time
+
+  ftttProject    FtttProject     @relation(fields: [ftttProjectId], references: [id], onDelete: Cascade)
+  financeProject FinanceProject? @relation(fields: [financeProjectId], references: [id])
+  createdBy      User            @relation("FtttTransactionCreator", fields: [createdById], references: [id])
+
+  @@index([ftttProjectId])
+  @@index([financeProjectId])
+  @@index([category])
 }
 
 model FtttPhaseProgress {

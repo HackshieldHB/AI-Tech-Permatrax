@@ -19,6 +19,7 @@ import { AuthUser } from '../auth/types/auth-user.types';
 import { FtttProjectService } from './fttt-project.service';
 import {
   AddClosingLogDto,
+  AddFtttTransactionDto,
   AddImplLogDto,
   AddJaminanDto,
   AddReconDocDto,
@@ -66,6 +67,13 @@ export class FtttProjectController {
     return this.service.findAll(filters, user.userId, user.role);
   }
 
+  // GET /fttt-projects/finance-options  (active FTTT finance projects for the create dropdown)
+  // NOTE: must be declared before ':id' so it is not captured as an id param
+  @Get('finance-options')
+  listFinanceOptions() {
+    return this.service.listFinanceOptions();
+  }
+
   // GET /fttt-projects/:id
   @Get(':id')
   async findOne(
@@ -73,6 +81,31 @@ export class FtttProjectController {
     @CurrentUser() user: AuthUser,
   ) {
     return this.service.findOne(id, user.userId, user.role);
+  }
+
+  // GET /fttt-projects/:id/budget-scurve  (budget summary + cost/progress S-curve)
+  @Get(':id/budget-scurve')
+  getBudgetScurve(@Param('id') id: string) {
+    return this.service.getBudgetScurve(id);
+  }
+
+  // POST /fttt-projects/:id/transactions  (Implementation Transaction Log — PM FTTT)
+  @Post(':id/transactions')
+  addTransaction(
+    @Param('id') id: string,
+    @Body(new ZodValidationPipe(AddFtttTransactionDto)) dto: any,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.service.addTransaction(id, dto, user.userId, user.role);
+  }
+
+  // DELETE /fttt-projects/transactions/:txId
+  @Delete('transactions/:txId')
+  deleteTransaction(
+    @Param('txId') txId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.service.deleteTransaction(txId, user.userId, user.role);
   }
 
   // GET /fttt-projects/:id/progress  — live progress bar data
