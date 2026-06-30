@@ -122,8 +122,16 @@ export const AddReconDocDto = z.object({
   docKey:      z.string().min(1).max(100),
   notes:       z.string().max(2000).optional(),
   formContent: z.string().optional(),  // JSON string for Generate Form mode
+  // JLM: maintenance end date captured with Jaminan Pemeliharaan upload (ISO date string)
+  maintenanceEndDate: z.string().optional(),
 });
 export type AddReconDocDtoType = z.infer<typeof AddReconDocDto>;
+
+// JLM: PST implementation type selection
+export const SetImplementationTypeDto = z.object({
+  type: z.enum(['GALIAN', 'KU']),
+});
+export type SetImplementationTypeDtoType = z.infer<typeof SetImplementationTypeDto>;
 
 // Implementation phase log (photo/doc/note)
 export const AddImplLogDto = z.object({

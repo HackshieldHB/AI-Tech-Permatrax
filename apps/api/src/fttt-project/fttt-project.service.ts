@@ -236,6 +236,9 @@ export class FtttProjectService {
       throw new ForbiddenException('Anda tidak memiliki akses ke project ini');
     }
 
+    // JLM: surface a maintenance reminder to Admins when the window is reached
+    await this.maybeSendMaintenanceReminder(project);
+
     return project;
   }
 
@@ -283,6 +286,13 @@ export class FtttProjectService {
       const hasMonitoringDoc = implLogs.some((l) => l.logType === 'MONITORING_DOC');
       if (!hasMonitoringDoc) {
         reasons.push('Dokumen Monitoring belum diunggah oleh Admin');
+      }
+      // JLM: PST must choose an implementation type (Galian / KU) before completing Implementation
+      if (
+        company === FtttCompany.PST &&
+        !(project as typeof project & { implementationType: string | null }).implementationType
+      ) {
+        reasons.push('Jenis Implementasi (Galian / KU) belum dipilih');
       }
     }
 
@@ -379,6 +389,13 @@ export class FtttProjectService {
         const hasNote     = closingLogs.some((l) => l.logType === 'NOTE');
         if (!hasEvidence && !hasNote) {
           reasons.push('Minimal satu evidence foto atau catatan serah terima wajib diunggah');
+        }
+      }
+
+      // JLM: TI + PST require Admin to confirm the maintenance period is complete
+      if (company === FtttCompany.TELKOM_INFRA || company === FtttCompany.PST) {
+        if (!(project as typeof project & { maintenanceConfirmedAt: Date | null }).maintenanceConfirmedAt) {
+          reasons.push('Konfirmasi penyelesaian masa pemeliharaan belum dilakukan oleh Admin Project');
         }
       }
     }
@@ -518,6 +535,15 @@ export class FtttProjectService {
       userRole !== Role.GENERAL_MANAGER
     ) {
       throw new ForbiddenException('Hanya Admin yang dapat menyelesaikan fase Implementation');
+    }
+
+    // JLM: Only Admin can complete Project Closing (after confirming maintenance period)
+    if (
+      project.currentPhase === FtttPhase.CLOSING &&
+      userRole !== Role.ADMIN &&
+      userRole !== Role.GENERAL_MANAGER
+    ) {
+      throw new ForbiddenException('Hanya Admin Project yang dapat menyelesaikan fase Project Closing');
     }
 
     // C6-TI2: Only PM FTTT or Admin can complete Documentation & Reconciliation phases
@@ -1133,8 +1159,12 @@ export class FtttProjectService {
       throw new ForbiddenException('Hanya Admin yang dapat menambahkan Span');
     }
     const project = await this.prisma.ftttProject.findUniqueOrThrow({ where: { id: projectId } });
-    if (project.ftttCompany !== FtttCompany.TELKOM_INFRA) {
-      throw new BadRequestException('Span hanya tersedia untuk project Telkom Infra');
+    // JLM: span-based log is for Telkom Infra, and for PST only when implementation type = Galian
+    const spanAllowed =
+      project.ftttCompany === FtttCompany.TELKOM_INFRA ||
+      (project.ftttCompany === FtttCompany.PST && project.implementationType === 'GALIAN');
+    if (!spanAllowed) {
+      throw new BadRequestException('Span hanya tersedia untuk Telkom Infra atau PST jenis implementasi Galian');
     }
     return this.prisma.ftttSpan.create({
       data: { projectId, spanNumber: dto.spanNumber, createdById: userId },
@@ -1220,9 +1250,34 @@ export class FtttProjectService {
       }
     }
 
+    // JLM: maintenance end date is captured by Finance with the Jaminan Pemeliharaan upload
+    const JAMINAN_PEMELIHARAAN_KEYS = new Set(['JAMINAN_PEMELIHARAAN', 'JAMINAN_PEMELIHARAAN_PST']);
+    let maintenanceEndDate: Date | null = null;
+    if (JAMINAN_PEMELIHARAAN_KEYS.has(dto.docKey)) {
+      if (dto.maintenanceEndDate) {
+        const d = new Date(dto.maintenanceEndDate);
+        if (isNaN(d.getTime())) throw new BadRequestException('Tanggal berakhir masa pemeliharaan tidak valid');
+        maintenanceEndDate = d;
+      }
+      const proj = await this.prisma.ftttProject.findUniqueOrThrow({
+        where: { id: projectId },
+        select: { maintenanceEndDate: true },
+      });
+      if (!maintenanceEndDate && !proj.maintenanceEndDate) {
+        throw new BadRequestException('Tanggal Berakhir Masa Pemeliharaan wajib diisi');
+      }
+    }
+
     const existing = await this.prisma.ftttReconDoc.findUnique({
       where: { projectId_docKey: { projectId, docKey: dto.docKey } },
     });
+
+    if (maintenanceEndDate) {
+      await this.prisma.ftttProject.update({
+        where: { id: projectId },
+        data: { maintenanceEndDate, lastMaintReminderAt: null },
+      });
+    }
 
     let fileUrl = existing?.fileUrl ?? undefined;
     if (file) {
@@ -1400,5 +1455,84 @@ export class FtttProjectService {
         ? { approvalStatus: 'APPROVED', pmApprovedById: userId, pmApprovedAt: new Date(), rejectionNotes: null }
         : { approvalStatus: 'REJECTED', rejectionNotes: rejectionNotes!.trim() },
     });
+  }
+
+  // ─── JLM: Admin confirms maintenance period complete (Project Closing) ─────
+  async confirmMaintenance(id: string, userId: string, userRole: Role) {
+    if (userRole !== Role.ADMIN && userRole !== Role.GENERAL_MANAGER) {
+      throw new ForbiddenException('Hanya Admin Project yang dapat mengkonfirmasi penyelesaian masa pemeliharaan');
+    }
+    const project = await this.prisma.ftttProject.findUniqueOrThrow({ where: { id } });
+    if (project.currentPhase !== FtttPhase.CLOSING) {
+      throw new BadRequestException('Konfirmasi hanya dapat dilakukan pada fase Project Closing');
+    }
+    return this.prisma.ftttProject.update({
+      where: { id },
+      data: { maintenanceConfirmedAt: new Date(), maintenanceConfirmedById: userId },
+      include: this.fullInclude(),
+    });
+  }
+
+  // ─── JLM: PST — choose Implementation type (Galian → span-based; KU → existing) ──
+  async setImplementationType(id: string, type: 'GALIAN' | 'KU', userId: string, userRole: Role) {
+    if (userRole !== Role.ADMIN && userRole !== Role.GENERAL_MANAGER) {
+      throw new ForbiddenException('Hanya Admin Project yang dapat menentukan jenis implementasi');
+    }
+    const project = await this.prisma.ftttProject.findUniqueOrThrow({ where: { id } });
+    if (project.ftttCompany !== FtttCompany.PST) {
+      throw new BadRequestException('Jenis implementasi hanya berlaku untuk project PST');
+    }
+    if (project.currentPhase !== FtttPhase.IMPLEMENTATION) {
+      throw new BadRequestException('Jenis implementasi hanya dapat dipilih pada fase Implementation');
+    }
+    return this.prisma.ftttProject.update({
+      where: { id },
+      data: { implementationType: type },
+      include: this.fullInclude(),
+    });
+  }
+
+  // ─── JLM: maintenance reminder — fired on access, deduped to once per day ──
+  private async maybeSendMaintenanceReminder(project: {
+    id: string; projectName: string | null; currentPhase: FtttPhase; ftttCompany: FtttCompany;
+    maintenanceEndDate: Date | null; maintenanceConfirmedAt: Date | null; lastMaintReminderAt: Date | null;
+  }) {
+    if (project.currentPhase !== FtttPhase.CLOSING) return;
+    if (project.ftttCompany !== FtttCompany.TELKOM_INFRA && project.ftttCompany !== FtttCompany.PST) return;
+    if (!project.maintenanceEndDate || project.maintenanceConfirmedAt) return;
+
+    const now = new Date();
+    const end = new Date(project.maintenanceEndDate);
+    const msPerDay = 24 * 60 * 60 * 1000;
+    const daysLeft = Math.ceil((end.getTime() - now.getTime()) / msPerDay);
+    // Reminder window: from 3 days before the end date onward
+    if (daysLeft > 3) return;
+
+    // Dedup: at most one reminder per calendar day
+    if (project.lastMaintReminderAt) {
+      const last = new Date(project.lastMaintReminderAt);
+      if (last.toDateString() === now.toDateString()) return;
+    }
+
+    const pName = project.projectName ?? project.id.slice(-6).toUpperCase();
+    const message =
+      daysLeft > 0
+        ? 'Masa pemeliharaan project akan segera berakhir. Silakan lakukan konfirmasi penyelesaian masa pemeliharaan untuk melanjutkan proses Project Closing.'
+        : 'Masa pemeliharaan project telah berakhir. Silakan lakukan konfirmasi penyelesaian masa pemeliharaan untuk melanjutkan proses Project Closing.';
+    try {
+      await this.notifications.notifyUsersByRole(Role.ADMIN, {
+        title:    `FTTT — Pengingat Masa Pemeliharaan (${pName})`,
+        message,
+        type:     'FTTT_MAINTENANCE_REMINDER',
+        link:     `/fttt-projects/${project.id}`,
+        entityId: project.id,
+      });
+      await this.prisma.ftttProject.update({
+        where: { id: project.id },
+        data: { lastMaintReminderAt: now },
+      });
+    } catch {
+      /* reminder is best-effort — never block project access */
+    }
   }
 }

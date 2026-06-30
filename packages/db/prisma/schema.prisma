@@ -352,6 +352,7 @@ model User {
   ftttClosingLogs        FtttClosingLog[]         @relation("FtttClosingLogUploader")
   ftttSpans              FtttSpan[]               @relation("FtttSpanCreator")
   ftttSpanLogs           FtttSpanLog[]            @relation("FtttSpanLogUploader")
+  ftttMaintConfirmations FtttProject[]            @relation("FtttMaintConfirmer")
 }
 
 // Phase 4 — GM-controlled feature visibility per role
@@ -2976,6 +2977,12 @@ enum FtttApprovalStatus {
   REJECTED
 }
 
+// JLM: PST implementation type — Galian uses span-based daily log; KU uses existing flow
+enum FtttImplementationType {
+  GALIAN
+  KU
+}
+
 model FtttProject {
   id             String            @id @default(cuid())
   cleanListId    String?
@@ -2987,11 +2994,19 @@ model FtttProject {
   pmId           String
   projectName    String?
   notes          String?
+  // JLM: PST Implementation type (Galian → span-based; KU → existing). Null for TI/iFORTE.
+  implementationType FtttImplementationType?
+  // JLM: Project Closing maintenance confirmation + reminder (TI + PST)
+  maintenanceEndDate        DateTime?
+  maintenanceConfirmedAt    DateTime?
+  maintenanceConfirmedById  String?
+  lastMaintReminderAt       DateTime?
   createdAt      DateTime          @default(now())
   updatedAt      DateTime          @updatedAt
 
   cleanList       CleanList?          @relation("FtttProjectCleanList", fields: [cleanListId], references: [id])
   pm              User                @relation("FtttProjectPM", fields: [pmId], references: [id])
+  maintenanceConfirmedBy User?         @relation("FtttMaintConfirmer", fields: [maintenanceConfirmedById], references: [id])
 
   phaseProgresses FtttPhaseProgress[]
   surveyUploads      FtttSurveyUpload[]

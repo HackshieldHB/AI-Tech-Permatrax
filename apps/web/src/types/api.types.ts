@@ -1062,6 +1062,11 @@ export interface FtttProject {
   projectName:    string | null;
   notes:          string | null;
   pmId:           string;
+  // JLM: PST implementation type + Project Closing maintenance confirmation/reminder
+  implementationType?:       'GALIAN' | 'KU' | null;
+  maintenanceEndDate?:       string | null;
+  maintenanceConfirmedAt?:   string | null;
+  maintenanceConfirmedById?: string | null;
   createdAt:      string;
   updatedAt:      string;
   pm:             { id: string; name: string; email: string };

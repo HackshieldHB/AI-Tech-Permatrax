@@ -29,6 +29,7 @@ import {
   CreateFtttProjectDto,
   FtttProjectFilterDto,
   ResolveSanggahDto,
+  SetImplementationTypeDto,
   SubmitSanggahDto,
   UploadDocumentDto,
   UploadDrmDocDto,
@@ -344,5 +345,26 @@ export class FtttProjectController {
     @CurrentUser() user: AuthUser,
   ) {
     return this.service.deleteSpanLog(logId, user.userId, user.role);
+  }
+
+  // ─── JLM: Project Closing maintenance confirmation + PST implementation type ──
+
+  // POST /fttt-projects/:id/confirm-maintenance  (Admin confirms maintenance done)
+  @Post(':id/confirm-maintenance')
+  confirmMaintenance(
+    @Param('id') id: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.service.confirmMaintenance(id, user.userId, user.role);
+  }
+
+  // PUT /fttt-projects/:id/implementation-type  (PST: Galian / KU)
+  @Put(':id/implementation-type')
+  setImplementationType(
+    @Param('id') id: string,
+    @Body(new ZodValidationPipe(SetImplementationTypeDto)) dto: any,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.service.setImplementationType(id, dto.type, user.userId, user.role);
   }
 }

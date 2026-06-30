@@ -1246,10 +1246,28 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
   const isSurveyor   = userRole === 'SURVEYOR_FTTT';
   const isPmFttt     = userRole === 'PM_FTTT';
   const isTI         = project.ftttCompany === 'TELKOM_INFRA';
+  const isPST        = project.ftttCompany === 'PST';
+  // JLM: PST chooses implementation type — Galian (span-based) vs KU (existing flow)
+  const implType     = project.implementationType ?? null;
+  const useSpanFlow  = isTI || (isPST && implType === 'GALIAN');
   // Issue 2: TI Implementation — Admin only; PST/iFORTE — Surveyor/PM/Admin
   const canUpload    = isTI ? isAdmin : (isSurveyor || isAdmin || isPmFttt);
   const canMonitoring = isAdmin;
   const canNote      = canUpload;
+  const [settingType, setSettingType] = useState(false);
+
+  const handleSetImplType = async (type: 'GALIAN' | 'KU') => {
+    setSettingType(true);
+    try {
+      const res = await apiFetch(`/fttt-projects/${project.id}/implementation-type`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type }),
+      }, user?.id);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
+      toast.success(`Jenis implementasi diset: ${type === 'GALIAN' ? 'Galian' : 'KU (Kabel Udara)'}`);
+      onRefresh();
+    } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
+    finally { setSettingType(false); }
+  };
 
   // C6-PST4: Track Surveyor "lapangan done" state via phaseProgress.notes
   const implProg = project.phaseProgresses.find((p) => p.phase === 'IMPLEMENTATION');
@@ -1319,10 +1337,48 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
 
   const logs = project.implementationLogs ?? [];
 
+  // JLM: PST must pick implementation type before any implementation activity
+  if (isPST && !implType) {
+    return (
+      <div>
+        <p style={{ fontWeight: 600, fontSize: 14, marginBottom: 4 }}>Pilih Jenis Implementasi</p>
+        <p style={{ fontSize: 12, color: '#57606a', marginBottom: 12 }}>
+          Project PST memiliki dua jenis pekerjaan implementasi. Pilih jenis pekerjaan terlebih dahulu untuk menentukan alur dokumentasi.
+        </p>
+        {isAdmin ? (
+          <div style={{ display: 'flex', gap: 10 }}>
+            {([
+              { key: 'GALIAN' as const, icon: '⛏️', label: 'Galian', desc: 'Dokumentasi berbasis Span (Daily Implementation Log)' },
+              { key: 'KU' as const, icon: '🔌', label: 'KU (Kabel Udara)', desc: 'Form upload dokumentasi existing' },
+            ]).map((opt) => (
+              <button key={opt.key} type="button" disabled={settingType}
+                onClick={() => void handleSetImplType(opt.key)}
+                style={{ flex: 1, padding: 14, borderRadius: 10, border: '1.5px solid #D0D7DE', background: '#fff', cursor: settingType ? 'not-allowed' : 'pointer', textAlign: 'left' }}>
+                <div style={{ fontSize: 20, marginBottom: 4 }}>{opt.icon}</div>
+                <div style={{ fontWeight: 700, fontSize: 13, color: '#111' }}>{opt.label}</div>
+                <div style={{ fontSize: 11, color: '#57606a', marginTop: 2 }}>{opt.desc}</div>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div style={{ background: '#F6F8FA', border: '1px solid #D0D7DE', borderRadius: 8, padding: 10, fontSize: 12, color: '#57606a' }}>
+            🔒 Admin Project akan memilih jenis implementasi terlebih dahulu.
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div>
-      {/* Issue 1: TI uses Span-based daily log */}
-      {isTI && <SpanSection project={project} onRefresh={onRefresh} isAdmin={isAdmin} />}
+      {/* JLM: span-based daily log for TI and PST-Galian */}
+      {useSpanFlow && <SpanSection project={project} onRefresh={onRefresh} isAdmin={isAdmin} />}
+
+      {isPST && implType && (
+        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 10px', borderRadius: 999, background: '#EDF2F4', fontSize: 11, fontWeight: 600, color: '#374151', marginBottom: 10 }}>
+          Jenis Implementasi: {implType === 'GALIAN' ? '⛏️ Galian' : '🔌 KU (Kabel Udara)'}
+        </div>
+      )}
 
       <p style={{ fontWeight: 600, fontSize: 13, marginBottom: 8 }}>Log Implementasi ({logs.length})</p>
 
@@ -1738,9 +1794,31 @@ function ClosingSection({ project, onRefresh, userRole }: { project: FtttProject
   const isPST        = project.ftttCompany === 'PST';
   const isIforte     = project.ftttCompany === 'IFORTE';
 
-  // C6-TI3: Maintenance period gate — Admin must confirm before uploads are enabled
+  // C6-TI3: Maintenance period gate — Admin must confirm before uploads are enabled (iFORTE)
   const [maintenanceConfirmed, setMaintenanceConfirmed] = useState(false);
   const uploadEnabled = canUpload && maintenanceConfirmed;
+
+  // JLM: persisted maintenance confirmation (TI + PST) + end-date reminder
+  const maintConfirmed = !!project.maintenanceConfirmedAt;
+  const maintEndDate   = project.maintenanceEndDate ? new Date(project.maintenanceEndDate) : null;
+  const maintDaysLeft  = maintEndDate ? Math.ceil((maintEndDate.getTime() - Date.now()) / 86400000) : null;
+  const showMaintReminder = (isTI || isPST) && !!maintEndDate && !maintConfirmed && maintDaysLeft !== null && maintDaysLeft <= 3;
+  const [confirming, setConfirming] = useState(false);
+  const [maintAgree, setMaintAgree] = useState(false);
+  const [maintEndInput, setMaintEndInput] = useState(
+    project.maintenanceEndDate ? project.maintenanceEndDate.slice(0, 10) : '',
+  );
+
+  const handleConfirmMaintenance = async () => {
+    setConfirming(true);
+    try {
+      const res = await apiFetch(`/fttt-projects/${project.id}/confirm-maintenance`, { method: 'POST' }, user?.id);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
+      toast.success('Konfirmasi penyelesaian masa pemeliharaan tersimpan');
+      onRefresh();
+    } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
+    finally { setConfirming(false); }
+  };
 
   const logs: FtttClosingLog[] = project.closingLogs ?? [];
   const bastII    = logs.find((l) => l.logType === 'BAST_II') ?? null;
@@ -1774,11 +1852,18 @@ function ClosingSection({ project, onRefresh, userRole }: { project: FtttProject
   const STATUS_LABELS: Record<string, string> = { PENDING_PM: 'Menunggu PM', APPROVED: 'Disetujui', REJECTED: 'Ditolak' };
 
   // Upload Jaminan Pemeliharaan or Invoice Final (reconDocs)
+  // JLM: maintenance end date is sent together with the Jaminan Pemeliharaan upload
+  const JAMINAN_PEM_KEYS = ['JAMINAN_PEMELIHARAAN', 'JAMINAN_PEMELIHARAAN_PST'];
   const handleReconUpload = async (docKey: string, file: File) => {
+    if (JAMINAN_PEM_KEYS.includes(docKey) && !maintEndInput && !project.maintenanceEndDate) {
+      toast.error('Isi Tanggal Berakhir Masa Pemeliharaan terlebih dahulu');
+      return;
+    }
     setUploadingReconKey(docKey);
     const fd = new FormData();
     fd.append('docKey', docKey);
     fd.append('file', file);
+    if (JAMINAN_PEM_KEYS.includes(docKey) && maintEndInput) fd.append('maintenanceEndDate', maintEndInput);
     try {
       const res = await apiFetch(`/fttt-projects/${project.id}/recon-docs`, { method: 'POST', body: fd }, user?.id);
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal upload');
@@ -1833,6 +1918,64 @@ function ClosingSection({ project, onRefresh, userRole }: { project: FtttProject
       <p style={{ fontSize: 12, color: '#57606a', marginBottom: 10 }}>
         Serah terima project kepada client setelah masa pemeliharaan selesai. Hanya Admin yang dapat mengelola dokumen fase ini.
       </p>
+
+      {/* JLM: maintenance end-date reminder (TI + PST) */}
+      {showMaintReminder && (
+        <div style={{ background: maintDaysLeft !== null && maintDaysLeft <= 0 ? '#FFEBE9' : '#FFF8C5', border: `1px solid ${maintDaysLeft !== null && maintDaysLeft <= 0 ? '#cf222e' : '#d4a017'}`, borderRadius: 10, padding: 12, marginBottom: 14 }}>
+          <p style={{ margin: 0, fontWeight: 700, fontSize: 13, color: maintDaysLeft !== null && maintDaysLeft <= 0 ? '#cf222e' : '#9a6700' }}>
+            ⏰ {maintDaysLeft !== null && maintDaysLeft <= 0 ? 'Masa pemeliharaan telah berakhir' : 'Masa pemeliharaan akan segera berakhir'}
+          </p>
+          <p style={{ margin: '4px 0 0', fontSize: 12, color: maintDaysLeft !== null && maintDaysLeft <= 0 ? '#a40e26' : '#9a6700' }}>
+            Berakhir: {maintEndDate?.toLocaleDateString('id-ID', { day: '2-digit', month: 'long', year: 'numeric' })}
+            {maintDaysLeft !== null && maintDaysLeft > 0 ? ` (${maintDaysLeft} hari lagi)` : ''}. Silakan lakukan konfirmasi penyelesaian masa pemeliharaan untuk melanjutkan proses Project Closing.
+          </p>
+        </div>
+      )}
+
+      {/* JLM: Finance inputs the maintenance end date with the Jaminan Pemeliharaan upload (TI + PST) */}
+      {isFinance && (isTI || isPST) && (
+        <div style={{ background: '#F0F8FF', border: '1px solid #0969DA', borderRadius: 10, padding: 12, marginBottom: 14 }}>
+          <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: '#0969DA', marginBottom: 6 }}>
+            🗓️ Tanggal Berakhir Masa Pemeliharaan (wajib sebelum upload Jaminan Pemeliharaan)
+          </label>
+          <input type="date" value={maintEndInput} onChange={(e) => setMaintEndInput(e.target.value)}
+            style={{ padding: '7px 9px', borderRadius: 7, border: '1px solid #D0D7DE', fontSize: 12 }} />
+          {project.maintenanceEndDate && (
+            <span style={{ fontSize: 11, color: '#57606a', marginLeft: 8 }}>
+              Tersimpan: {new Date(project.maintenanceEndDate).toLocaleDateString('id-ID')}
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* JLM: Admin maintenance-completion checklist gate (TI + PST) */}
+      {(isTI || isPST) && canUpload && !maintConfirmed && (
+        <div style={{ background: '#FFF8C5', border: '1px solid #d4a017', borderRadius: 10, padding: 14, marginBottom: 16 }}>
+          <p style={{ margin: '0 0 6px', fontWeight: 700, fontSize: 13, color: '#9a6700' }}>
+            ⚠️ Konfirmasi Penyelesaian Masa Pemeliharaan
+          </p>
+          <p style={{ margin: '0 0 10px', fontSize: 12, color: '#9a6700' }}>
+            Project hanya dapat diselesaikan (Closed) setelah Admin Project mengkonfirmasi bahwa masa pemeliharaan telah selesai.
+          </p>
+          <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer', marginBottom: 10 }}>
+            <input type="checkbox" checked={maintAgree} onChange={(e) => setMaintAgree(e.target.checked)}
+              style={{ marginTop: 2, width: 16, height: 16, cursor: 'pointer' }} />
+            <span style={{ fontSize: 12, color: '#9a6700', fontWeight: 600 }}>
+              Saya menyatakan bahwa masa pemeliharaan project telah selesai dan seluruh kewajiban pemeliharaan telah dipenuhi.
+            </span>
+          </label>
+          <button type="button" disabled={!maintAgree || confirming} onClick={() => void handleConfirmMaintenance()}
+            style={{ padding: '8px 16px', borderRadius: 8, border: 'none', background: !maintAgree || confirming ? '#E5E7EB' : '#1a7f37', color: !maintAgree || confirming ? '#9CA3AF' : '#fff', fontWeight: 700, fontSize: 12, cursor: !maintAgree || confirming ? 'not-allowed' : 'pointer' }}>
+            {confirming ? 'Menyimpan…' : '✓ Konfirmasi Penyelesaian'}
+          </button>
+        </div>
+      )}
+      {(isTI || isPST) && maintConfirmed && (
+        <div style={{ background: '#DAFBE1', border: '1px solid #2DA44E', borderRadius: 8, padding: 10, marginBottom: 14, fontSize: 12, color: '#1a7f37' }}>
+          ✅ Masa pemeliharaan telah dikonfirmasi selesai
+          {project.maintenanceConfirmedAt ? ` pada ${new Date(project.maintenanceConfirmedAt).toLocaleDateString('id-ID')}` : ''} — Project Closing dapat diselesaikan.
+        </div>
+      )}
 
       {/* Maintenance period confirmation gate — iFORTE only (BAST II / Evidence) */}
       {isIforte && canUpload && !maintenanceConfirmed && (
@@ -2245,6 +2388,8 @@ export default function FtttProjectDetailPage() {
             // C6-TI2: Documentation & Reconciliation — PM FTTT + Admin only
             if ((project.currentPhase === 'DOCUMENTATION' || project.currentPhase === 'RECONCILIATION') &&
                 userRole === 'SURVEYOR_FTTT') return false;
+            // JLM: Project Closing — Admin only (after maintenance confirmation)
+            if (project.currentPhase === 'CLOSING' && userRole !== 'ADMIN' && userRole !== 'GENERAL_MANAGER') return false;
             return true;
           })() && (
             <button
