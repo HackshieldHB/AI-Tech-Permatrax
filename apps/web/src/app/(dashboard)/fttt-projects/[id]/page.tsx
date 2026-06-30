@@ -1103,7 +1103,9 @@ function SpanSection({ project, onRefresh, isAdmin }: { project: FtttProject; on
   const [uploadingLog, setUploadingLog] = useState<string | null>(null);
   const [logCategory, setLogCategory] = useState<string>('GALIAN');
   const [logCaption, setLogCaption] = useState('');
+  const [uploadProgress, setUploadProgress] = useState('');
   const logFileRef = useRef<HTMLInputElement>(null);
+  const logFolderRef = useRef<HTMLInputElement>(null);
 
   const handleCreateSpan = async () => {
     if (!newSpanNumber.trim()) return;
@@ -1128,18 +1130,30 @@ function SpanSection({ project, onRefresh, isAdmin }: { project: FtttProject; on
     } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
   };
 
-  const handleAddLog = async (spanId: string, file: File) => {
+  // JLM: folder / multi-file upload — every file in the chosen folder is uploaded to the category
+  const handleAddLogs = async (spanId: string, files: FileList | File[]) => {
+    const arr = Array.from(files).filter((f) => f.size > 0);
+    if (arr.length === 0) return;
     setUploadingLog(spanId);
-    const fd = new FormData();
-    fd.append('category', logCategory);
-    if (logCaption) fd.append('caption', logCaption);
-    fd.append('file', file);
+    let ok = 0;
     try {
-      const res = await apiFetch(`/fttt-projects/spans/${spanId}/logs`, { method: 'POST', body: fd }, user?.id);
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
-      setLogCaption(''); toast.success('Log span berhasil diunggah'); onRefresh();
-    } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
-    finally { setUploadingLog(null); }
+      for (let i = 0; i < arr.length; i++) {
+        if (arr.length > 1) setUploadProgress(`Mengunggah ${i + 1}/${arr.length}…`);
+        const fd = new FormData();
+        fd.append('category', logCategory);
+        if (logCaption) fd.append('caption', logCaption);
+        fd.append('file', arr[i]);
+        const res = await apiFetch(`/fttt-projects/spans/${spanId}/logs`, { method: 'POST', body: fd }, user?.id);
+        if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error((e as { message?: string }).message ?? 'Gagal'); }
+        ok++;
+      }
+      setLogCaption('');
+      toast.success(arr.length > 1 ? `${ok} file berhasil diunggah` : 'Log span berhasil diunggah');
+      onRefresh();
+    } catch (err: unknown) {
+      toast.error(`${err instanceof Error ? err.message : 'Gagal'} (${ok}/${arr.length} terunggah)`);
+      onRefresh();
+    } finally { setUploadingLog(null); setUploadProgress(''); }
   };
 
   const handleDeleteLog = async (logId: string) => {
@@ -1194,6 +1208,20 @@ function SpanSection({ project, onRefresh, isAdmin }: { project: FtttProject; on
 
           {expandedSpan === span.id && (
             <div style={{ padding: 12 }}>
+              {/* JLM: file count per category */}
+              {span.spanLogs.length > 0 && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+                  {Object.entries(SPAN_LOG_CATEGORY_LABELS).map(([k, v]) => {
+                    const n = span.spanLogs.filter((l) => l.category === k).length;
+                    if (n === 0) return null;
+                    return (
+                      <span key={k} style={{ fontSize: 10, fontWeight: 600, color: '#374151', background: '#EDF2F4', padding: '2px 8px', borderRadius: 999 }}>
+                        {v}: {n} file
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
               {/* Existing logs */}
               {span.spanLogs.map((log) => (
                 <div key={log.id} style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '6px 0', borderBottom: '1px solid #EAEEF2' }}>
@@ -1224,11 +1252,19 @@ function SpanSection({ project, onRefresh, isAdmin }: { project: FtttProject; on
                   <input value={logCaption} onChange={(e) => setLogCaption(e.target.value)}
                     placeholder="Keterangan (opsional)"
                     style={{ flex: 1, minWidth: 120, padding: '5px 8px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 11 }} />
-                  <input ref={logFileRef} type="file" accept=".jpg,.jpeg,.png,.webp,.mp4,.pdf" style={{ display: 'none' }}
-                    onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleAddLog(span.id, f); }} />
+                  {/* JLM: multi-file + folder upload — all files go to the selected category */}
+                  <input ref={logFileRef} type="file" multiple accept=".jpg,.jpeg,.png,.webp,.mp4,.mov,.pdf" style={{ display: 'none' }}
+                    onChange={(e) => { if (e.target.files?.length) void handleAddLogs(span.id, e.target.files); e.target.value = ''; }} />
+                  {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+                  <input ref={logFolderRef} type="file" {...({ webkitdirectory: '', directory: '' } as any)} multiple style={{ display: 'none' }}
+                    onChange={(e) => { if (e.target.files?.length) void handleAddLogs(span.id, e.target.files); e.target.value = ''; }} />
+                  <button type="button" onClick={() => logFolderRef.current?.click()} disabled={uploadingLog === span.id}
+                    style={{ padding: '5px 12px', borderRadius: 6, border: 'none', background: '#1a7f37', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 11 }}>
+                    📁 Upload Folder
+                  </button>
                   <button type="button" onClick={() => logFileRef.current?.click()} disabled={uploadingLog === span.id}
                     style={{ padding: '5px 12px', borderRadius: 6, border: 'none', background: '#0969DA', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 11 }}>
-                    {uploadingLog === span.id ? '…' : '+ Upload'}
+                    {uploadingLog === span.id ? (uploadProgress || '…') : '📄 Upload File'}
                   </button>
                 </div>
               )}
