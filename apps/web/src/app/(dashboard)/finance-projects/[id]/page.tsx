@@ -20,6 +20,7 @@ import type {
 import { num } from '../_lib/num';
 import { ForecastPanel } from './ForecastPanel';
 import { SCurveChart } from './SCurveChart';
+import { FtttFinanceMonitor } from './FtttFinanceMonitor';
 import { canManageFinance } from '../../../../lib/finance-roles';
 
 const PIE_COLORS = ['#10B981', '#6366F1', '#94A3B8'];
@@ -248,6 +249,8 @@ export default function FinanceProjectDetailPage() {
   }
 
   const isGen = detail.isDefaultUncategorized;
+  // JLM: FTTT finance projects show FTTT monitoring (no Forecast tab)
+  const isFttt = detail.projectType === 'FTTT';
 
   return (
     <div className="max-w-6xl mx-auto px-3 pb-12 space-y-6">
@@ -308,13 +311,20 @@ export default function FinanceProjectDetailPage() {
 
       <div className="flex flex-wrap gap-2 border-b border-slate-100">
         {(
-          [
-            ['overview', 'Overview'],
-            ['transactions', 'Transaksi'],
-            ['scurve', 'Kurva S'],
-            ['forecast', 'Forecast'],
-            ['adjustments', 'Riwayat Penyesuaian'],
-          ] as const
+          (isFttt
+            ? [
+                ['overview', 'Overview'],
+                ['transactions', 'Transaksi'],
+                ['scurve', 'Kurva S'],
+                ['adjustments', 'Riwayat Penyesuaian'],
+              ]
+            : [
+                ['overview', 'Overview'],
+                ['transactions', 'Transaksi'],
+                ['scurve', 'Kurva S'],
+                ['forecast', 'Forecast'],
+                ['adjustments', 'Riwayat Penyesuaian'],
+              ]) as [Tab, string][]
         ).map(([k, label]) => (
           <button
             key={k}
@@ -329,7 +339,12 @@ export default function FinanceProjectDetailPage() {
         ))}
       </div>
 
-      {tab === 'overview' ? (
+      {/* JLM: FTTT projects render FTTT monitoring for overview/transaksi/kurva-s */}
+      {isFttt && (tab === 'overview' || tab === 'transactions' || tab === 'scurve') ? (
+        <FtttFinanceMonitor financeProjectId={id} tab={tab as 'overview' | 'transactions' | 'scurve'} />
+      ) : null}
+
+      {!isFttt && tab === 'overview' ? (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <div className="space-y-4">
             <h3 className="font-bold text-slate-800 flex items-center gap-2">
@@ -433,7 +448,7 @@ export default function FinanceProjectDetailPage() {
         </div>
       ) : null}
 
-      {tab === 'transactions' ? (
+      {!isFttt && tab === 'transactions' ? (
         <div className="space-y-3">
           <div className="flex flex-wrap gap-2">
             <select
@@ -532,7 +547,7 @@ export default function FinanceProjectDetailPage() {
         </div>
       ) : null}
 
-      {tab === 'scurve' ? (
+      {!isFttt && tab === 'scurve' ? (
         <SCurveChart projectId={id} manage={manage} />
       ) : null}
 

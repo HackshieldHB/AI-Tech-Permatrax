@@ -1301,7 +1301,7 @@ export class FtttProjectService {
       where: { id: projectId },
       include: {
         financeProject: { select: { id: true, code: true, name: true, totalBudget: true, budgetPerizinan: true, materialBudget: true, jasaBudget: true, budgetLainLain: true } },
-        transactions: { orderBy: { createdAt: 'asc' } },
+        transactions: { orderBy: { createdAt: 'asc' }, include: { createdBy: { select: { id: true, name: true } } } },
         phaseProgresses: true,
       },
     });
@@ -1368,6 +1368,7 @@ export class FtttProjectService {
 
     return {
       financeProject: fp,
+      ftttProject: { id: project.id, name: project.projectName, currentPhase: project.currentPhase },
       totalBudget,
       totalSpent,
       remaining: totalBudget - totalSpent,
@@ -1376,7 +1377,24 @@ export class FtttProjectService {
       })),
       costCurve,
       progressCurve,
+      transactions: project.transactions.map((t) => ({
+        id: t.id, category: t.category, aktivitas: t.aktivitas, uom: t.uom,
+        qty: t.qty, price: t.price, total: t.total, remarks: t.remarks,
+        createdAt: t.createdAt, createdBy: (t as typeof t & { createdBy?: { name: string } }).createdBy ?? null,
+      })),
     };
+  }
+
+  // JLM: Finance-side FTTT monitoring — resolve the linked FTTT project from a finance project id
+  async getMonitoringByFinance(financeProjectId: string) {
+    const ftttProject = await this.prisma.ftttProject.findFirst({
+      where: { financeProjectId },
+      select: { id: true },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (!ftttProject) return { linked: false as const };
+    const data = await this.getBudgetScurve(ftttProject.id);
+    return { linked: true as const, ...data };
   }
 
   // ─── Reconciliation & Billing / Closing — upload/replace doc ────────────
