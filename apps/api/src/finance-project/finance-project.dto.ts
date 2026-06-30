@@ -10,6 +10,10 @@ export const CreateFinanceProjectDto = z
     totalBudget: z.coerce.number().nonnegative(),
     materialBudget: z.coerce.number().nonnegative().optional(),
     jasaBudget: z.coerce.number().nonnegative().optional(),
+    // JLM: project type + FTTT-only budget categories (Perizinan + Lain-Lain)
+    projectType: z.enum(['FTTH', 'FTTT']).optional().default('FTTH'),
+    budgetPerizinan: z.coerce.number().nonnegative().optional(),
+    budgetLainLain: z.coerce.number().nonnegative().optional(),
     endDate: z.string().datetime().optional(),
   })
   .refine(

@@ -22,10 +22,20 @@ export default function NewFinanceProjectPage() {
   const [jasStr, setJasStr] = useState('');
   const [endDate, setEndDate] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  // JLM: project type + FTTT budget categories
+  const [projectType, setProjectType] = useState<'FTTH' | 'FTTT'>('FTTH');
+  const [perizinanStr, setPerizinanStr] = useState('');
+  const [lainLainStr, setLainLainStr] = useState('');
 
-  const totalN = Number(digitsOnly(totalBudgetStr)) || 0;
+  const isFttt = projectType === 'FTTT';
+  const perizinanN = perizinanStr.trim() ? Number(digitsOnly(perizinanStr)) : undefined;
+  const lainLainN = lainLainStr.trim() ? Number(digitsOnly(lainLainStr)) : undefined;
   const matN = matStr.trim() ? Number(digitsOnly(matStr)) : undefined;
   const jasN = jasStr.trim() ? Number(digitsOnly(jasStr)) : undefined;
+  // FTTT total is the auto-sum of the 4 categories; FTTH uses the manual total field
+  const totalN = isFttt
+    ? (perizinanN ?? 0) + (matN ?? 0) + (jasN ?? 0) + (lainLainN ?? 0)
+    : (Number(digitsOnly(totalBudgetStr)) || 0);
 
   const validate = (): string | null => {
     if (!name.trim() || name.length > 100) return 'Nama wajib diisi (maks 100 karakter)';
@@ -51,11 +61,14 @@ export default function NewFinanceProjectPage() {
     try {
       const body: Record<string, unknown> = {
         name: name.trim(),
+        projectType,
         totalBudget: totalN,
         ...(code.trim() ? { code: code.trim().toUpperCase() } : {}),
         ...(description.trim() ? { description: description.trim() } : {}),
         ...(matN != null ? { materialBudget: matN } : {}),
         ...(jasN != null ? { jasaBudget: jasN } : {}),
+        ...(isFttt && perizinanN != null ? { budgetPerizinan: perizinanN } : {}),
+        ...(isFttt && lainLainN != null ? { budgetLainLain: lainLainN } : {}),
         ...(endDate
           ? { endDate: new Date(endDate + 'T12:00:00').toISOString() }
           : {}),
@@ -89,6 +102,20 @@ export default function NewFinanceProjectPage() {
           <p className="text-[11px] text-slate-500 mt-1">Kosongkan untuk generate otomatis</p>
         </div>
         <div>
+          <label className="text-xs font-bold text-slate-500 uppercase">Tipe Project *</label>
+          <select
+            className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm bg-white"
+            value={projectType}
+            onChange={(e) => setProjectType(e.target.value as 'FTTH' | 'FTTT')}
+          >
+            <option value="FTTH">FTTH</option>
+            <option value="FTTT">FTTT</option>
+          </select>
+          <p className="text-[11px] text-slate-500 mt-1">
+            {isFttt ? 'FTTT: budget 4 kategori (Perizinan / Material / Jasa / Lain-Lain), Total otomatis.' : 'FTTH: alur existing (Material / Jasa).'}
+          </p>
+        </div>
+        <div>
           <label className="text-xs font-bold text-slate-500 uppercase">Nama *</label>
           <input
             className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
@@ -105,36 +132,73 @@ export default function NewFinanceProjectPage() {
             onChange={(e) => setDescription(e.target.value)}
           />
         </div>
-        <div>
-          <label className="text-xs font-bold text-slate-500 uppercase">Total Budget *</label>
-          <input
-            className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
-            value={totalBudgetStr}
-            onChange={(e) => setTotalBudgetStr(digitsOnly(e.target.value))}
-            placeholder="0"
-          />
-          <p className="text-xs text-slate-600 mt-1">{formatRupiah(totalN)}</p>
-        </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <div>
-            <label className="text-xs font-bold text-slate-500 uppercase">Material</label>
-            <input
-              className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
-              value={matStr}
-              onChange={(e) => setMatStr(digitsOnly(e.target.value))}
-            />
-            {matStr ? <p className="text-xs mt-1">{formatRupiah(matN ?? 0)}</p> : null}
-          </div>
-          <div>
-            <label className="text-xs font-bold text-slate-500 uppercase">Jasa</label>
-            <input
-              className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
-              value={jasStr}
-              onChange={(e) => setJasStr(digitsOnly(e.target.value))}
-            />
-            {jasStr ? <p className="text-xs mt-1">{formatRupiah(jasN ?? 0)}</p> : null}
-          </div>
-        </div>
+        {isFttt ? (
+          <>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs font-bold text-slate-500 uppercase">Budget Perizinan</label>
+                <input className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
+                  value={perizinanStr} onChange={(e) => setPerizinanStr(digitsOnly(e.target.value))} placeholder="0" />
+                {perizinanStr ? <p className="text-xs mt-1">{formatRupiah(perizinanN ?? 0)}</p> : null}
+              </div>
+              <div>
+                <label className="text-xs font-bold text-slate-500 uppercase">Budget Material</label>
+                <input className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
+                  value={matStr} onChange={(e) => setMatStr(digitsOnly(e.target.value))} placeholder="0" />
+                {matStr ? <p className="text-xs mt-1">{formatRupiah(matN ?? 0)}</p> : null}
+              </div>
+              <div>
+                <label className="text-xs font-bold text-slate-500 uppercase">Budget Jasa</label>
+                <input className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
+                  value={jasStr} onChange={(e) => setJasStr(digitsOnly(e.target.value))} placeholder="0" />
+                {jasStr ? <p className="text-xs mt-1">{formatRupiah(jasN ?? 0)}</p> : null}
+              </div>
+              <div>
+                <label className="text-xs font-bold text-slate-500 uppercase">Budget Lain-Lain</label>
+                <input className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
+                  value={lainLainStr} onChange={(e) => setLainLainStr(digitsOnly(e.target.value))} placeholder="0" />
+                {lainLainStr ? <p className="text-xs mt-1">{formatRupiah(lainLainN ?? 0)}</p> : null}
+              </div>
+            </div>
+            <div className="rounded-xl bg-slate-50 border border-slate-100 px-3 py-2">
+              <span className="text-xs font-bold text-slate-500 uppercase">Total Budget (otomatis)</span>
+              <p className="text-lg font-black text-slate-900">{formatRupiah(totalN)}</p>
+            </div>
+          </>
+        ) : (
+          <>
+            <div>
+              <label className="text-xs font-bold text-slate-500 uppercase">Total Budget *</label>
+              <input
+                className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
+                value={totalBudgetStr}
+                onChange={(e) => setTotalBudgetStr(digitsOnly(e.target.value))}
+                placeholder="0"
+              />
+              <p className="text-xs text-slate-600 mt-1">{formatRupiah(totalN)}</p>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs font-bold text-slate-500 uppercase">Material</label>
+                <input
+                  className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
+                  value={matStr}
+                  onChange={(e) => setMatStr(digitsOnly(e.target.value))}
+                />
+                {matStr ? <p className="text-xs mt-1">{formatRupiah(matN ?? 0)}</p> : null}
+              </div>
+              <div>
+                <label className="text-xs font-bold text-slate-500 uppercase">Jasa</label>
+                <input
+                  className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
+                  value={jasStr}
+                  onChange={(e) => setJasStr(digitsOnly(e.target.value))}
+                />
+                {jasStr ? <p className="text-xs mt-1">{formatRupiah(jasN ?? 0)}</p> : null}
+              </div>
+            </div>
+          </>
+        )}
         <div>
           <label className="text-xs font-bold text-slate-500 uppercase">Tanggal Berakhir</label>
           <input

@@ -59,9 +59,22 @@ export const CreateFtttProjectDto = z.object({
   triggerDocType: z.nativeEnum(FtttDocType),
   cleanListId:   z.string().optional(),
   projectName:   z.string().min(1).max(200).optional(),
+  // JLM: link to a Finance Project (Project Type = FTTT)
+  financeProjectId: z.string().optional(),
   notes:         z.string().max(1000).optional(),
 });
 export type CreateFtttProjectDtoType = z.infer<typeof CreateFtttProjectDto>;
+
+// JLM: Implementation Transaction Log entry (PM FTTT)
+export const AddFtttTransactionDto = z.object({
+  category:  z.enum(['PERIZINAN', 'MATERIAL', 'JASA', 'LAIN_LAIN']),
+  aktivitas: z.string().min(1).max(300),
+  uom:       z.string().max(50).optional(),
+  qty:       z.coerce.number().positive(),
+  price:     z.coerce.number().nonnegative(),
+  remarks:   z.string().min(1).max(1000),  // mandatory
+});
+export type AddFtttTransactionDtoType = z.infer<typeof AddFtttTransactionDto>;
 
 export const AdvancePhaseDto = z.object({
   notes: z.string().max(1000).optional(),

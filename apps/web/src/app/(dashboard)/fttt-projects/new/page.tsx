@@ -45,9 +45,20 @@ export default function NewFtttProjectPage() {
 
   const [company, setCompany] = useState<FtttCompany | ''>('');
   const [file, setFile] = useState<File | null>(null);
-  const [projectName, setProjectName] = useState('');
   const [notes, setNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  // JLM: Nama Project is now a dropdown of FTTT Finance Projects
+  const [financeProjectId, setFinanceProjectId] = useState('');
+  const [financeOptions, setFinanceOptions] = useState<{ id: string; code: string; name: string }[]>([]);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const res = await apiFetch('/fttt-projects/finance-options', { method: 'GET' }, user?.id);
+        if (res.ok) setFinanceOptions(await res.json());
+      } catch { /* ignore */ }
+    })();
+  }, [user?.id]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -59,7 +70,7 @@ export default function NewFtttProjectPage() {
     formData.append('data', JSON.stringify({
       ftttCompany:    company,
       triggerDocType: COMPANY_DOC_TYPES[company],
-      projectName:    projectName.trim() || undefined,
+      financeProjectId: financeProjectId || undefined,
       notes:          notes.trim() || undefined,
     }));
 
@@ -181,13 +192,21 @@ export default function NewFtttProjectPage() {
         {/* Optional fields */}
         <div style={{ background: '#fff', border: '1px solid #D0D7DE', borderRadius: 12, padding: 20 }}>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13, marginBottom: 14 }}>
-            <span style={{ fontWeight: 600 }}>Nama Project (opsional)</span>
-            <input
-              value={projectName}
-              onChange={(e) => setProjectName(e.target.value)}
-              placeholder="Contoh: Tower Site A - Jakarta Utara"
-              style={{ padding: 10, borderRadius: 8, border: '1px solid #D0D7DE', fontSize: 14 }}
-            />
+            <span style={{ fontWeight: 600 }}>Nama Project (dari Finance Project)</span>
+            <select
+              value={financeProjectId}
+              onChange={(e) => setFinanceProjectId(e.target.value)}
+              style={{ padding: 10, borderRadius: 8, border: '1px solid #D0D7DE', fontSize: 14, background: '#fff' }}
+            >
+              <option value="">— Pilih Finance Project (FTTT) —</option>
+              {financeOptions.map((fp) => (
+                <option key={fp.id} value={fp.id}>{fp.code} · {fp.name}</option>
+              ))}
+            </select>
+            <span style={{ fontSize: 11, color: '#8c959f' }}>
+              Hanya menampilkan project Finance bertipe FTTT yang masih aktif. Budget & monitoring mengikuti project ini.
+              {financeOptions.length === 0 && ' (Belum ada — buat dulu di menu Finance Project.)'}
+            </span>
           </label>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13 }}>
             <span style={{ fontWeight: 600 }}>Catatan (opsional)</span>

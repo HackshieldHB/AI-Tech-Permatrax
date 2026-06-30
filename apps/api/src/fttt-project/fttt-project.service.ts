@@ -66,6 +66,7 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { paginate } from '../common/dto/pagination.dto';
 import {
   AddClosingLogDtoType,
+  AddFtttTransactionDtoType,
   AddImplLogDtoType,
   AddJaminanDtoType,
   AddReconDocDtoType,
@@ -100,6 +101,22 @@ export class FtttProjectService {
     }
     const triggerDocUrl = await this.storage.uploadMulterFile(triggerDocFile, 'fttt-trigger', dto.ftttCompany);
 
+    // JLM: link to a Finance Project (must be Project Type = FTTT and active)
+    let linkedProjectName: string | null = dto.projectName ?? null;
+    if (dto.financeProjectId) {
+      const fp = await this.prisma.financeProject.findUnique({
+        where: { id: dto.financeProjectId },
+        select: { id: true, name: true, projectType: true, status: true },
+      });
+      if (!fp || fp.projectType !== 'FTTT') {
+        throw new BadRequestException('Finance Project tidak valid (harus bertipe FTTT)');
+      }
+      if (fp.status !== 'ACTIVE') {
+        throw new BadRequestException('Finance Project tidak aktif');
+      }
+      linkedProjectName = dto.projectName?.trim() || fp.name;
+    }
+
     const phases = FTTT_PHASES_BY_COMPANY[dto.ftttCompany];
     const allPhases: FtttPhase[] = [
       FtttPhase.INITIATION,
@@ -121,7 +138,8 @@ export class FtttProjectService {
         // switch to checked mode and then complain pm is missing. (#fttt-500-fix)
         pm:             { connect: { id: pmId } },
         cleanList:      dto.cleanListId ? { connect: { id: dto.cleanListId } } : undefined,
-        projectName:    dto.projectName ?? null,
+        financeProject: dto.financeProjectId ? { connect: { id: dto.financeProjectId } } : undefined,
+        projectName:    linkedProjectName,
         notes:          dto.notes ?? null,
         currentPhase:   FtttPhase.INITIATION,
         status:         FtttProjectStatus.ACTIVE,
@@ -1219,7 +1237,146 @@ export class FtttProjectService {
         },
         orderBy: { createdAt: 'asc' as const },
       },
+      // JLM: Finance link + implementation transaction log
+      financeProject: { select: { id: true, code: true, name: true, projectType: true, totalBudget: true, budgetPerizinan: true, materialBudget: true, jasaBudget: true, budgetLainLain: true } },
+      transactions:   { include: { createdBy: { select: { id: true, name: true } } }, orderBy: { createdAt: 'desc' as const } },
     } as const;
+  }
+
+  // ─── JLM: Finance Project options for the FTTT "Nama Project" dropdown ────────
+  async listFinanceOptions() {
+    return this.prisma.financeProject.findMany({
+      where: { projectType: 'FTTT', status: 'ACTIVE' },
+      select: {
+        id: true, code: true, name: true, totalBudget: true,
+        budgetPerizinan: true, materialBudget: true, jasaBudget: true, budgetLainLain: true,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  // ─── JLM: Implementation Transaction Log (PM FTTT) ───────────────────────────
+  async addTransaction(projectId: string, dto: AddFtttTransactionDtoType, userId: string, userRole: Role) {
+    if (userRole !== Role.PM_FTTT && userRole !== Role.GENERAL_MANAGER) {
+      throw new ForbiddenException('Hanya PM FTTT yang dapat mencatat Transaction Log');
+    }
+    const project = await this.prisma.ftttProject.findUniqueOrThrow({
+      where: { id: projectId },
+      select: { id: true, currentPhase: true, financeProjectId: true },
+    });
+    if (project.currentPhase !== FtttPhase.IMPLEMENTATION) {
+      throw new BadRequestException('Transaction Log hanya dapat diisi pada fase Implementation');
+    }
+    const qty = Number(dto.qty);
+    const price = Number(dto.price);
+    const total = Math.round(qty * price * 100) / 100;
+    return this.prisma.ftttTransaction.create({
+      data: {
+        ftttProjectId:    projectId,
+        financeProjectId: project.financeProjectId ?? null,
+        category:         dto.category,
+        aktivitas:        dto.aktivitas.trim(),
+        uom:              dto.uom?.trim() || null,
+        qty:              qty.toString(),
+        price:            price.toString(),
+        total:            total.toString(),
+        remarks:          dto.remarks.trim(),
+        createdById:      userId,
+      },
+      include: { createdBy: { select: { id: true, name: true } } },
+    });
+  }
+
+  async deleteTransaction(txId: string, userId: string, userRole: Role) {
+    const tx = await this.prisma.ftttTransaction.findUniqueOrThrow({ where: { id: txId } });
+    if (userRole !== Role.PM_FTTT && userRole !== Role.GENERAL_MANAGER && userRole !== Role.ADMIN) {
+      throw new ForbiddenException('Tidak berwenang menghapus transaksi');
+    }
+    return this.prisma.ftttTransaction.delete({ where: { id: txId } });
+  }
+
+  // ─── JLM: Budget summary + Cost/Progress S-Curve for a linked FTTT project ───
+  async getBudgetScurve(projectId: string) {
+    const project = await this.prisma.ftttProject.findUniqueOrThrow({
+      where: { id: projectId },
+      include: {
+        financeProject: { select: { id: true, code: true, name: true, totalBudget: true, budgetPerizinan: true, materialBudget: true, jasaBudget: true, budgetLainLain: true } },
+        transactions: { orderBy: { createdAt: 'asc' } },
+        phaseProgresses: true,
+      },
+    });
+
+    const num = (v: unknown) => (v == null ? 0 : Number(v));
+    const fp = project.financeProject;
+    const budgets = {
+      PERIZINAN: num(fp?.budgetPerizinan),
+      MATERIAL:  num(fp?.materialBudget),
+      JASA:      num(fp?.jasaBudget),
+      LAIN_LAIN: num(fp?.budgetLainLain),
+    };
+    const totalBudget = num(fp?.totalBudget) || (budgets.PERIZINAN + budgets.MATERIAL + budgets.JASA + budgets.LAIN_LAIN);
+
+    // Spent per category (from transactions)
+    const spent = { PERIZINAN: 0, MATERIAL: 0, JASA: 0, LAIN_LAIN: 0 } as Record<string, number>;
+    for (const t of project.transactions) spent[t.category] += num(t.total);
+    const totalSpent = spent.PERIZINAN + spent.MATERIAL + spent.JASA + spent.LAIN_LAIN;
+
+    // Cost S-Curve — monthly cumulative actual vs linear planned across project timeline
+    const monthKey = (d: Date) => `${d.getFullYear()}-${d.getMonth() + 1}`;
+    const actualByMonth = new Map<string, number>();
+    for (const t of project.transactions) {
+      const k = monthKey(new Date(t.createdAt));
+      actualByMonth.set(k, (actualByMonth.get(k) ?? 0) + num(t.total));
+    }
+    // timeline: project createdAt → endDate (or last transaction / +6 months)
+    const start = new Date(project.createdAt);
+    const end = (project as any).maintenanceEndDate ? new Date((project as any).maintenanceEndDate) : null;
+    const lastTx = project.transactions.length ? new Date(project.transactions[project.transactions.length - 1].createdAt) : null;
+    const horizon = end ?? lastTx ?? new Date(start.getFullYear(), start.getMonth() + 5, 1);
+    const months: { name: string; year: number; month: number }[] = [];
+    const cur = new Date(start.getFullYear(), start.getMonth(), 1);
+    const stop = new Date(horizon.getFullYear(), horizon.getMonth(), 1);
+    while (cur <= stop && months.length < 60) {
+      months.push({ name: `${cur.getMonth() + 1}/${cur.getFullYear()}`, year: cur.getFullYear(), month: cur.getMonth() + 1 });
+      cur.setMonth(cur.getMonth() + 1);
+    }
+    const nMonths = Math.max(1, months.length);
+    const plannedPerMonth = totalBudget / nMonths;
+    let cumPlan = 0;
+    let cumActual = 0;
+    const costCurve = months.map((m, i) => {
+      cumPlan += plannedPerMonth;
+      cumActual += actualByMonth.get(`${m.year}-${m.month}`) ?? 0;
+      return {
+        name: m.name,
+        plannedCost: Math.round(cumPlan),
+        actualCost: Math.round(cumActual),
+        // only draw actual line up to the current month
+        hasActual: i < months.findIndex((mm) => mm.year === new Date().getFullYear() && mm.month === new Date().getMonth() + 1) + 1 || actualByMonth.has(`${m.year}-${m.month}`),
+      };
+    });
+
+    // Progress S-Curve — planned linear over lifecycle phases vs actual completed phases
+    const phases = project.phaseProgresses.filter((p) => p.status !== 'SKIPPED');
+    const totalPhases = Math.max(1, phases.length);
+    const completed = phases.filter((p) => p.status === 'COMPLETED').length;
+    const progressCurve = months.map((m, i) => ({
+      name: m.name,
+      plannedProgress: Math.min(100, Math.round(((i + 1) / nMonths) * 100)),
+      actualProgress: Math.round((completed / totalPhases) * 100),
+    }));
+
+    return {
+      financeProject: fp,
+      totalBudget,
+      totalSpent,
+      remaining: totalBudget - totalSpent,
+      byCategory: (['PERIZINAN', 'MATERIAL', 'JASA', 'LAIN_LAIN'] as const).map((c) => ({
+        category: c, budget: budgets[c], spent: spent[c], remaining: budgets[c] - spent[c],
+      })),
+      costCurve,
+      progressCurve,
+    };
   }
 
   // ─── Reconciliation & Billing / Closing — upload/replace doc ────────────
