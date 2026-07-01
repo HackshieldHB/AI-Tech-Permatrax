@@ -78,6 +78,7 @@ import {
   FtttProjectFilterDtoType,
   FTTT_PHASES_BY_COMPANY,
   ResolveSanggahDtoType,
+  SetPhasePlanDtoType,
   SubmitSanggahDtoType,
   UploadDocumentDtoType,
   UploadDrmDocDtoType,
@@ -1341,30 +1342,40 @@ export class FtttProjectService {
       cur.setMonth(cur.getMonth() + 1);
     }
     const nMonths = Math.max(1, months.length);
-    const plannedPerMonth = totalBudget / nMonths;
-    let cumPlan = 0;
-    let cumActual = 0;
-    const costCurve = months.map((m, i) => {
-      cumPlan += plannedPerMonth;
-      cumActual += actualByMonth.get(`${m.year}-${m.month}`) ?? 0;
-      return {
-        name: m.name,
-        plannedCost: Math.round(cumPlan),
-        actualCost: Math.round(cumActual),
-        // only draw actual line up to the current month
-        hasActual: i < months.findIndex((mm) => mm.year === new Date().getFullYear() && mm.month === new Date().getMonth() + 1) + 1 || actualByMonth.has(`${m.year}-${m.month}`),
-      };
-    });
 
-    // Progress S-Curve — planned linear over lifecycle phases vs actual completed phases
-    const phases = project.phaseProgresses.filter((p) => p.status !== 'SKIPPED');
-    const totalPhases = Math.max(1, phases.length);
-    const completed = phases.filter((p) => p.status === 'COMPLETED').length;
-    const progressCurve = months.map((m, i) => ({
-      name: m.name,
-      plannedProgress: Math.min(100, Math.round(((i + 1) / nMonths) * 100)),
-      actualProgress: Math.round((completed / totalPhases) * 100),
-    }));
+    // JLM: per-phase planned timeline drives both curves; fall back to linear when unset
+    const planPhases = project.phaseProgresses.filter((p) => p.status !== 'SKIPPED');
+    const hasPlan = planPhases.some((p) => (p as typeof p & { plannedEndDate: Date | null }).plannedEndDate);
+    const anyWeight = planPhases.some((p) => (p as typeof p & { weight: unknown }).weight != null);
+    const rawWeight = (p: (typeof planPhases)[number]) =>
+      anyWeight ? num((p as typeof p & { weight: unknown }).weight) : 1;
+    const totalWeight = planPhases.reduce((s, p) => s + rawWeight(p), 0) || 1;
+    const wPct = (p: (typeof planPhases)[number]) => (rawWeight(p) / totalWeight) * 100;
+    const endOfMonth = (m: { year: number; month: number }) => new Date(m.year, m.month, 0, 23, 59, 59).getTime();
+
+    let cumActual = 0;
+    const costCurve: { name: string; plannedCost: number; actualCost: number }[] = [];
+    const progressCurve: { name: string; plannedProgress: number; actualProgress: number }[] = [];
+    for (let i = 0; i < months.length; i++) {
+      const m = months[i];
+      const eom = endOfMonth(m);
+      cumActual += actualByMonth.get(`${m.year}-${m.month}`) ?? 0;
+
+      const plannedProgress = hasPlan
+        ? planPhases
+            .filter((p) => {
+              const d = (p as typeof p & { plannedEndDate: Date | null }).plannedEndDate;
+              return d && new Date(d).getTime() <= eom;
+            })
+            .reduce((s, p) => s + wPct(p), 0)
+        : Math.min(100, ((i + 1) / nMonths) * 100);
+      const actualProgress = planPhases
+        .filter((p) => p.completedAt && new Date(p.completedAt).getTime() <= eom)
+        .reduce((s, p) => s + wPct(p), 0);
+
+      progressCurve.push({ name: m.name, plannedProgress: Math.round(plannedProgress), actualProgress: Math.round(actualProgress) });
+      costCurve.push({ name: m.name, plannedCost: Math.round((totalBudget * plannedProgress) / 100), actualCost: Math.round(cumActual) });
+    }
 
     return {
       financeProject: fp,
@@ -1377,12 +1388,38 @@ export class FtttProjectService {
       })),
       costCurve,
       progressCurve,
+      // JLM: current per-phase plan (for the timeline editor)
+      phasePlan: planPhases.map((p) => ({
+        phase: p.phase,
+        status: p.status,
+        completedAt: p.completedAt,
+        plannedEndDate: (p as typeof p & { plannedEndDate: Date | null }).plannedEndDate ?? null,
+        weight: (p as typeof p & { weight: unknown }).weight ?? null,
+      })),
       transactions: project.transactions.map((t) => ({
         id: t.id, category: t.category, aktivitas: t.aktivitas, uom: t.uom,
         qty: t.qty, price: t.price, total: t.total, remarks: t.remarks,
         createdAt: t.createdAt, createdBy: (t as typeof t & { createdBy?: { name: string } }).createdBy ?? null,
       })),
     };
+  }
+
+  // JLM: set per-phase planned timeline (Admin / PM FTTT)
+  async setPhasePlan(projectId: string, dto: SetPhasePlanDtoType, userId: string, userRole: Role) {
+    const allowed: Role[] = [Role.ADMIN, Role.GENERAL_MANAGER, Role.PM_FTTT];
+    if (!allowed.includes(userRole)) {
+      throw new ForbiddenException('Hanya Admin atau PM FTTT yang dapat mengatur timeline fase');
+    }
+    for (const p of dto.plans) {
+      await this.prisma.ftttPhaseProgress.updateMany({
+        where: { projectId, phase: p.phase as FtttPhase },
+        data: {
+          plannedEndDate: p.plannedEndDate ? new Date(p.plannedEndDate) : null,
+          weight: p.weight != null ? p.weight.toString() : null,
+        },
+      });
+    }
+    return this.getBudgetScurve(projectId);
   }
 
   // JLM: Finance-side FTTT monitoring — resolve the linked FTTT project from a finance project id

@@ -31,6 +31,7 @@ import {
   FtttProjectFilterDto,
   ResolveSanggahDto,
   SetImplementationTypeDto,
+  SetPhasePlanDto,
   SubmitSanggahDto,
   UploadDocumentDto,
   UploadDrmDocDto,
@@ -93,6 +94,16 @@ export class FtttProjectController {
   @Get(':id/budget-scurve')
   getBudgetScurve(@Param('id') id: string) {
     return this.service.getBudgetScurve(id);
+  }
+
+  // PUT /fttt-projects/:id/phase-plan  (per-phase planned timeline for S-Curve — Admin/PM)
+  @Put(':id/phase-plan')
+  setPhasePlan(
+    @Param('id') id: string,
+    @Body(new ZodValidationPipe(SetPhasePlanDto)) dto: any,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.service.setPhasePlan(id, dto, user.userId, user.role);
   }
 
   // POST /fttt-projects/:id/transactions  (Implementation Transaction Log — PM FTTT)

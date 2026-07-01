@@ -3089,6 +3089,9 @@ model FtttPhaseProgress {
   completedAt   DateTime?
   completedById String?
   notes         String?
+  // JLM: per-phase planned timeline for the Schedule/Cost S-Curve baseline
+  plannedEndDate DateTime?
+  weight         Decimal?  @db.Decimal(6, 2) // % of project this phase represents (optional)
   createdAt     DateTime        @default(now())
   updatedAt     DateTime        @updatedAt
 
