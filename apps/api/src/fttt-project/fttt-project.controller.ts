@@ -74,6 +74,12 @@ export class FtttProjectController {
     return this.service.listFinanceOptions();
   }
 
+  // GET /fttt-projects/by-finance/:financeProjectId/monitoring  (Finance-side FTTT view)
+  @Get('by-finance/:financeProjectId/monitoring')
+  getMonitoringByFinance(@Param('financeProjectId') financeProjectId: string) {
+    return this.service.getMonitoringByFinance(financeProjectId);
+  }
+
   // GET /fttt-projects/:id
   @Get(':id')
   async findOne(
