@@ -1315,7 +1315,10 @@ function TransactionLogSection({ project, onRefresh, userRole }: { project: Fttt
   const rab = fp ? Number(fp.totalBudget) : 0;
   const txns: FtttTransaction[] = project.transactions ?? [];
 
-  const [scurve, setScurve] = useState<{ byCategory: { category: string; budget: number; spent: number; remaining: number }[]; costCurve: Record<string, unknown>[]; progressCurve: Record<string, unknown>[] } | null>(null);
+  const [scurve, setScurve] = useState<{ byCategory: { category: string; budget: number; spent: number; remaining: number }[]; costCurve: Record<string, unknown>[]; progressCurve: Record<string, unknown>[]; phasePlan?: { phase: FtttPhase; status: string; completedAt: string | null; plannedEndDate: string | null; weight: string | number | null }[] } | null>(null);
+  const [editingPlan, setEditingPlan] = useState(false);
+  const [planForm, setPlanForm] = useState<{ phase: FtttPhase; plannedEndDate: string; weight: string }[]>([]);
+  const [savingPlan, setSavingPlan] = useState(false);
   const [openCat, setOpenCat] = useState<FtttCostCategory | null>(null);
   const [form, setForm] = useState({ aktivitas: '', uom: '', qty: '', price: '', remarks: '' });
   const [saving, setSaving] = useState(false);
@@ -1358,6 +1361,26 @@ function TransactionLogSection({ project, onRefresh, userRole }: { project: Fttt
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
       toast.success('Transaksi dihapus'); onRefresh(); void loadScurve();
     } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
+  };
+
+  // JLM: per-phase planned timeline editor (drives both S-curves)
+  const openPlanEditor = () => {
+    const plan = scurve?.phasePlan ?? [];
+    setPlanForm(plan.map((p) => ({ phase: p.phase, plannedEndDate: p.plannedEndDate ? p.plannedEndDate.slice(0, 10) : '', weight: p.weight != null ? String(p.weight) : '' })));
+    setEditingPlan(true);
+  };
+  const savePlan = async () => {
+    setSavingPlan(true);
+    try {
+      const res = await apiFetch(`/fttt-projects/${project.id}/phase-plan`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ plans: planForm.map((p) => ({ phase: p.phase, plannedEndDate: p.plannedEndDate || null, weight: p.weight === '' ? null : Number(p.weight) })) }),
+      }, user?.id);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
+      toast.success('Timeline fase disimpan');
+      setEditingPlan(false); void loadScurve();
+    } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
+    finally { setSavingPlan(false); }
   };
 
   if (!fp) {
@@ -1448,6 +1471,44 @@ function TransactionLogSection({ project, onRefresh, userRole }: { project: Fttt
 
       {scurve && (
         <div style={{ marginTop: 14 }}>
+          {/* JLM: per-phase timeline editor — baseline for both S-curves */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+            <span style={{ fontSize: 12, fontWeight: 700, color: '#374151' }}>Timeline Fase (baseline Kurva S)</span>
+            {isPm && !editingPlan && (
+              <button type="button" onClick={openPlanEditor}
+                style={{ padding: '4px 12px', borderRadius: 6, border: '1px solid #D0D7DE', background: '#fff', fontSize: 11, fontWeight: 600, cursor: 'pointer', color: '#374151' }}>
+                🗓️ Atur Timeline
+              </button>
+            )}
+          </div>
+          {editingPlan && (
+            <div style={{ border: '1px solid #D0D7DE', borderRadius: 10, padding: 12, marginBottom: 12 }}>
+              <p style={{ fontSize: 11, color: '#57606a', margin: '0 0 8px' }}>
+                Isi tanggal rencana selesai (dan opsional bobot %) tiap fase. Planned progress/biaya mengikuti timeline ini; jika bobot dikosongkan, dibagi rata.
+              </p>
+              {planForm.map((p, i) => (
+                <div key={p.phase} style={{ display: 'grid', gridTemplateColumns: '1.4fr 1.2fr 0.8fr', gap: 6, alignItems: 'center', marginBottom: 6 }}>
+                  <span style={{ fontSize: 12, fontWeight: 600 }}>{FTTT_PHASE_LABELS[p.phase]}</span>
+                  <input type="date" value={p.plannedEndDate}
+                    onChange={(e) => { const next = [...planForm]; next[i] = { ...next[i], plannedEndDate: e.target.value }; setPlanForm(next); }}
+                    style={{ padding: '5px 8px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 11 }} />
+                  <input type="number" placeholder="Bobot %" value={p.weight}
+                    onChange={(e) => { const next = [...planForm]; next[i] = { ...next[i], weight: e.target.value }; setPlanForm(next); }}
+                    style={{ padding: '5px 8px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 11 }} />
+                </div>
+              ))}
+              <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                <button type="button" disabled={savingPlan} onClick={() => void savePlan()}
+                  style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: '#1a7f37', color: '#fff', fontWeight: 700, fontSize: 12, cursor: savingPlan ? 'not-allowed' : 'pointer' }}>
+                  {savingPlan ? 'Menyimpan…' : 'Simpan Timeline'}
+                </button>
+                <button type="button" onClick={() => setEditingPlan(false)}
+                  style={{ padding: '6px 14px', borderRadius: 6, border: '1px solid #D0D7DE', background: '#fff', fontSize: 12, cursor: 'pointer', color: '#57606a' }}>
+                  Batal
+                </button>
+              </div>
+            </div>
+          )}
           <SCurveMini title="📈 Kurva S Biaya (Cost — Planning vs Actual)" data={scurve.costCurve} keys={[['plannedCost', 'Planned', '#94A3B8'], ['actualCost', 'Actual', '#00B89E']]} money />
           <SCurveMini title="📊 Kurva S Progress (Schedule — Planning vs Actual)" data={scurve.progressCurve} keys={[['plannedProgress', 'Planned %', '#94A3B8'], ['actualProgress', 'Actual %', '#0969DA']]} />
         </div>

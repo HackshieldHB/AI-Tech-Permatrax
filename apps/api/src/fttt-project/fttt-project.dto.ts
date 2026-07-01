@@ -146,6 +146,16 @@ export const SetImplementationTypeDto = z.object({
 });
 export type SetImplementationTypeDtoType = z.infer<typeof SetImplementationTypeDto>;
 
+// JLM: per-phase planned timeline for the S-Curve baseline
+export const SetPhasePlanDto = z.object({
+  plans: z.array(z.object({
+    phase:          z.nativeEnum(FtttPhase),
+    plannedEndDate: z.string().nullable().optional(),
+    weight:         z.coerce.number().min(0).max(100).nullable().optional(),
+  })).max(20),
+});
+export type SetPhasePlanDtoType = z.infer<typeof SetPhasePlanDto>;
+
 // Implementation phase log (photo/doc/note)
 export const AddImplLogDto = z.object({
   logType: z.nativeEnum(FtttImplLogType),
