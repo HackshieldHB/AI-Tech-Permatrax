@@ -49,7 +49,7 @@ function MiniCurve({ title, data, keys, money }: { title: string; data: Record<s
   );
 }
 
-export function FtttFinanceMonitor({ financeProjectId, tab }: { financeProjectId: string; tab: 'overview' | 'transactions' | 'scurve' }) {
+export function FtttFinanceMonitor({ financeProjectId, tab, reloadKey = 0 }: { financeProjectId: string; tab: 'overview' | 'transactions' | 'scurve'; reloadKey?: number }) {
   const [data, setData] = useState<MonitoringData | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -61,7 +61,7 @@ export function FtttFinanceMonitor({ financeProjectId, tab }: { financeProjectId
       .catch(() => { if (active) setData({ linked: false }); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [financeProjectId]);
+  }, [financeProjectId, reloadKey]);
 
   if (loading) return <div className="p-8 text-center text-slate-500">Memuat data FTTT…</div>;
   if (!data || !data.linked) {

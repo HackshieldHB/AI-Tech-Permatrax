@@ -1329,11 +1329,20 @@ export class FtttProjectService {
       const k = monthKey(new Date(t.createdAt));
       actualByMonth.set(k, (actualByMonth.get(k) ?? 0) + num(t.total));
     }
-    // timeline: project createdAt → endDate (or last transaction / +6 months)
+    // JLM: Finance-owned baseline milestones drive the Planning lines
     const start = new Date(project.createdAt);
+    const milestones = fp
+      ? await this.prisma.ftttMilestone.findMany({ where: { financeProjectId: fp.id }, orderBy: { targetDate: 'asc' } })
+      : [];
+    const ms = milestones
+      .map((mm) => ({ t: new Date(mm.targetDate).getTime(), budget: num(mm.plannedBudget), pct: num(mm.plannedProgressPct) }))
+      .sort((a, b) => a.t - b.t);
+    const hasMilestones = ms.length > 0;
+    const lastMs = hasMilestones ? new Date(ms[ms.length - 1].t) : null;
     const end = (project as any).maintenanceEndDate ? new Date((project as any).maintenanceEndDate) : null;
     const lastTx = project.transactions.length ? new Date(project.transactions[project.transactions.length - 1].createdAt) : null;
-    const horizon = end ?? lastTx ?? new Date(start.getFullYear(), start.getMonth() + 5, 1);
+    const candidates = [end, lastTx, lastMs, new Date(start.getFullYear(), start.getMonth() + 5, 1)].filter(Boolean) as Date[];
+    const horizon = new Date(Math.max(...candidates.map((d) => d.getTime())));
     const months: { name: string; year: number; month: number }[] = [];
     const cur = new Date(start.getFullYear(), start.getMonth(), 1);
     const stop = new Date(horizon.getFullYear(), horizon.getMonth(), 1);
@@ -1342,16 +1351,30 @@ export class FtttProjectService {
       cur.setMonth(cur.getMonth() + 1);
     }
     const nMonths = Math.max(1, months.length);
-
-    // JLM: per-phase planned timeline drives both curves; fall back to linear when unset
-    const planPhases = project.phaseProgresses.filter((p) => p.status !== 'SKIPPED');
-    const hasPlan = planPhases.some((p) => (p as typeof p & { plannedEndDate: Date | null }).plannedEndDate);
-    const anyWeight = planPhases.some((p) => (p as typeof p & { weight: unknown }).weight != null);
-    const rawWeight = (p: (typeof planPhases)[number]) =>
-      anyWeight ? num((p as typeof p & { weight: unknown }).weight) : 1;
-    const totalWeight = planPhases.reduce((s, p) => s + rawWeight(p), 0) || 1;
-    const wPct = (p: (typeof planPhases)[number]) => (rawWeight(p) / totalWeight) * 100;
     const endOfMonth = (m: { year: number; month: number }) => new Date(m.year, m.month, 0, 23, 59, 59).getTime();
+
+    // Actual progress from phase completion (equal-weighted, time-aware)
+    const planPhases = project.phaseProgresses.filter((p) => p.status !== 'SKIPPED');
+    const phaseW = 100 / Math.max(1, planPhases.length);
+
+    // Planned lines: linear-interpolate cumulative milestone value at a given time
+    const interp = (x: number, key: 'budget' | 'pct'): number => {
+      if (!hasMilestones) return 0;
+      if (x >= ms[ms.length - 1].t) return ms[ms.length - 1][key];
+      const startT = start.getTime();
+      if (x <= ms[0].t) {
+        if (x <= startT || ms[0].t <= startT) return x >= ms[0].t ? ms[0][key] : 0;
+        return ms[0][key] * Math.max(0, Math.min(1, (x - startT) / (ms[0].t - startT)));
+      }
+      for (let i = 1; i < ms.length; i++) {
+        if (x <= ms[i].t) {
+          const a = ms[i - 1], b = ms[i];
+          const frac = (x - a.t) / (b.t - a.t || 1);
+          return a[key] + (b[key] - a[key]) * frac;
+        }
+      }
+      return ms[ms.length - 1][key];
+    };
 
     let cumActual = 0;
     const costCurve: { name: string; plannedCost: number; actualCost: number }[] = [];
@@ -1361,20 +1384,14 @@ export class FtttProjectService {
       const eom = endOfMonth(m);
       cumActual += actualByMonth.get(`${m.year}-${m.month}`) ?? 0;
 
-      const plannedProgress = hasPlan
-        ? planPhases
-            .filter((p) => {
-              const d = (p as typeof p & { plannedEndDate: Date | null }).plannedEndDate;
-              return d && new Date(d).getTime() <= eom;
-            })
-            .reduce((s, p) => s + wPct(p), 0)
-        : Math.min(100, ((i + 1) / nMonths) * 100);
-      const actualProgress = planPhases
-        .filter((p) => p.completedAt && new Date(p.completedAt).getTime() <= eom)
-        .reduce((s, p) => s + wPct(p), 0);
+      // Planning from Finance milestones; fall back to linear when no baseline set
+      const plannedProgress = hasMilestones ? interp(eom, 'pct') : Math.min(100, ((i + 1) / nMonths) * 100);
+      const plannedCost = hasMilestones ? interp(eom, 'budget') : (totalBudget * plannedProgress) / 100;
+      // Actual progress = phases completed by end of month
+      const actualProgress = planPhases.filter((p) => p.completedAt && new Date(p.completedAt).getTime() <= eom).length * phaseW;
 
-      progressCurve.push({ name: m.name, plannedProgress: Math.round(plannedProgress), actualProgress: Math.round(actualProgress) });
-      costCurve.push({ name: m.name, plannedCost: Math.round((totalBudget * plannedProgress) / 100), actualCost: Math.round(cumActual) });
+      progressCurve.push({ name: m.name, plannedProgress: Math.round(plannedProgress), actualProgress: Math.round(Math.min(100, actualProgress)) });
+      costCurve.push({ name: m.name, plannedCost: Math.round(plannedCost), actualCost: Math.round(cumActual) });
     }
 
     return {

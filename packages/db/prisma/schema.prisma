@@ -2830,6 +2830,8 @@ model FinanceProject {
   // JLM: FTTT integration — linked FTTT projects + their implementation transactions
   ftttProjects            FtttProject[]
   ftttTransactions        FtttTransaction[]
+  // JLM: FTTT S-Curve baseline milestones (Finance-owned)
+  ftttMilestones          FtttMilestone[]
 
   @@index([status])
   @@index([isDefaultUncategorized])
@@ -3054,6 +3056,20 @@ enum FtttCostCategory {
   MATERIAL
   JASA
   LAIN_LAIN
+}
+
+// JLM: S-Curve baseline milestone (Finance-owned) — Target Date + cumulative Planned
+// Budget + Planned Progress %. Basis for the Planning line on both S-curves.
+model FtttMilestone {
+  id                 String         @id @default(cuid())
+  financeProjectId   String
+  financeProject     FinanceProject @relation(fields: [financeProjectId], references: [id], onDelete: Cascade)
+  targetDate         DateTime
+  plannedBudget      Decimal        @db.Decimal(18, 2) // cumulative planned cost up to targetDate
+  plannedProgressPct Decimal        @db.Decimal(6, 2)  // 0–100
+  createdAt          DateTime       @default(now())
+
+  @@index([financeProjectId])
 }
 
 model FtttTransaction {

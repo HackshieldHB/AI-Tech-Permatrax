@@ -22,6 +22,8 @@ import {
   UpdateBudgetInput,
   UpdateFinanceProjectInput,
   UpdatePlanningInput,
+  SetTimelineDto,
+  SetTimelineInput,
 } from './finance-project.dto';
 
 
@@ -396,6 +398,32 @@ export class FinanceProjectService {
       },
       orderBy: { createdAt: 'asc' },
     });
+  }
+
+  // JLM: FTTT S-Curve baseline milestones (Finance-owned)
+  async getTimeline(id: string) {
+    await this.ensureProjectExists(id);
+    return this.prisma.ftttMilestone.findMany({
+      where: { financeProjectId: id },
+      orderBy: { targetDate: 'asc' },
+    });
+  }
+
+  async setTimeline(id: string, dto: SetTimelineInput) {
+    await this.ensureProjectExists(id);
+    const rows = dto.milestones
+      .filter((m) => m.targetDate)
+      .map((m) => ({
+        financeProjectId: id,
+        targetDate: new Date(m.targetDate),
+        plannedBudget: new Prisma.Decimal(m.plannedBudget),
+        plannedProgressPct: new Prisma.Decimal(m.plannedProgressPct),
+      }));
+    await this.prisma.$transaction([
+      this.prisma.ftttMilestone.deleteMany({ where: { financeProjectId: id } }),
+      ...(rows.length ? [this.prisma.ftttMilestone.createMany({ data: rows })] : []),
+    ]);
+    return this.getTimeline(id);
   }
 
   async updatePlanning(id: string, dto: UpdatePlanningInput): Promise<{ success: true }> {

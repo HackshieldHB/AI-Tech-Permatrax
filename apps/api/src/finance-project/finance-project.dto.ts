@@ -56,6 +56,16 @@ export const UpdateBudgetDto = z
 
 export type UpdateBudgetInput = z.infer<typeof UpdateBudgetDto>;
 
+// JLM: FTTT S-Curve baseline timeline (milestones) — Finance-owned
+export const SetTimelineDto = z.object({
+  milestones: z.array(z.object({
+    targetDate:         z.string(),
+    plannedBudget:      z.coerce.number().nonnegative(),
+    plannedProgressPct: z.coerce.number().min(0).max(100),
+  })).max(60),
+});
+export type SetTimelineInput = z.infer<typeof SetTimelineDto>;
+
 export const FinanceProjectFilterDto = PaginationQuerySchema.merge(
   z.object({
     search: z.string().optional(),

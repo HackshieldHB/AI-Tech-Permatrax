@@ -111,6 +111,15 @@ export async function apiPatch<T>(path: string, body: unknown): Promise<T> {
   return handle<T>(res);
 }
 
+export async function apiPut<T>(path: string, body: unknown): Promise<T> {
+  const res = await apiFetch(
+    path,
+    { method: 'PUT', body: JSON.stringify(body) },
+    getUserId()
+  );
+  return handle<T>(res);
+}
+
 export async function apiDelete<T>(path: string): Promise<T> {
   const res = await apiFetch(path, { method: 'DELETE' }, getUserId());
   return handle<T>(res);

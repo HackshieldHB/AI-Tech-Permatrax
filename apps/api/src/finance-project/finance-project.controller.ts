@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Get, Param, Patch, Post, Query, Req } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Param, Patch, Post, Put, Query, Req } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { PERMISSIONS } from '../auth/permissions';
@@ -8,6 +8,7 @@ import {
   CreateFinanceProjectDto,
   FinanceProjectFilterDto,
   LedgerFilterDto,
+  SetTimelineDto,
   UpdateBudgetDto,
   UpdateFinanceProjectDto,
   UpdatePlanningDto,
@@ -60,6 +61,23 @@ export class FinanceProjectController {
   @ApiOperation({ summary: 'Riwayat inisialisasi & penyesuaian budget' })
   async adjustments(@Param('id') id: string) {
     return this.financeProjectService.getAdjustments(id);
+  }
+
+  // JLM: FTTT S-Curve baseline timeline (milestones) — Finance-owned
+  @Get(':id/timeline')
+  @Roles(...PERMISSIONS.FINANCE_PROJECT_VIEW)
+  @ApiOperation({ summary: 'Baseline timeline (milestone) Kurva S FTTT' })
+  async getTimeline(@Param('id') id: string) {
+    return this.financeProjectService.getTimeline(id);
+  }
+
+  @Put(':id/timeline')
+  @Roles(...PERMISSIONS.FINANCE_PROJECT_MANAGE)
+  @ApiOperation({ summary: 'Atur baseline timeline (milestone) Kurva S FTTT' })
+  async setTimeline(@Param('id') id: string, @Body() body: unknown) {
+    const parsed = SetTimelineDto.safeParse(body);
+    if (!parsed.success) throw new BadRequestException(parsed.error.issues);
+    return this.financeProjectService.setTimeline(id, parsed.data);
   }
 
   @Patch(':id/budget')
