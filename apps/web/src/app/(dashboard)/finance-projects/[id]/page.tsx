@@ -11,7 +11,7 @@ import {
 import { PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { toast } from 'sonner';
 import { useAuthStore } from '../../../../store/authStore';
-import { apiGet, apiGetPaginated, apiPatch, apiDownload } from '../../../../lib/api';
+import { apiGet, apiGetPaginated, apiPatch, apiPut, apiDownload } from '../../../../lib/api';
 import { formatRupiah, formatDateTimeID, formatDateID } from '../../../../lib/format';
 import type {
   BudgetLedger,
@@ -166,6 +166,35 @@ export default function FinanceProjectDetailPage() {
   const [budgetReason, setBudgetReason] = useState('');
   const [saving, setSaving] = useState(false);
   const [expandedAdjustmentId, setExpandedAdjustmentId] = useState<string | null>(null);
+  // JLM: FTTT S-Curve baseline timeline (milestones) editor
+  const [timelineOpen, setTimelineOpen] = useState(false);
+  const [savingTimeline, setSavingTimeline] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
+  const [msRows, setMsRows] = useState<{ targetDate: string; plannedBudget: string; plannedProgressPct: string }[]>([]);
+
+  const openTimeline = useCallback(async () => {
+    setTimelineOpen(true);
+    try {
+      const rows = await apiGet<{ targetDate: string; plannedBudget: string | number; plannedProgressPct: string | number }[]>(`/finance-projects/${id}/timeline`);
+      setMsRows(rows.length
+        ? rows.map((r) => ({ targetDate: r.targetDate.slice(0, 10), plannedBudget: String(Number(r.plannedBudget)), plannedProgressPct: String(Number(r.plannedProgressPct)) }))
+        : [{ targetDate: '', plannedBudget: '', plannedProgressPct: '' }]);
+    } catch { setMsRows([{ targetDate: '', plannedBudget: '', plannedProgressPct: '' }]); }
+  }, [id]);
+
+  const saveTimeline = async () => {
+    const milestones = msRows
+      .filter((r) => r.targetDate)
+      .map((r) => ({ targetDate: new Date(r.targetDate + 'T12:00:00').toISOString(), plannedBudget: Number(r.plannedBudget) || 0, plannedProgressPct: Math.min(100, Number(r.plannedProgressPct) || 0) }));
+    setSavingTimeline(true);
+    try {
+      await apiPut(`/finance-projects/${id}/timeline`, { milestones });
+      toast.success('Baseline timeline disimpan');
+      setTimelineOpen(false);
+      setReloadKey((k) => k + 1);
+    } catch (e) { toast.error(e instanceof Error ? e.message : 'Gagal menyimpan'); }
+    finally { setSavingTimeline(false); }
+  };
 
   const loadDetail = useCallback(async () => {
     setLoading(true);
@@ -249,7 +278,7 @@ export default function FinanceProjectDetailPage() {
   }
 
   const isGen = detail.isDefaultUncategorized;
-  // JLM: FTTT finance projects show FTTT monitoring (no Forecast tab)
+  // JLM: FTTT finance projects show FTTT monitoring (no Forecast tab) + baseline timeline
   const isFttt = detail.projectType === 'FTTT';
 
   return (
@@ -297,16 +326,28 @@ export default function FinanceProjectDetailPage() {
             </div>
           ) : null}
         </div>
-        {manage ? (
-          <button
-            type="button"
-            onClick={() => setSettingsOpen(true)}
-            className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-sm font-bold"
-          >
-            <Settings className="w-4 h-4" />
-            Pengaturan
-          </button>
-        ) : null}
+        <div className="flex items-center gap-2">
+          {/* JLM: Finance sets the S-Curve baseline timeline for linked FTTT projects */}
+          {isFttt && manage ? (
+            <button
+              type="button"
+              onClick={() => void openTimeline()}
+              className="inline-flex items-center gap-2 rounded-xl bg-[#0F1B2D] text-white px-3 py-2 text-sm font-bold"
+            >
+              🗓️ Atur Timeline
+            </button>
+          ) : null}
+          {manage ? (
+            <button
+              type="button"
+              onClick={() => setSettingsOpen(true)}
+              className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-sm font-bold"
+            >
+              <Settings className="w-4 h-4" />
+              Pengaturan
+            </button>
+          ) : null}
+        </div>
       </header>
 
       <div className="flex flex-wrap gap-2 border-b border-slate-100">
@@ -341,7 +382,7 @@ export default function FinanceProjectDetailPage() {
 
       {/* JLM: FTTT projects render FTTT monitoring for overview/transaksi/kurva-s */}
       {isFttt && (tab === 'overview' || tab === 'transactions' || tab === 'scurve') ? (
-        <FtttFinanceMonitor financeProjectId={id} tab={tab as 'overview' | 'transactions' | 'scurve'} />
+        <FtttFinanceMonitor financeProjectId={id} tab={tab as 'overview' | 'transactions' | 'scurve'} reloadKey={reloadKey} />
       ) : null}
 
       {!isFttt && tab === 'overview' ? (
@@ -577,6 +618,39 @@ export default function FinanceProjectDetailPage() {
               ) : null}
             </div>
           ))}
+        </div>
+      ) : null}
+
+      {/* JLM: Atur Timeline — S-Curve baseline milestones (Finance) */}
+      {timelineOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="bg-white rounded-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto p-6 space-y-4 shadow-xl">
+            <div className="flex justify-between items-center">
+              <h3 className="font-black text-lg">Atur Timeline — Baseline Kurva S</h3>
+              <button type="button" onClick={() => setTimelineOpen(false)} className="text-slate-400 text-lg">✕</button>
+            </div>
+            <p className="text-xs text-slate-500">
+              Tentukan milestone: Target Tanggal, Planned Budget (kumulatif s/d tanggal tsb), dan Planned Progress (%). Baseline ini menjadi garis <b>Planning</b> pada Kurva S Biaya &amp; Progress; <b>Actual</b> berasal dari Transaction Log PM. Progress maksimal 100% di akhir project.
+            </p>
+            <div className="space-y-2">
+              <div className="grid grid-cols-[1.2fr_1.4fr_1fr_auto] gap-2 text-[11px] font-bold text-slate-500 uppercase px-1">
+                <span>Target Tanggal</span><span>Planned Budget</span><span>Progress %</span><span></span>
+              </div>
+              {msRows.map((r, i) => (
+                <div key={i} className="grid grid-cols-[1.2fr_1.4fr_1fr_auto] gap-2 items-center">
+                  <input type="date" value={r.targetDate} onChange={(e) => { const n = [...msRows]; n[i] = { ...n[i], targetDate: e.target.value }; setMsRows(n); }} className="rounded-lg border border-slate-200 px-2 py-1.5 text-sm" />
+                  <input type="number" placeholder="0" value={r.plannedBudget} onChange={(e) => { const n = [...msRows]; n[i] = { ...n[i], plannedBudget: e.target.value }; setMsRows(n); }} className="rounded-lg border border-slate-200 px-2 py-1.5 text-sm" />
+                  <input type="number" placeholder="0-100" value={r.plannedProgressPct} onChange={(e) => { const n = [...msRows]; n[i] = { ...n[i], plannedProgressPct: e.target.value }; setMsRows(n); }} className="rounded-lg border border-slate-200 px-2 py-1.5 text-sm" />
+                  <button type="button" onClick={() => setMsRows(msRows.filter((_, x) => x !== i))} className="text-red-500 text-sm px-2">✕</button>
+                </div>
+              ))}
+              <button type="button" onClick={() => setMsRows([...msRows, { targetDate: '', plannedBudget: '', plannedProgressPct: '' }])} className="text-xs font-bold text-[#00B89E]">+ Tambah Milestone</button>
+            </div>
+            <div className="flex gap-2 pt-2">
+              <button type="button" disabled={savingTimeline} onClick={() => void saveTimeline()} className="flex-1 bg-[#0F1B2D] text-white font-bold py-2 rounded-xl text-sm disabled:opacity-50">{savingTimeline ? 'Menyimpan…' : 'Simpan Baseline'}</button>
+              <button type="button" onClick={() => setTimelineOpen(false)} className="flex-1 bg-white border py-2 rounded-xl text-sm">Batal</button>
+            </div>
+          </div>
         </div>
       ) : null}
 
