@@ -1299,7 +1299,7 @@ function SCurveMini({ title, data, keys, money }: { title: string; data: Record<
             <RTooltip formatter={(v: number) => money ? 'Rp ' + Math.round(v).toLocaleString('id-ID') : `${v}%`} />
             <RLegend verticalAlign="top" height={28} />
             {keys.map(([k, label, color]) => (
-              <Line key={k} type="monotone" dataKey={k} name={label} stroke={color} strokeWidth={2} dot={false} />
+              <Line key={k} type="monotone" dataKey={k} name={label} stroke={color} strokeWidth={2} dot={{ r: 3, fill: color }} />
             ))}
           </ComposedChart>
         </ResponsiveContainer>
@@ -1449,7 +1449,7 @@ function TransactionLogSection({ project, onRefresh, userRole }: { project: Fttt
       {scurve && (
         <div style={{ marginTop: 14 }}>
           <p style={{ fontSize: 11, color: '#8c959f', margin: '0 0 8px' }}>
-            ℹ️ Baseline Planning Kurva S diatur oleh Finance di menu Finance Project → Atur Timeline.
+            ℹ️ Baseline Planning Kurva S diatur oleh Finance di menu Finance Project → Edit Planning.
           </p>
           <SCurveMini title="📈 Kurva S Biaya (Cost — Planning vs Actual)" data={scurve.costCurve} keys={[['plannedCost', 'Planned', '#94A3B8'], ['actualCost', 'Actual', '#00B89E']]} money />
           <SCurveMini title="📊 Kurva S Progress (Schedule — Planning vs Actual)" data={scurve.progressCurve} keys={[['plannedProgress', 'Planned %', '#94A3B8'], ['actualProgress', 'Actual %', '#0969DA']]} />

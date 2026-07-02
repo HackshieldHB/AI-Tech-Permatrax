@@ -40,7 +40,7 @@ function MiniCurve({ title, data, keys, money }: { title: string; data: Record<s
             <Tooltip formatter={(v: number) => money ? formatRupiah(v) : `${v}%`} />
             <Legend verticalAlign="top" height={30} />
             {keys.map(([k, label, color]) => (
-              <Line key={k} type="monotone" dataKey={k} name={label} stroke={color} strokeWidth={2.5} dot={false} />
+              <Line key={k} type="monotone" dataKey={k} name={label} stroke={color} strokeWidth={2.5} dot={{ r: 3, fill: color }} />
             ))}
           </ComposedChart>
         </ResponsiveContainer>
