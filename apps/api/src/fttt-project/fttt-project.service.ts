@@ -1301,7 +1301,7 @@ export class FtttProjectService {
     const project = await this.prisma.ftttProject.findUniqueOrThrow({
       where: { id: projectId },
       include: {
-        financeProject: { select: { id: true, code: true, name: true, totalBudget: true, budgetPerizinan: true, materialBudget: true, jasaBudget: true, budgetLainLain: true } },
+        financeProject: { select: { id: true, code: true, name: true, totalBudget: true, budgetPerizinan: true, materialBudget: true, jasaBudget: true, budgetLainLain: true, createdAt: true, endDate: true } },
         transactions: { orderBy: { createdAt: 'asc' }, include: { createdBy: { select: { id: true, name: true } } } },
         phaseProgresses: true,
       },
@@ -1330,7 +1330,6 @@ export class FtttProjectService {
       actualByMonth.set(k, (actualByMonth.get(k) ?? 0) + num(t.total));
     }
     // JLM: Finance-owned baseline milestones drive the Planning lines
-    const start = new Date(project.createdAt);
     const milestones = fp
       ? await this.prisma.ftttMilestone.findMany({ where: { financeProjectId: fp.id }, orderBy: { targetDate: 'asc' } })
       : [];
@@ -1339,10 +1338,14 @@ export class FtttProjectService {
       .sort((a, b) => a.t - b.t);
     const hasMilestones = ms.length > 0;
     const lastMs = hasMilestones ? new Date(ms[ms.length - 1].t) : null;
-    const end = (project as any).maintenanceEndDate ? new Date((project as any).maintenanceEndDate) : null;
     const lastTx = project.transactions.length ? new Date(project.transactions[project.transactions.length - 1].createdAt) : null;
-    const candidates = [end, lastTx, lastMs, new Date(start.getFullYear(), start.getMonth() + 5, 1)].filter(Boolean) as Date[];
-    const horizon = new Date(Math.max(...candidates.map((d) => d.getTime())));
+    // JLM: X-axis follows the Finance project period — created date → end date
+    const start = new Date(fp?.createdAt ?? project.createdAt);
+    const end = fp?.endDate
+      ? new Date(fp.endDate)
+      : (lastMs ?? lastTx ?? new Date(start.getFullYear(), start.getMonth() + 3, 1));
+    // guard: horizon must be on/after start
+    const horizon = end.getTime() >= start.getTime() ? end : new Date(start.getFullYear(), start.getMonth() + 1, 1);
     const months: { name: string; year: number; month: number }[] = [];
     const cur = new Date(start.getFullYear(), start.getMonth(), 1);
     const stop = new Date(horizon.getFullYear(), horizon.getMonth(), 1);

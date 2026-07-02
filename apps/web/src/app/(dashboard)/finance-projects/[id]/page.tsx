@@ -327,14 +327,14 @@ export default function FinanceProjectDetailPage() {
           ) : null}
         </div>
         <div className="flex items-center gap-2">
-          {/* JLM: Finance sets the S-Curve baseline timeline for linked FTTT projects */}
+          {/* JLM: Finance sets the S-Curve Planning baseline (milestones) for linked FTTT projects */}
           {isFttt && manage ? (
             <button
               type="button"
               onClick={() => void openTimeline()}
               className="inline-flex items-center gap-2 rounded-xl bg-[#0F1B2D] text-white px-3 py-2 text-sm font-bold"
             >
-              🗓️ Atur Timeline
+              ✏️ Edit Planning
             </button>
           ) : null}
           {manage ? (
@@ -626,11 +626,11 @@ export default function FinanceProjectDetailPage() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
           <div className="bg-white rounded-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto p-6 space-y-4 shadow-xl">
             <div className="flex justify-between items-center">
-              <h3 className="font-black text-lg">Atur Timeline — Baseline Kurva S</h3>
+              <h3 className="font-black text-lg">Edit Planning — Baseline Kurva S</h3>
               <button type="button" onClick={() => setTimelineOpen(false)} className="text-slate-400 text-lg">✕</button>
             </div>
             <p className="text-xs text-slate-500">
-              Tentukan milestone: Target Tanggal, Planned Budget (kumulatif s/d tanggal tsb), dan Planned Progress (%). Baseline ini menjadi garis <b>Planning</b> pada Kurva S Biaya &amp; Progress; <b>Actual</b> berasal dari Transaction Log PM. Progress maksimal 100% di akhir project.
+              Tambahkan milestone Planning: Target Date, Planned Budget (kumulatif s/d tanggal tsb), dan Planned Progress (%). Setiap milestone menjadi titik pada Kurva S; titik-titik dihubungkan menjadi garis <b>Planning</b> (Biaya &amp; Progress). <b>Actual</b> berasal dari Transaction Log PM. Progress maksimal 100% di akhir project.
             </p>
             <div className="space-y-2">
               <div className="grid grid-cols-[1.2fr_1.4fr_1fr_auto] gap-2 text-[11px] font-bold text-slate-500 uppercase px-1">
