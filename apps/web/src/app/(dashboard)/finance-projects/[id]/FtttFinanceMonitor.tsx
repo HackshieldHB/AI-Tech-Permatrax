@@ -19,6 +19,9 @@ interface MonitoringData {
   byCategory?: { category: Cat; budget: number; spent: number; remaining: number }[];
   costCurve?: Record<string, number | string>[];
   progressCurve?: Record<string, number | string>[];
+  // JLM: weekly breakdown for the Kurva S period filter (Weekly/Monthly)
+  costCurveWeekly?: Record<string, number | string>[];
+  progressCurveWeekly?: Record<string, number | string>[];
   transactions?: {
     id: string; category: Cat; aktivitas: string; uom: string | null;
     qty: string | number; price: string | number; total: string | number; remarks: string;
@@ -26,21 +29,38 @@ interface MonitoringData {
   }[];
 }
 
-function MiniCurve({ title, data, keys, money }: { title: string; data: Record<string, number | string>[]; keys: [string, string, string][]; money?: boolean }) {
+// JLM: each card has its own Weekly/Monthly period filter (default Monthly).
+// The filter only changes the display granularity — data comes precomputed
+// from the API for both periods, over the same project date range.
+function MiniCurve({ title, data, dataWeekly, keys, money }: { title: string; data: Record<string, number | string>[]; dataWeekly?: Record<string, number | string>[]; keys: [string, string, string][]; money?: boolean }) {
+  const [period, setPeriod] = useState<'monthly' | 'weekly'>('monthly');
+  const shown = period === 'weekly' && dataWeekly && dataWeekly.length > 0 ? dataWeekly : data;
   return (
     <div className="bg-white rounded-2xl border border-slate-100 p-4">
-      <h4 className="font-bold text-slate-800 text-sm mb-2">{title}</h4>
+      <div className="flex items-center justify-between mb-2 gap-2">
+        <h4 className="font-bold text-slate-800 text-sm">{title}</h4>
+        <select
+          value={period}
+          onChange={(e) => setPeriod(e.target.value as 'monthly' | 'weekly')}
+          className="text-xs font-bold rounded-lg border border-slate-200 px-2 py-1.5 bg-white text-slate-700"
+          aria-label="Filter periode"
+        >
+          <option value="monthly">Monthly</option>
+          <option value="weekly">Weekly</option>
+        </select>
+      </div>
       <div className="h-72 w-full">
         <ResponsiveContainer width="100%" height="100%">
-          <ComposedChart data={data}>
+          <ComposedChart data={shown}>
             <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-            <XAxis dataKey="name" fontSize={11} tickLine={false} axisLine={false} />
+            <XAxis dataKey="name" fontSize={period === 'weekly' ? 9 : 11} tickLine={false} axisLine={false}
+              interval="preserveStartEnd" angle={period === 'weekly' ? -30 : 0} height={period === 'weekly' ? 44 : 30} />
             <YAxis fontSize={11} tickLine={false} axisLine={false}
               tickFormatter={(v) => money ? `${Math.round(Number(v) / 1e6)}M` : `${v}%`} />
             <Tooltip formatter={(v: number) => money ? formatRupiah(v) : `${v}%`} />
             <Legend verticalAlign="top" height={30} />
             {keys.map(([k, label, color]) => (
-              <Line key={k} type="monotone" dataKey={k} name={label} stroke={color} strokeWidth={2.5} dot={{ r: 3, fill: color }} />
+              <Line key={k} type="monotone" dataKey={k} name={label} stroke={color} strokeWidth={2.5} dot={{ r: period === 'weekly' ? 2 : 3, fill: color }} />
             ))}
           </ComposedChart>
         </ResponsiveContainer>
@@ -156,9 +176,9 @@ export function FtttFinanceMonitor({ financeProjectId, tab, reloadKey = 0 }: { f
   // tab === 'scurve'
   return (
     <div className="space-y-6">
-      <MiniCurve title="Kurva S Biaya (Cost — Planning vs Actual)" data={data.costCurve ?? []}
+      <MiniCurve title="Kurva S Biaya (Cost — Planning vs Actual)" data={data.costCurve ?? []} dataWeekly={data.costCurveWeekly}
         keys={[['plannedCost', 'Planned', '#94A3B8'], ['actualCost', 'Actual', '#00B89E']]} money />
-      <MiniCurve title="Kurva S Progress (Schedule — Planning vs Actual)" data={data.progressCurve ?? []}
+      <MiniCurve title="Kurva S Progress (Schedule — Planning vs Actual)" data={data.progressCurve ?? []} dataWeekly={data.progressCurveWeekly}
         keys={[['plannedProgress', 'Planned %', '#94A3B8'], ['actualProgress', 'Actual %', '#0969DA']]} />
     </div>
   );
