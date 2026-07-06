@@ -90,13 +90,15 @@ export default function NewFtttProjectPage() {
     e.preventDefault();
     if (!company) { toast.error('Pilih perusahaan terlebih dahulu'); return; }
     if (!file)    { toast.error('Unggah dokumen triggering terlebih dahulu'); return; }
+    // JLM: Finance Project link is mandatory — budget & monitoring must follow it
+    if (!financeProjectId) { toast.error('Nama Project (dari Finance Project) harus diisi'); return; }
 
     const formData = new FormData();
     formData.append('triggerDoc', file);
     formData.append('data', JSON.stringify({
       ftttCompany:    company,
       triggerDocType: COMPANY_DOC_TYPES[company],
-      financeProjectId: financeProjectId || undefined,
+      financeProjectId,
       notes:          notes.trim() || undefined,
     }));
 
@@ -236,7 +238,7 @@ export default function NewFtttProjectPage() {
         {/* Optional fields */}
         <div style={{ background: '#fff', border: '1px solid #D0D7DE', borderRadius: 12, padding: 20 }}>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13, marginBottom: 14 }}>
-            <span style={{ fontWeight: 600 }}>Nama Project (dari Finance Project)</span>
+            <span style={{ fontWeight: 600 }}>Nama Project (dari Finance Project) <span style={{ color: '#CF222E' }}>*</span></span>
             <select
               value={financeProjectId}
               onChange={(e) => setFinanceProjectId(e.target.value)}
@@ -248,7 +250,7 @@ export default function NewFtttProjectPage() {
               ))}
             </select>
             <span style={{ fontSize: 11, color: '#8c959f' }}>
-              Hanya menampilkan project Finance bertipe FTTT yang masih aktif. Budget & monitoring mengikuti project ini.
+              Wajib diisi. Hanya menampilkan project Finance bertipe FTTT yang masih aktif. Budget & monitoring mengikuti project ini.
               {financeOptions.length === 0 && ' (Belum ada — buat dulu di menu Finance Project.)'}
             </span>
           </label>

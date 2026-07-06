@@ -59,8 +59,11 @@ export const CreateFtttProjectDto = z.object({
   triggerDocType: z.nativeEnum(FtttDocType),
   cleanListId:   z.string().optional(),
   projectName:   z.string().min(1).max(200).optional(),
-  // JLM: link to a Finance Project (Project Type = FTTT)
-  financeProjectId: z.string().optional(),
+  // JLM: link to a Finance Project (Project Type = FTTT) — mandatory so budget &
+  // monitoring always follow a Finance Project (no more random/unlinked projects)
+  financeProjectId: z
+    .string({ required_error: 'Nama Project (dari Finance Project) harus diisi' })
+    .min(1, 'Nama Project (dari Finance Project) harus diisi'),
   notes:         z.string().max(1000).optional(),
 });
 export type CreateFtttProjectDtoType = z.infer<typeof CreateFtttProjectDto>;

@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -55,8 +56,13 @@ export class FtttProjectController {
     @Body('data') rawData: string,
     @CurrentUser() user: AuthUser,
   ) {
-    const dto = CreateFtttProjectDto.parse(JSON.parse(rawData));
-    return this.service.create(dto, file, user.userId, user.role);
+    const parsed = CreateFtttProjectDto.safeParse(JSON.parse(rawData));
+    if (!parsed.success) {
+      throw new BadRequestException(
+        parsed.error.issues[0]?.message ?? 'Data project tidak valid',
+      );
+    }
+    return this.service.create(parsed.data, file, user.userId, user.role);
   }
 
   // GET /fttt-projects
