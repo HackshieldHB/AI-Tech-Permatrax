@@ -15,11 +15,22 @@ import { useAuthStore } from '../../../store/authStore';
 
 type Tab = 'ACTIVE' | 'CLOSED' | 'ARCHIVED' | 'ALL';
 
+// JLM: Terpakai = Realisasi (sinkron dengan halaman Detail). FTTT memakai
+// totalSpent dari Transaction Log; fallback ke material+jasa untuk data lama.
+function spentOverall(p: FinanceProjectListItem): number {
+  return p.totalSpent != null ? num(p.totalSpent) : num(p.materialSpent) + num(p.jasaSpent);
+}
+
+function remainingOverall(p: FinanceProjectListItem): number {
+  return p.totalRemaining != null
+    ? num(p.totalRemaining)
+    : num(p.materialRemaining) + num(p.jasaRemaining);
+}
+
 function utilOverall(p: FinanceProjectListItem): number {
   const total = num(p.totalBudget);
   if (total <= 0) return 0;
-  const spent = num(p.materialSpent) + num(p.jasaSpent);
-  return spent / total;
+  return spentOverall(p) / total;
 }
 
 function utilBarColor(ratio: number): string {
@@ -192,9 +203,9 @@ export default function FinanceProjectsDashboardPage() {
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
           {filteredCards.map((p) => {
             const isGen = p.isDefaultUncategorized;
+            const isFttt = p.projectType === 'FTTT';
             const total = num(p.totalBudget);
-            const spent = num(p.materialSpent) + num(p.jasaSpent);
-            const rem = num(p.materialRemaining) + num(p.jasaRemaining);
+            const rem = remainingOverall(p);
             const ratio = isGen ? 0 : utilOverall(p);
             const barPct = Math.min(100, ratio * 100);
             const remRatio = total > 0 ? rem / total : 0;
@@ -244,6 +255,19 @@ export default function FinanceProjectsDashboardPage() {
                       </div>
                     </div>
                     <div className="grid grid-cols-2 gap-2 text-xs">
+                      {isFttt ? (
+                        <div
+                          className={`rounded-lg p-2 ${
+                            num(p.budgetPerizinan) > 0 &&
+                            num(p.perizinanSpent) / Math.max(num(p.budgetPerizinan), 1) >= 0.8
+                              ? 'bg-orange-50 text-orange-900'
+                              : 'bg-slate-50'
+                          }`}
+                        >
+                          <div className="text-slate-500">Perizinan</div>
+                          <div className="font-bold">{formatRupiah(num(p.perizinanSpent))}</div>
+                        </div>
+                      ) : null}
                       <div
                         className={`rounded-lg p-2 ${
                           num(p.materialBudget) > 0 &&
@@ -266,6 +290,19 @@ export default function FinanceProjectsDashboardPage() {
                         <div className="text-slate-500">Jasa</div>
                         <div className="font-bold">{formatRupiah(num(p.jasaSpent))}</div>
                       </div>
+                      {isFttt ? (
+                        <div
+                          className={`rounded-lg p-2 ${
+                            num(p.budgetLainLain) > 0 &&
+                            num(p.lainLainSpent) / Math.max(num(p.budgetLainLain), 1) >= 0.8
+                              ? 'bg-orange-50 text-orange-900'
+                              : 'bg-slate-50'
+                          }`}
+                        >
+                          <div className="text-slate-500">Lain-lain</div>
+                          <div className="font-bold">{formatRupiah(num(p.lainLainSpent))}</div>
+                        </div>
+                      ) : null}
                     </div>
                   </>
                 ) : (

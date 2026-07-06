@@ -30,7 +30,16 @@ import {
 export type FinanceProjectListItem = FinanceProject & {
   materialRemaining: number;
   jasaRemaining: number;
+  // JLM: realisasi terpadu — untuk project FTTT dihitung dari Transaction Log
+  // (sumber data yang sama dengan halaman Detail) agar Dashboard selalu sinkron
+  totalSpent: number;
+  totalRemaining: number;
+  perizinanSpent: number;
+  lainLainSpent: number;
 };
+
+// Realisasi per kategori dari FtttTransaction, keyed by financeProjectId
+type FtttSpentMap = Map<string, { perizinan: number; material: number; jasa: number; lainLain: number }>;
 
 export type ProjectActivityStats = {
   totalTransactions: number;
@@ -294,7 +303,11 @@ export class FinanceProjectService {
       }),
     ]);
 
-    const data = rows.map((p) => this.hydrateListItem(p));
+    // JLM: sinkronkan summary Dashboard dengan realisasi Transaction Log (FTTT)
+    const ftttSpent = await this.getFtttSpentMap(
+      rows.filter((r) => r.projectType === 'FTTT').map((r) => r.id),
+    );
+    const data = rows.map((p) => this.hydrateListItem(p, ftttSpent));
     return paginate(data, total, filter.page, filter.limit);
   }
 
@@ -342,8 +355,9 @@ export class FinanceProjectService {
       lastActivityType: lastActivity?.entryType ?? null,
     };
 
+    const ftttSpent = await this.getFtttSpentMap(p.projectType === 'FTTT' ? [p.id] : []);
     return {
-      ...this.hydrateListItem(p),
+      ...this.hydrateListItem(p, ftttSpent),
       pendingTransferCount,
       recentLedgerEntries,
       activityStats,
@@ -483,11 +497,60 @@ export class FinanceProjectService {
     });
   }
 
-  private hydrateListItem(p: FinanceProject): FinanceProjectListItem {
+  // JLM: agregasi realisasi Transaction Log FTTT per project & kategori,
+  // sumber data yang sama dengan endpoint monitoring pada halaman Detail
+  private async getFtttSpentMap(financeProjectIds: string[]): Promise<FtttSpentMap> {
+    const map: FtttSpentMap = new Map();
+    if (financeProjectIds.length === 0) return map;
+    const rows = await this.prisma.ftttTransaction.groupBy({
+      by: ['financeProjectId', 'category'],
+      where: { financeProjectId: { in: financeProjectIds } },
+      _sum: { total: true },
+    });
+    for (const r of rows) {
+      if (!r.financeProjectId) continue;
+      const entry = map.get(r.financeProjectId) ?? { perizinan: 0, material: 0, jasa: 0, lainLain: 0 };
+      const val = Number(r._sum.total ?? 0);
+      if (r.category === 'PERIZINAN') entry.perizinan += val;
+      else if (r.category === 'MATERIAL') entry.material += val;
+      else if (r.category === 'JASA') entry.jasa += val;
+      else entry.lainLain += val;
+      map.set(r.financeProjectId, entry);
+    }
+    return map;
+  }
+
+  private hydrateListItem(p: FinanceProject, ftttSpent?: FtttSpentMap): FinanceProjectListItem {
+    const materialRemaining = this.ledgerService.getMaterialRemaining(p).toNumber();
+    const jasaRemaining = this.ledgerService.getJasaRemaining(p).toNumber();
+
+    if ((p as { projectType?: string }).projectType === 'FTTT' && ftttSpent) {
+      const s = ftttSpent.get(p.id) ?? { perizinan: 0, material: 0, jasa: 0, lainLain: 0 };
+      const totalSpent = s.perizinan + s.material + s.jasa + s.lainLain;
+      const totalBudget = Number(p.totalBudget);
+      return {
+        ...p,
+        // realisasi per kategori mengikuti Transaction Log (bukan field FTTH materialSpent/jasaSpent)
+        materialSpent: new Prisma.Decimal(s.material),
+        jasaSpent: new Prisma.Decimal(s.jasa),
+        perizinanSpent: s.perizinan,
+        lainLainSpent: s.lainLain,
+        totalSpent,
+        totalRemaining: totalBudget - totalSpent,
+        materialRemaining: Number(p.materialBudget ?? 0) - s.material,
+        jasaRemaining: Number(p.jasaBudget ?? 0) - s.jasa,
+      };
+    }
+
+    const totalSpent = Number(p.materialSpent) + Number(p.jasaSpent);
     return {
       ...p,
-      materialRemaining: this.ledgerService.getMaterialRemaining(p).toNumber(),
-      jasaRemaining: this.ledgerService.getJasaRemaining(p).toNumber(),
+      materialRemaining,
+      jasaRemaining,
+      totalSpent,
+      totalRemaining: materialRemaining + jasaRemaining,
+      perizinanSpent: 0,
+      lainLainSpent: 0,
     };
   }
 

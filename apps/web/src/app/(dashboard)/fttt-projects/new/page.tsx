@@ -47,6 +47,7 @@ export default function NewFtttProjectPage() {
   const [file, setFile] = useState<File | null>(null);
   const [notes, setNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [dragActive, setDragActive] = useState(false);
   // JLM: Nama Project is now a dropdown of FTTT Finance Projects
   const [financeProjectId, setFinanceProjectId] = useState('');
   const [financeOptions, setFinanceOptions] = useState<{ id: string; code: string; name: string }[]>([]);
@@ -59,6 +60,31 @@ export default function NewFtttProjectPage() {
       } catch { /* ignore */ }
     })();
   }, [user?.id]);
+
+  // Same validation for both Browse and Drag & Drop paths (format + max 50 MB)
+  const MAX_FILE_SIZE = 50 * 1024 * 1024;
+  const acceptFile = (f: File) => {
+    if (!company) return;
+    const allowed = COMPANY_DOC_ACCEPT[company].split(',');
+    const ext = `.${f.name.split('.').pop()?.toLowerCase() ?? ''}`;
+    if (!allowed.includes(ext)) {
+      toast.error(`Format file tidak sesuai. Gunakan ${COMPANY_DOC_ACCEPT[company]}`);
+      return;
+    }
+    if (f.size > MAX_FILE_SIZE) {
+      toast.error('Ukuran file melebihi batas maksimum 50 MB');
+      return;
+    }
+    setFile(f);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragActive(false);
+    const dropped = e.dataTransfer.files?.[0];
+    if (dropped) acceptFile(dropped);
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -153,11 +179,20 @@ export default function NewFtttProjectPage() {
               type="file"
               accept={COMPANY_DOC_ACCEPT[company]}
               style={{ display: 'none' }}
-              onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+              onChange={(e) => {
+                const picked = e.target.files?.[0];
+                if (picked) acceptFile(picked);
+                e.target.value = '';
+              }}
             />
 
             {file ? (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 12, background: '#F0F8FF', borderRadius: 8, border: '1px solid #0969DA' }}>
+              <div
+                onDragOver={(e) => { e.preventDefault(); setDragActive(true); }}
+                onDragLeave={(e) => { e.preventDefault(); setDragActive(false); }}
+                onDrop={handleDrop}
+                style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 12, background: dragActive ? '#DDF4FF' : '#F0F8FF', borderRadius: 8, border: `1px ${dragActive ? 'dashed' : 'solid'} #0969DA` }}
+              >
                 <FileText size={20} color="#0969DA" />
                 <div style={{ flex: 1 }}>
                   <p style={{ margin: 0, fontWeight: 600, fontSize: 13 }}>{file.name}</p>
@@ -175,14 +210,23 @@ export default function NewFtttProjectPage() {
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
+                onDragOver={(e) => { e.preventDefault(); setDragActive(true); }}
+                onDragLeave={(e) => { e.preventDefault(); setDragActive(false); }}
+                onDrop={handleDrop}
                 style={{
-                  width: '100%', padding: 16, borderRadius: 8, border: '2px dashed #D0D7DE',
-                  background: '#F6F8FA', cursor: 'pointer', display: 'flex', flexDirection: 'column',
-                  alignItems: 'center', gap: 6, color: '#57606a',
+                  width: '100%', padding: 16, borderRadius: 8,
+                  border: `2px dashed ${dragActive ? '#0969DA' : '#D0D7DE'}`,
+                  background: dragActive ? '#DDF4FF' : '#F6F8FA',
+                  cursor: 'pointer', display: 'flex', flexDirection: 'column',
+                  alignItems: 'center', gap: 6,
+                  color: dragActive ? '#0969DA' : '#57606a',
+                  transition: 'background 0.15s, border-color 0.15s',
                 }}
               >
                 <Upload size={24} />
-                <span style={{ fontSize: 13, fontWeight: 600 }}>Klik untuk pilih file</span>
+                <span style={{ fontSize: 13, fontWeight: 600 }}>
+                  {dragActive ? 'Lepaskan file di sini' : 'Drag & drop file ke sini, atau klik untuk pilih file'}
+                </span>
                 <span style={{ fontSize: 11 }}>{COMPANY_DOC_ACCEPT[company]} · Maks 50 MB</span>
               </button>
             )}

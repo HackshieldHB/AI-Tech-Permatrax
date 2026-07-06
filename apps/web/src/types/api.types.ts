@@ -648,6 +648,11 @@ export interface FinanceProjectListItem {
   updatedAt: string;
   materialRemaining?: number;
   jasaRemaining?: number;
+  // JLM: realisasi terpadu (FTTT: dari Transaction Log, sinkron dengan halaman Detail)
+  totalSpent?: number;
+  totalRemaining?: number;
+  perizinanSpent?: number;
+  lainLainSpent?: number;
 }
 
 export type BudgetLedgerEntryType =
