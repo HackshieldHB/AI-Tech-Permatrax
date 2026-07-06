@@ -1322,13 +1322,6 @@ export class FtttProjectService {
     for (const t of project.transactions) spent[t.category] += num(t.total);
     const totalSpent = spent.PERIZINAN + spent.MATERIAL + spent.JASA + spent.LAIN_LAIN;
 
-    // Cost S-Curve — monthly cumulative actual vs linear planned across project timeline
-    const monthKey = (d: Date) => `${d.getFullYear()}-${d.getMonth() + 1}`;
-    const actualByMonth = new Map<string, number>();
-    for (const t of project.transactions) {
-      const k = monthKey(new Date(t.createdAt));
-      actualByMonth.set(k, (actualByMonth.get(k) ?? 0) + num(t.total));
-    }
     // JLM: Finance-owned baseline milestones drive the Planning lines
     const milestones = fp
       ? await this.prisma.ftttMilestone.findMany({ where: { financeProjectId: fp.id }, orderBy: { targetDate: 'asc' } })
@@ -1353,7 +1346,6 @@ export class FtttProjectService {
       months.push({ name: `${cur.getMonth() + 1}/${cur.getFullYear()}`, year: cur.getFullYear(), month: cur.getMonth() + 1 });
       cur.setMonth(cur.getMonth() + 1);
     }
-    const nMonths = Math.max(1, months.length);
     const endOfMonth = (m: { year: number; month: number }) => new Date(m.year, m.month, 0, 23, 59, 59).getTime();
 
     // Actual progress from phase completion (equal-weighted, time-aware)
@@ -1379,23 +1371,46 @@ export class FtttProjectService {
       return ms[ms.length - 1][key];
     };
 
-    let cumActual = 0;
-    const costCurve: { name: string; plannedCost: number; actualCost: number }[] = [];
-    const progressCurve: { name: string; plannedProgress: number; actualProgress: number }[] = [];
-    for (let i = 0; i < months.length; i++) {
-      const m = months[i];
+    // JLM: period buckets — Monthly (existing) + Weekly (each month split into 4:
+    // days 1–7, 8–14, 15–21, 22–end). Both follow the project period (start → endDate).
+    type Bucket = { name: string; end: number };
+    const monthlyBuckets: Bucket[] = months.map((m) => ({ name: m.name, end: endOfMonth(m) }));
+    const weeklyBuckets: Bucket[] = months.flatMap((m) => {
       const eom = endOfMonth(m);
-      cumActual += actualByMonth.get(`${m.year}-${m.month}`) ?? 0;
+      return [7, 14, 21, 0].map((day, wi) => ({
+        name: `${m.name} W${wi + 1}`,
+        end: day === 0 ? eom : new Date(m.year, m.month - 1, day, 23, 59, 59).getTime(),
+      }));
+    });
 
-      // Planning from Finance milestones; fall back to linear when no baseline set
-      const plannedProgress = hasMilestones ? interp(eom, 'pct') : Math.min(100, ((i + 1) / nMonths) * 100);
-      const plannedCost = hasMilestones ? interp(eom, 'budget') : (totalBudget * plannedProgress) / 100;
-      // Actual progress = phases completed by end of month
-      const actualProgress = planPhases.filter((p) => p.completedAt && new Date(p.completedAt).getTime() <= eom).length * phaseW;
-
-      progressCurve.push({ name: m.name, plannedProgress: Math.round(plannedProgress), actualProgress: Math.round(Math.min(100, actualProgress)) });
-      costCurve.push({ name: m.name, plannedCost: Math.round(plannedCost), actualCost: Math.round(cumActual) });
-    }
+    const txPoints = project.transactions
+      .map((t) => ({ t: new Date(t.createdAt).getTime(), v: num(t.total) }))
+      .sort((a, b) => a.t - b.t);
+    // Cumulative Planning vs Actual at each bucket end — same data, only the
+    // display granularity differs between Weekly and Monthly
+    const buildCurves = (buckets: Bucket[]) => {
+      const cost: { name: string; plannedCost: number; actualCost: number }[] = [];
+      const prog: { name: string; plannedProgress: number; actualProgress: number }[] = [];
+      const n = Math.max(1, buckets.length);
+      let cumActual = 0;
+      let ptr = 0;
+      for (let i = 0; i < buckets.length; i++) {
+        const b = buckets[i];
+        while (ptr < txPoints.length && txPoints[ptr].t <= b.end) { cumActual += txPoints[ptr].v; ptr++; }
+        // Planning from Finance milestones; fall back to linear when no baseline set
+        const plannedProgress = hasMilestones ? interp(b.end, 'pct') : Math.min(100, ((i + 1) / n) * 100);
+        const plannedCost = hasMilestones ? interp(b.end, 'budget') : (totalBudget * plannedProgress) / 100;
+        // Actual progress = phases completed by end of the bucket
+        const actualProgress = planPhases.filter((p) => p.completedAt && new Date(p.completedAt).getTime() <= b.end).length * phaseW;
+        prog.push({ name: b.name, plannedProgress: Math.round(plannedProgress), actualProgress: Math.round(Math.min(100, actualProgress)) });
+        cost.push({ name: b.name, plannedCost: Math.round(plannedCost), actualCost: Math.round(cumActual) });
+      }
+      return { cost, prog };
+    };
+    const monthly = buildCurves(monthlyBuckets);
+    const weekly = buildCurves(weeklyBuckets);
+    const costCurve = monthly.cost;
+    const progressCurve = monthly.prog;
 
     return {
       financeProject: fp,
@@ -1408,6 +1423,9 @@ export class FtttProjectService {
       })),
       costCurve,
       progressCurve,
+      // JLM: Weekly breakdown for the Kurva S period filter (Weekly/Monthly)
+      costCurveWeekly: weekly.cost,
+      progressCurveWeekly: weekly.prog,
       // JLM: current per-phase plan (for the timeline editor)
       phasePlan: planPhases.map((p) => ({
         phase: p.phase,
