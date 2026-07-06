@@ -245,10 +245,18 @@ export default function FinanceProjectDetailPage() {
     if (tab === 'transactions') void loadLedger();
   }, [tab, loadLedger]);
 
-  const spentTotal = detail ? num(detail.materialSpent) + num(detail.jasaSpent) : 0;
+  // JLM: Terpakai = Realisasi penuh (FTTT: semua kategori dari Transaction Log),
+  // sinkron dengan Dashboard; fallback material+jasa untuk respons API lama
+  const spentTotal = detail
+    ? detail.totalSpent != null
+      ? num(detail.totalSpent)
+      : num(detail.materialSpent) + num(detail.jasaSpent)
+    : 0;
   const totalB = detail ? num(detail.totalBudget) : 0;
   const remTotal = detail
-    ? (detail.materialRemaining ?? 0) + (detail.jasaRemaining ?? 0)
+    ? detail.totalRemaining != null
+      ? num(detail.totalRemaining)
+      : (detail.materialRemaining ?? 0) + (detail.jasaRemaining ?? 0)
     : 0;
   const util = totalB > 0 ? spentTotal / totalB : 0;
 
