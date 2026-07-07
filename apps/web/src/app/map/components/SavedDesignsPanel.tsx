@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 
-import { apiPatch } from '../../../lib/api';
+import { apiPatch, apiPost } from '../../../lib/api';
 import { useDesignStore } from '../../../store/useDesignStore';
 import { useCommandStore } from '../../../store/useCommandStore';
 import { useAuthStore } from '../../../store/authStore';
@@ -93,7 +93,13 @@ export function SavedDesignsPanel(props: SavedDesignsPanelProps) {
       areaType,
   );
 
-  const canSave = (calcReady || hasPending || Boolean(designId)) && !isEditMode;
+  // GIS Issue 6: sketch/gambar manual bisa disimpan sebagai draft TANPA harus
+  // kalkulasi dulu — alur simpan tidak lagi memaksa kalkulasi.
+  const hasSketch = useDesignStore(
+    (s) => (s.sketchTopology?.features?.length ?? 0) > 0,
+  );
+
+  const canSave = (calcReady || hasPending || Boolean(designId) || hasSketch) && !isEditMode;
 
   const buildSaveArgs = (pid: string): SaveArgs | null => {
     if (!calcReady || !calcResult || !backbonePoint || !targetPoint || !lastRenderedGeometry) {
@@ -162,6 +168,28 @@ export function SavedDesignsPanel(props: SavedDesignsPanelProps) {
       toast.success('Desain berhasil disimpan');
       // FIX: Clear designId after save so next Simpan creates a NEW record
       useDesignStore.setState({ designId: null });
+      return;
+    }
+
+    // GIS Issue 6: simpan sketch-only draft (belum ada kalkulasi) — dibuat
+    // sebagai design kosong lalu sketch dilekatkan; tidak memaksa kalkulasi.
+    if (hasSketch) {
+      const state = useDesignStore.getState();
+      const created = await apiPost<{ id: string }>('/design', {
+        projectId: trimmed,
+        // stub penanda sketch-only (backbone/target [0,0] = belum dikalkulasi)
+        calcInputs: {
+          areaType: 'URBAN',
+          areaRadiusMeters: 0,
+          backbonePoint: [0, 0],
+          targetPoint: [0, 0],
+        },
+        baseTopology: { sketchOnly: true },
+        geometry: { type: 'FeatureCollection', features: [] },
+      });
+      await apiPatch(`/design/${created.id}`, { sketchTopology: state.sketchTopology });
+      if (trimmed) await refetchDesignList(trimmed);
+      toast.success('Sketch tersimpan sebagai draft (tanpa kalkulasi)');
     }
   };
 
@@ -225,10 +253,11 @@ export function SavedDesignsPanel(props: SavedDesignsPanelProps) {
   const saveButtonTitle = useMemo(() => {
     if (isSaving) return 'Sedang menyimpan...';
     if (isEditMode) return 'Non-aktifkan Edit Mode menjadi OFF terlebih dahulu sebelum melakukan Simpan.';
-    if (!canSave) return 'Lakukan kalkulasi terlebih dahulu';
+    if (!canSave) return 'Lakukan kalkulasi atau gambar sketch terlebih dahulu';
     if (hasPending) return 'Simpan perubahan design';
+    if (!calcReady && hasSketch) return 'Simpan sketch sebagai draft (tanpa kalkulasi)';
     return 'Simpan hasil kalkulasi dan design';
-  }, [canSave, hasPending, isSaving, isEditMode]);
+  }, [canSave, hasPending, isSaving, isEditMode, calcReady, hasSketch]);
 
   return (
     <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>

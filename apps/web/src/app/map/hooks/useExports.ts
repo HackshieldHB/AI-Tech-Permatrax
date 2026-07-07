@@ -68,6 +68,7 @@ export async function exportKmz(
 <Style id="homepass_uncovered"><IconStyle><color>ffafa39c</color><scale>0.6</scale><Icon><href>https://maps.google.com/mapfiles/kml/shapes/open-diamond.png</href></Icon></IconStyle></Style>
 <Style id="feeder"><LineStyle><color>ff4444ef</color><width>4</width></LineStyle></Style>
 <Style id="distribution"><LineStyle><color>fff6823b</color><width>2.5</width></LineStyle></Style>
+<Style id="dropwire"><LineStyle><color>ff22cc44</color><width>1.5</width></LineStyle></Style>
 `; // FIX
 
   let kmlBody = ''; // FIX
@@ -137,6 +138,17 @@ export async function exportKmz(
       kmlBody += `<Placemark><name>HP-${i + 1}</name><styleUrl>#${styleId}</styleUrl>
         <description>${escapeKml(desc)}</description>
         <Point><coordinates>${hp.lng},${hp.lat},0</coordinates></Point></Placemark>\n`; // FIX
+
+      // GIS Issue 3: kabel drop (ODP → rumah pelanggan) ikut di-export ke
+      // Google Earth agar jelas HP mana tersambung ke ODP mana
+      if (covered && hp.odpIndex != null && topologyData.odpPositions?.[hp.odpIndex - 1]) {
+        const odpPos = topologyData.odpPositions[hp.odpIndex - 1];
+        const dropLine = sanitizeLine([odpPos, [hp.lng, hp.lat]]);
+        if (dropLine) {
+          kmlBody += `<Placemark><name>Drop HP-${i + 1} → ODP A${String(hp.odpIndex).padStart(2, '0')}</name><styleUrl>#dropwire</styleUrl>
+            <LineString><tessellate>1</tessellate><coordinates>${kmlLine(dropLine)}</coordinates></LineString></Placemark>\n`;
+        }
+      }
     }); // FIX
   } // FIX
 

@@ -23,6 +23,9 @@ export interface GisLayer {
   geoJson: FeatureCollection; // FIX
   color: string; // FIX
   isVisible: boolean; // FIX
+  // GIS Issue 5: gunakan titik (Point) layer KMZ ini sebagai titik pelanggan
+  // (homepass) pada kalkulasi topologi — menggantikan bangunan OSM
+  useAsCustomers?: boolean;
 }
 
 export interface NominatimResult {

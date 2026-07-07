@@ -625,7 +625,8 @@ export function CalcPanel(props: CalcPanelProps) {
                     <button
                       type="button"
                       onClick={() => {
-                        clearTopology(); // FIX: remove topology layers
+                        // GIS Issue 6: Batalkan TIDAK menghapus desain yang sudah
+                        // dirender — hanya membatalkan pemilihan titik kalkulasi.
                         clearCalcGraphics();
                         setCalcMode('idle');
                       }}

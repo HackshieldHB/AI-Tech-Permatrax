@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useEffect, useRef, useState } from 'react';
+import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
@@ -21,6 +21,7 @@ import { runCommandStoreCheck } from './test/commandStoreCheck';
 
 import { LeftSidebar } from './components/LeftSidebar';
 import { MapOverlays } from './components/MapOverlays';
+import { MapTourOverlay } from './components/MapTourOverlay';
 import { SearchBar } from './components/SearchBar';
 import { useCommandStore } from '../../store/useCommandStore';
 import { useDesignStore } from '../../store/useDesignStore';
@@ -72,6 +73,24 @@ function GisMapPage() {
     styleEpoch,
   });
 
+  // GIS Issue 5: Point features dari layer KMZ yang ditandai "Titik Pelanggan"
+  // dipakai sebagai homepass pada kalkulasi topologi (menggantikan bangunan OSM)
+  const kmzCustomerPoints = useMemo(() => {
+    const pts: [number, number][] = [];
+    layers.forEach((l) => {
+      if (!l.useAsCustomers) return;
+      (l.geoJson?.features ?? []).forEach((f) => {
+        const g = f.geometry;
+        if (g?.type === 'Point' && Array.isArray(g.coordinates)) {
+          pts.push([g.coordinates[0] as number, g.coordinates[1] as number]);
+        } else if (g?.type === 'MultiPoint') {
+          (g.coordinates ?? []).forEach((c) => pts.push([c[0] as number, c[1] as number]));
+        }
+      });
+    });
+    return pts;
+  }, [layers]);
+
   const {
     renderingTopology,
     topologyRendered,
@@ -82,7 +101,7 @@ function GisMapPage() {
     renderStoredDesign,
     buildDesignGeometry,
   } =
-    useTopologyRender({ mapRef, inputMode, polygonPoints });
+    useTopologyRender({ mapRef, inputMode, polygonPoints, customerPoints: kmzCustomerPoints });
 
   const {
     polygonMarkersRef,
@@ -249,6 +268,9 @@ function GisMapPage() {
       `}</style>
       <div ref={mapContainerRef} style={{ width: '100%', height: '100%' }} />
 
+      {/* GIS Issue 1: panduan onboarding untuk user baru */}
+      <MapTourOverlay />
+
       <MapOverlays
         topologyRendered={topologyRendered}
         calcResult={calcResult}
@@ -294,6 +316,7 @@ function GisMapPage() {
             handleKmzUpload,
             handleDeleteLayer,
             handleColorChange,
+            mapRef,
           },
           calc: {
             mapRef,

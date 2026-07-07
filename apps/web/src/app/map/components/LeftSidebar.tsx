@@ -177,6 +177,7 @@ export function LeftSidebar({
                 handleKmzUpload={layerProps.handleKmzUpload}
                 handleDeleteLayer={layerProps.handleDeleteLayer}
                 handleColorChange={layerProps.handleColorChange}
+                mapRef={layerProps.mapRef}
               />
             )}
             {activePanel === 'calc' && <CalcPanel {...calcProps} />}

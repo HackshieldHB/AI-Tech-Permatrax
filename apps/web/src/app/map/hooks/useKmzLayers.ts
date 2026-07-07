@@ -26,7 +26,8 @@ function objTypeMatch(
 }
 
 // FIX: extract every [lng, lat] from any GeoJSON geometry (module scope — not inside component)
-function getAllCoordinates(geometry: Geometry | null | undefined): [number, number][] {
+// GIS Issue 7: exported — LayerPanel reuses this for the zoom-to-layer button
+export function getAllCoordinates(geometry: Geometry | null | undefined): [number, number][] {
   if (!geometry) return []; // FIX
   const coords: [number, number][] = []; // FIX
   const extract = (c: unknown): void => {

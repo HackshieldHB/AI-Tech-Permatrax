@@ -210,6 +210,23 @@ export function DesignModeToolbar() {
         {sketchMode ? '✏️ Sketch' : '📝 Sketch'}
       </button>
 
+      {/* GIS Issue 8: cara hapus objek sketch dibuat eksplisit */}
+      {sketchMode && (
+        <span
+          style={{
+            fontSize: '11px',
+            color: '#5B21B6',
+            background: '#EDE9FE',
+            borderRadius: 6,
+            padding: '4px 8px',
+            marginLeft: '4px',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          💡 Hapus: klik objek → 🗑 (kanan atas) / tombol Delete
+        </span>
+      )}
+
       {/* ── Sketch Opacity Slider ── */}
       {sketchMode && (
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginLeft: '8px' }}>

@@ -172,6 +172,18 @@ export function useDesign(args: {
       setDetailError(null);
       try {
         const detail = await apiGet<DesignDetail>(`/design/${designId}`);
+        // GIS Issue 6: draft sketch-only (disimpan tanpa kalkulasi) tidak punya
+        // geometri OLT/ODC — cukup hydrate sketch, jangan render topologi.
+        const isSketchOnly =
+          (detail.baseTopology as { sketchOnly?: boolean } | null)?.sketchOnly === true ||
+          !(detail.geometry?.features?.length > 0);
+        if (isSketchOnly) {
+          useDesignStore.getState().hydrate(detail.id, detail, detail.calcInputs, detail.baseTopology, detail.sketchTopology);
+          setLoadedDesignId(detail.id);
+          useDesignStore.getState().setSketchMode(true);
+          toast.success('Draft sketch termuat — mode sketch diaktifkan');
+          return;
+        }
         await renderStoredDesign({
           baseTopology: detail.baseTopology,
           geometry: detail.geometry,

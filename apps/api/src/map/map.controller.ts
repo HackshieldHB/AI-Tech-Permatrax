@@ -266,7 +266,8 @@ export class MapController {
       fromLat: number;
       toLng: number;
       toLat: number;
-      profile?: 'driving' | 'walking';
+      // GIS Issue 9: 'foot' = routing kabel — mengabaikan aturan arah lalu lintas
+      profile?: 'driving' | 'walking' | 'foot';
     },
   ) {
     return this.mapService.getRoute(
@@ -307,7 +308,8 @@ export class MapController {
     @Body()
     body: {
       waypoints: Array<[number, number]>;
-      profile?: 'driving' | 'walking';
+      // GIS Issue 9: 'foot' = routing kabel — mengabaikan aturan arah lalu lintas
+      profile?: 'driving' | 'walking' | 'foot';
     },
   ) {
     return this.mapService.getMultiRoute(body.waypoints, body.profile || 'driving'); // FIX
