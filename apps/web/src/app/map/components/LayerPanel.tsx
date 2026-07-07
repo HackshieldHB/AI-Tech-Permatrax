@@ -1,10 +1,13 @@
 'use client';
 
-import type { Dispatch, SetStateAction } from 'react';
+import type { Dispatch, MutableRefObject, SetStateAction } from 'react';
+import type maplibregl from 'maplibre-gl';
+import type { Geometry } from 'geojson';
 
 import { apiPatch } from '../../../lib/api';
 import { toast } from 'sonner';
 import type { GisLayer } from '../hooks/types';
+import { getAllCoordinates } from '../hooks/useKmzLayers';
 
 export type LayerPanelProps = {
   layers: GisLayer[];
@@ -17,7 +20,16 @@ export type LayerPanelProps = {
     hex: string,
     isVisible: boolean,
   ) => Promise<void>;
+  // GIS Issue 7: zoom-to-layer needs the map instance
+  mapRef: MutableRefObject<maplibregl.Map | null>;
 };
+
+// GIS Issue 5: layer punya Point yang bisa dipakai sebagai titik pelanggan?
+function countLayerPoints(layer: GisLayer): number {
+  return (layer.geoJson?.features ?? []).filter(
+    (f) => f.geometry?.type === 'Point' || f.geometry?.type === 'MultiPoint',
+  ).length;
+}
 
 export function LayerPanel(props: LayerPanelProps) {
   const {
@@ -27,7 +39,34 @@ export function LayerPanel(props: LayerPanelProps) {
     handleKmzUpload,
     handleDeleteLayer,
     handleColorChange,
+    mapRef,
   } = props;
+
+  // GIS Issue 7: fit map view to the extent of one KMZ layer
+  const zoomToLayer = (layer: GisLayer) => {
+    const map = mapRef.current;
+    if (!map || !layer.geoJson?.features?.length) return;
+    let minLng = 180, maxLng = -180, minLat = 90, maxLat = -90;
+    layer.geoJson.features.forEach((feature) => {
+      getAllCoordinates(feature.geometry as Geometry | null | undefined).forEach(([lng, lat]) => {
+        minLng = Math.min(minLng, lng);
+        maxLng = Math.max(maxLng, lng);
+        minLat = Math.min(minLat, lat);
+        maxLat = Math.max(maxLat, lat);
+      });
+    });
+    if (minLng >= 180) {
+      toast.error('Layer tidak memiliki koordinat');
+      return;
+    }
+    map.fitBounds(
+      [
+        [minLng, minLat],
+        [maxLng, maxLat],
+      ],
+      { padding: 60, duration: 1000, maxZoom: 17 },
+    );
+  };
 
   return (
               <div style={{ padding: 16 }}>
@@ -153,6 +192,60 @@ export function LayerPanel(props: LayerPanelProps) {
                       >
                         {layer.geoJson?.features?.length || 0} titik
                       </span>
+
+                      {/* GIS Issue 7: zoom kembali ke lokasi layer KMZ */}
+                      <button
+                        type="button"
+                        onClick={() => zoomToLayer(layer)}
+                        title="Zoom ke layer ini"
+                        style={{
+                          padding: '3px 6px',
+                          borderRadius: 5,
+                          border: 'none',
+                          background: '#EFF6FF',
+                          color: '#2563EB',
+                          cursor: 'pointer',
+                          fontSize: 11,
+                          flexShrink: 0,
+                        }}
+                      >
+                        🔍
+                      </button>
+
+                      {/* GIS Issue 5: pakai titik KMZ ini sebagai titik pelanggan pada kalkulasi */}
+                      {countLayerPoints(layer) > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const next = !layer.useAsCustomers;
+                            setLayers((prev) =>
+                              prev.map((l) => (l.id === layer.id ? { ...l, useAsCustomers: next } : l)),
+                            );
+                            toast.info(
+                              next
+                                ? `👥 ${countLayerPoints(layer)} titik dari "${layer.name}" akan dipakai sebagai titik pelanggan pada kalkulasi berikutnya`
+                                : `Titik "${layer.name}" tidak lagi dipakai sebagai titik pelanggan`,
+                            );
+                          }}
+                          title={
+                            layer.useAsCustomers
+                              ? 'Titik layer ini dipakai sebagai titik pelanggan pada kalkulasi — klik untuk menonaktifkan'
+                              : 'Gunakan titik layer ini sebagai titik pelanggan (homepass) pada kalkulasi'
+                          }
+                          style={{
+                            padding: '3px 6px',
+                            borderRadius: 5,
+                            border: 'none',
+                            background: layer.useAsCustomers ? '#16A34A' : '#F3F4F6',
+                            color: layer.useAsCustomers ? 'white' : '#9CA3AF',
+                            cursor: 'pointer',
+                            fontSize: 11,
+                            flexShrink: 0,
+                          }}
+                        >
+                          👥
+                        </button>
+                      )}
 
                       <button
                         type="button"

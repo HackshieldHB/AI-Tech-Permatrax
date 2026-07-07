@@ -166,9 +166,25 @@ export function useSketchMode(map: maplibregl.Map | null) {
       map.on('draw.delete', updateStore);
       map.on('draw.update', updateStore);
 
+      // GIS Issue 1/8: cleanup with the SAME handler reference — the old code
+      // called map.off with a fresh arrow fn (no-op), leaving stale listeners
+      // whose closures re-added deleted features to the store.
+      return () => {
+        map.off('draw.create', updateStore);
+        map.off('draw.delete', updateStore);
+        map.off('draw.update', updateStore);
+      };
     } else {
       // Teardown when exiting Sketch Mode
       if (drawRef.current) {
+        // GIS Issue 1/8: persist the CURRENT draw state before removing the
+        // control, so deletions done via trash are never resurrected when
+        // sketch mode is re-entered.
+        try {
+          setSketchTopology(drawRef.current.getAll());
+        } catch {
+          /* control already detached */
+        }
         // @ts-ignore
         map.removeControl(drawRef.current);
         drawRef.current = null;
@@ -179,14 +195,7 @@ export function useSketchMode(map: maplibregl.Map | null) {
       }
     }
 
-    return () => {
-      // Cleanup listeners if needed
-      if (drawRef.current) {
-        map.off('draw.create', () => {});
-        map.off('draw.delete', () => {});
-        map.off('draw.update', () => {});
-      }
-    };
+    return undefined;
   }, [sketchMode, map]);
 
   // Update opacity dynamically

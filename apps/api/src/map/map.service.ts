@@ -344,25 +344,33 @@ export class MapService {
     await this.redis.setex(key, ttlSec, JSON.stringify(value)); // FIX
   }
 
-  // FIX: proxy routing — 1 OSRM attempt, Valhalla1 fallback, limiter + silent logs
+  // FIX: proxy routing — OSRM + Valhalla with straight-line last resort.
+  // GIS Issue 9: profile 'foot' routes via Valhalla `pedestrian` costing FIRST —
+  // pedestrian ignores one-way traffic rules, matching how cables are pulled.
+  // (The public OSRM demo only serves the car profile, so it is the fallback.)
+  // GIS Issue 4: result carries `source` so the UI can flag straight-line
+  // fallbacks, and cache TTL is 24h to stay clear of public-server rate limits.
   async getRoute(
     fromLng: number, // FIX
     fromLat: number, // FIX
     toLng: number, // FIX
     toLat: number, // FIX
-    profile: 'driving' | 'walking' = 'driving',
-  ): Promise<{ coordinates: [number, number][]; distanceM: number }> {
+    profile: 'driving' | 'walking' | 'foot' = 'driving',
+  ): Promise<{ coordinates: [number, number][]; distanceM: number; source: 'osrm' | 'valhalla' | 'straight' }> {
     const cacheKey =
-      `route:${fromLng.toFixed(4)},${fromLat.toFixed(4)}` +
+      `route:v2:${fromLng.toFixed(4)},${fromLat.toFixed(4)}` +
       `:${toLng.toFixed(4)},${toLat.toFixed(4)}:${profile}`; // FIX
 
     const cached = await this.redisJsonGet<{
       coordinates: [number, number][];
       distanceM: number;
+      source: 'osrm' | 'valhalla' | 'straight';
     }>(cacheKey); // FIX
     if (cached) return cached; // FIX
 
-    const straightLine = (): { coordinates: [number, number][]; distanceM: number } => {
+    const CACHE_TTL_SEC = 86400; // GIS Issue 4: routes rarely change — cache 24h
+
+    const straightLine = (): { coordinates: [number, number][]; distanceM: number; source: 'straight' } => {
       const R = 6371000; // FIX
       const dLat = ((toLat - fromLat) * Math.PI) / 180; // FIX
       const dLon = ((toLng - fromLng) * Math.PI) / 180; // FIX
@@ -378,13 +386,14 @@ export class MapService {
           [toLng, toLat],
         ], // FIX
         distanceM: Math.round(dist * 1.4), // FIX
+        source: 'straight',
       }; // FIX
     }; // FIX
 
-    return osrmLimiter.run(async () => {
+    const tryOsrm = async (): Promise<{ coordinates: [number, number][]; distanceM: number; source: 'osrm' } | null> => {
       try {
         const url =
-          `https://router.project-osrm.org/route/v1/${profile}/` +
+          `https://router.project-osrm.org/route/v1/driving/` +
           `${fromLng},${fromLat};${toLng},${toLat}` +
           `?overview=full&geometries=geojson`; // FIX
 
@@ -396,18 +405,22 @@ export class MapService {
         if (res.ok) {
           const data = await res.json(); // FIX
           if (data.code === 'Ok' && data.routes?.length) {
-            const result = {
+            return {
               coordinates: data.routes[0].geometry.coordinates as [number, number][],
               distanceM: Math.round(data.routes[0].distance), // FIX
+              source: 'osrm',
             }; // FIX
-            await this.redisJsonSet(cacheKey, result, 3600); // FIX
-            return result; // FIX
           }
         }
       } catch {
         /* FIX: silent — no log spam per request */
       }
+      return null;
+    };
 
+    const tryValhalla = async (
+      costing: 'auto' | 'pedestrian',
+    ): Promise<{ coordinates: [number, number][]; distanceM: number; source: 'valhalla' } | null> => {
       try {
         const vRes = await fetch('https://valhalla1.openstreetmap.de/route', {
           method: 'POST', // FIX
@@ -420,7 +433,7 @@ export class MapService {
               { lon: fromLng, lat: fromLat, type: 'break' }, // FIX
               { lon: toLng, lat: toLat, type: 'break' }, // FIX
             ], // FIX
-            costing: 'auto', // FIX
+            costing, // GIS Issue 9: pedestrian for cable routing (ignores one-way)
             directions_type: 'none', // FIX
           }), // FIX
           signal: AbortSignal.timeout(5000), // FIX
@@ -439,19 +452,34 @@ export class MapService {
             } // FIX
 
             if (coords.length >= 2) {
-              const result = {
+              return {
                 coordinates: coords, // FIX
                 distanceM: Math.round((vData.trip.summary?.length ?? 0) * 1000), // FIX
+                source: 'valhalla',
               }; // FIX
-              await this.redisJsonSet(cacheKey, result, 3600); // FIX
-              return result; // FIX
             }
           }
         }
       } catch {
         /* FIX: silent fallback */
       }
+      return null;
+    };
 
+    return osrmLimiter.run(async () => {
+      // GIS Issue 9: cable routing (foot) ignores one-way — pedestrian first
+      const attempts =
+        profile === 'foot' || profile === 'walking'
+          ? [() => tryValhalla('pedestrian'), tryOsrm]
+          : [tryOsrm, () => tryValhalla('auto')];
+
+      for (const attempt of attempts) {
+        const result = await attempt();
+        if (result) {
+          await this.redisJsonSet(cacheKey, result, CACHE_TTL_SEC); // FIX
+          return result; // FIX
+        }
+      }
       return straightLine(); // FIX
     }); // FIX
   }
@@ -485,12 +513,13 @@ export class MapService {
     }); // FIX
   }
 
-  // FIX: OSRM multi-waypoint — 1 call for ODC → ODP₁ → … (legs as segments)
+  // FIX: multi-waypoint — 1 call for ODC → ODP₁ → … (legs as segments)
+  // GIS Issue 9: profile 'foot' → Valhalla pedestrian first (ignores one-way)
   async getMultiRoute(
     waypoints: Array<[number, number]>, // FIX
-    profile: 'driving' | 'walking' = 'driving',
+    profile: 'driving' | 'walking' | 'foot' = 'driving',
   ): Promise<{
-    segments: Array<{ coordinates: [number, number][]; distanceM: number }>;
+    segments: Array<{ coordinates: [number, number][]; distanceM: number; source?: string }>;
     totalDistanceM: number;
   }> {
     if (waypoints.length < 2) {
@@ -498,15 +527,16 @@ export class MapService {
     }
 
     const coordStr = waypoints.map(([lng, lat]) => `${lng},${lat}`).join(';'); // FIX
-    const cacheKey = `multiroute:${coordStr.slice(0, 120)}:${profile}`; // FIX
+    const cacheKey = `multiroute:v2:${coordStr.slice(0, 120)}:${profile}`; // FIX
     const cached = await this.redisJsonGet<{
-      segments: Array<{ coordinates: [number, number][]; distanceM: number }>;
+      segments: Array<{ coordinates: [number, number][]; distanceM: number; source?: string }>;
       totalDistanceM: number;
     }>(cacheKey); // FIX
     if (cached) return cached; // FIX
+    const CACHE_TTL_SEC = 86400; // GIS Issue 4: cache 24h
 
     const straightFallback = () => {
-      const segments: Array<{ coordinates: [number, number][]; distanceM: number }> = []; // FIX
+      const segments: Array<{ coordinates: [number, number][]; distanceM: number; source?: string }> = []; // FIX
       let total = 0; // FIX
       for (let i = 1; i < waypoints.length; i++) {
         const [lng1, lat1] = waypoints[i - 1]; // FIX
@@ -527,15 +557,64 @@ export class MapService {
             [lng2, lat2],
           ], // FIX
           distanceM: d, // FIX
+          source: 'straight', // GIS Issue 4
         }); // FIX
       }
       return { segments, totalDistanceM: total }; // FIX
     }; // FIX
 
-    return osrmLimiter.run(async () => {
+    // GIS Issue 9: Valhalla multi-leg trip — pedestrian costing ignores one-way
+    const tryValhallaMulti = async (): Promise<{
+      segments: Array<{ coordinates: [number, number][]; distanceM: number; source?: string }>;
+      totalDistanceM: number;
+    } | null> => {
+      try {
+        const vRes = await fetch('https://valhalla1.openstreetmap.de/route', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'User-Agent': 'PermaTrax-GIS/1.0',
+          },
+          body: JSON.stringify({
+            locations: waypoints.map(([lng, lat]) => ({ lon: lng, lat, type: 'break' })),
+            costing: 'pedestrian',
+            directions_type: 'none',
+          }),
+          signal: AbortSignal.timeout(8000),
+        });
+        if (!vRes.ok) return null;
+        const vData = await vRes.json();
+        const legs = vData.trip?.legs as Array<{ shape?: unknown; summary?: { length?: number } }> | undefined;
+        if (!legs?.length || legs.length !== waypoints.length - 1) return null;
+
+        let total = 0;
+        const segments = legs.map((leg, i) => {
+          let coords: [number, number][] = [];
+          if (typeof leg.shape === 'string') {
+            coords = decodePolyline6(leg.shape);
+          } else if (Array.isArray(leg.shape)) {
+            coords = (leg.shape as { lon: number; lat: number }[]).map((p) => [p.lon, p.lat] as [number, number]);
+          }
+          const dM = Math.round((leg.summary?.length ?? 0) * 1000);
+          total += dM;
+          if (coords.length < 2) {
+            return { coordinates: [waypoints[i], waypoints[i + 1]], distanceM: dM, source: 'straight' };
+          }
+          return { coordinates: coords, distanceM: dM, source: 'valhalla' };
+        });
+        return { segments, totalDistanceM: total };
+      } catch {
+        return null;
+      }
+    };
+
+    const tryOsrmMulti = async (): Promise<{
+      segments: Array<{ coordinates: [number, number][]; distanceM: number; source?: string }>;
+      totalDistanceM: number;
+    } | null> => {
       try {
         const url =
-          `https://router.project-osrm.org/route/v1/${profile}/${coordStr}` +
+          `https://router.project-osrm.org/route/v1/driving/${coordStr}` +
           `?overview=full&geometries=geojson&steps=true`; // FIX
 
         const res = await fetch(url, {
@@ -543,9 +622,9 @@ export class MapService {
           headers: { 'User-Agent': 'PermaTrax-GIS/1.0' }, // FIX
         }); // FIX
 
-        if (!res.ok) return straightFallback(); // FIX
+        if (!res.ok) return null; // FIX
         const data = await res.json(); // FIX
-        if (data.code !== 'Ok' || !data.routes?.length) return straightFallback(); // FIX
+        if (data.code !== 'Ok' || !data.routes?.length) return null; // FIX
 
         const route = data.routes[0]; // FIX
         const legs = route.legs as Array<{
@@ -562,30 +641,44 @@ export class MapService {
             }
           }
           if (coords.length < 2) {
-            coords = [waypoints[i], waypoints[i + 1]]; // FIX
+            return { coordinates: [waypoints[i], waypoints[i + 1]], distanceM: Math.round(leg.distance ?? 0), source: 'straight' };
           }
           return {
             coordinates: coords, // FIX
             distanceM: Math.round(leg.distance ?? 0), // FIX
+            source: 'osrm',
           }; // FIX
         }); // FIX
 
-        const result = {
+        return {
           segments, // FIX
           totalDistanceM: Math.round(route.distance ?? 0), // FIX
         }; // FIX
-
-        await this.redisJsonSet(cacheKey, result, 3600); // FIX
-        this.logger.debug(
-          `MultiRoute: ${waypoints.length} waypoints, ${result.totalDistanceM}m total (OSRM)`, // FIX
-        ); // FIX
-        return result; // FIX
       } catch {
-        this.logger.warn(
-          `MultiRoute OSRM failed for ${waypoints.length} waypoints, using straight lines`, // FIX
-        ); // FIX
-        return straightFallback(); // FIX
+        return null; // FIX
       }
+    };
+
+    return osrmLimiter.run(async () => {
+      const attempts =
+        profile === 'foot' || profile === 'walking'
+          ? [tryValhallaMulti, tryOsrmMulti]
+          : [tryOsrmMulti, tryValhallaMulti];
+
+      for (const attempt of attempts) {
+        const result = await attempt();
+        if (result) {
+          await this.redisJsonSet(cacheKey, result, CACHE_TTL_SEC); // FIX
+          this.logger.debug(
+            `MultiRoute: ${waypoints.length} waypoints, ${result.totalDistanceM}m total (${profile})`, // FIX
+          ); // FIX
+          return result; // FIX
+        }
+      }
+      this.logger.warn(
+        `MultiRoute failed for ${waypoints.length} waypoints, using straight lines`, // FIX
+      ); // FIX
+      return straightFallback(); // FIX
     }); // FIX
   }
 

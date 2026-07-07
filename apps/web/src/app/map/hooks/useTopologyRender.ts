@@ -36,6 +36,7 @@ const TOPO_SOURCE_IDS = [
 const TOPO_LAYER_IDS = [
   'topo-feeder-line', // FIX
   'topo-dist-line', // FIX
+  'topo-dist-line-straight', // GIS Issue 4: dashed fallback overlay
   'topo-drop-line', // FIX
   'topo-homepass-circle', // FIX: reserved id if used
   'topo-homepass-label', // FIX: restore stored homepass labels
@@ -72,7 +73,7 @@ async function backendRoute(
   fromLat: number, // FIX
   toLng: number, // FIX
   toLat: number, // FIX
-): Promise<{ coordinates: [number, number][]; distanceM: number }> {
+): Promise<{ coordinates: [number, number][]; distanceM: number; source?: string }> {
   try {
     const res = await fetch(`${apiBase}/map/route`, {
       method: 'POST', // FIX
@@ -81,7 +82,9 @@ async function backendRoute(
         Authorization: `Bearer ${token}`, // FIX
         'ngrok-skip-browser-warning': 'true', // FIX
       }, // FIX
-      body: JSON.stringify({ fromLng, fromLat, toLng, toLat }), // FIX
+      // GIS Issue 9: kabel tidak mengikuti aturan arah lalu lintas — profil
+      // 'foot' membuat routing mengabaikan one-way (Valhalla pedestrian)
+      body: JSON.stringify({ fromLng, fromLat, toLng, toLat, profile: 'foot' }), // FIX
       signal: AbortSignal.timeout(12000), // FIX
     }); // FIX
     if (!res.ok) throw new Error(`route HTTP ${res.status}`); // FIX
@@ -94,6 +97,7 @@ async function backendRoute(
         [toLng, toLat],
       ], // FIX
       distanceM: Math.round(haversineM(fromLat, fromLng, toLat, toLng) * 1.4), // FIX
+      source: 'straight', // GIS Issue 4: tandai fallback garis lurus
     }; // FIX
   }
 }
@@ -112,7 +116,8 @@ async function backendMultiRoute(
         Authorization: `Bearer ${token}`, // FIX
         'ngrok-skip-browser-warning': 'true', // FIX
       }, // FIX
-      body: JSON.stringify({ waypoints }), // FIX
+      // GIS Issue 9: profil 'foot' — kabel mengabaikan arah lalu lintas
+      body: JSON.stringify({ waypoints, profile: 'foot' }), // FIX
       signal: AbortSignal.timeout(15000), // FIX
     }); // FIX
     if (!res.ok) throw new Error(`multi-route HTTP ${res.status}`); // FIX
@@ -481,6 +486,38 @@ function verifyOdpInBoundary(
 } // FIX
 
 // FIX: max distance from center to polygon vertices (meters) — sampling radius for syntheticInsideBoundary
+// GIS Issue 3: setelah snap-ke-jalan beberapa ODP bisa menumpuk di titik/tiang
+// yang sama. Sebar ulang dengan jarak minimum antar-ODP: pakai posisi mentah
+// (pre-snap) dulu, lalu geser bertahap bila masih menumpuk.
+function spreadStackedOdps(
+  snapped: [number, number][],
+  raw: [number, number][],
+  minSepM = 20,
+): [number, number][] {
+  const out: [number, number][] = [];
+  const tooClose = (p: [number, number]) =>
+    out.some((q) => haversineM(p[1], p[0], q[1], q[0]) < minSepM);
+  snapped.forEach((pos, i) => {
+    let candidate = pos;
+    if (tooClose(candidate) && raw[i]) {
+      candidate = raw[i]; // posisi ring asli biasanya sudah tersebar
+    }
+    let attempt = 0;
+    while (tooClose(candidate) && attempt < 8) {
+      attempt += 1;
+      const bearing = (((i * 47 + attempt * 45) % 360) * Math.PI) / 180;
+      const dM = minSepM * attempt;
+      const dLat = (dM / 6371000) * (180 / Math.PI) * Math.cos(bearing);
+      const dLng =
+        ((dM / 6371000) * (180 / Math.PI) * Math.sin(bearing)) /
+        Math.max(0.2, Math.cos((pos[1] * Math.PI) / 180));
+      candidate = [pos[0] + dLng, pos[1] + dLat];
+    }
+    out.push(candidate);
+  });
+  return out;
+}
+
 function polygonMaxRadiusFromCenter(
   points: [number, number][], // FIX
   centerLng: number, // FIX
@@ -625,8 +662,10 @@ export function useTopologyRender(args: {
   /** Explicit shared calc input — avoid implicit cross-hook refs (see GIS map refactor notes). */
   inputMode: 'radius' | 'polygon';
   polygonPoints: [number, number][];
+  /** GIS Issue 5: titik pelanggan dari layer KMZ (menggantikan bangunan OSM bila terisi) */
+  customerPoints?: [number, number][];
 }) {
-  const { mapRef, inputMode, polygonPoints } = args;
+  const { mapRef, inputMode, polygonPoints, customerPoints } = args;
   const [renderingTopology, setRenderingTopology] = useState(false);
   const [topologyRendered, setTopologyRendered] = useState(false);
   const [topoExportData, setTopoExportData] = useState<TopoExportData | null>(null);
@@ -779,7 +818,9 @@ export function useTopologyRender(args: {
         ); // FIX
 
         // FIX: verify each ODP is inside polygon boundary
-        const odpPositions = snappedOdps.map((odp) => verifyOdpInBoundary(odp, boundary)); // FIX
+        const verifiedOdps = snappedOdps.map((odp) => verifyOdpInBoundary(odp, boundary)); // FIX
+        // GIS Issue 3: pastikan ODP tidak menumpuk di satu tiang/titik jalan
+        const odpPositions = spreadStackedOdps(verifiedOdps, rawOdpPositions);
 
         // ── STEP ④: Distribution — cascade chain routing ──
         toast.info('④ Menghitung jalur distribusi (cascade)...'); // FIX
@@ -804,28 +845,47 @@ export function useTopologyRender(args: {
             ? r.value.coordinates
             : ([cascadeRoutes[i][0], cascadeRoutes[i][1]] as [number, number][]), // FIX
         ); // FIX
+        // GIS Issue 4: tandai segmen yang memakai fallback garis lurus (bukan
+        // rute jalan) agar tampil dashed — indikasi "perlu verifikasi lapangan"
+        const distRouteIsStraight: boolean[] = distRouteResults.map((r) =>
+          r.status === 'fulfilled' ? r.value?.source === 'straight' || (r.value?.coordinates?.length ?? 0) <= 2 : true,
+        );
 
         // ── STEP ⑤: Get ALL buildings in polygon area ──
-        toast.info('⑤ Mengambil bangunan OSM dalam area...'); // FIX
+        // GIS Issue 5: bila user menandai layer KMZ sebagai "Titik Pelanggan",
+        // pakai titik-titik itu sebagai homepass — bangunan OSM tidak di-fetch.
+        const kmzCustomers = (customerPoints ?? []).map(([lng, lat]) => ({
+          lng,
+          lat,
+          osmId: 0,
+          type: 'kmz-customer',
+        }));
+        let osmBuildingsRaw: Array<{ lng: number; lat: number; osmId: number; type: string }>;
+        if (kmzCustomers.length > 0) {
+          toast.info(`⑤ Memakai ${kmzCustomers.length} titik pelanggan dari KMZ...`); // GIS Issue 5
+          osmBuildingsRaw = kmzCustomers;
+        } else {
+          toast.info('⑤ Mengambil bangunan OSM dalam area...'); // FIX
 
-        let queryRadius = radiusM + 200; // FIX: larger default capture radius
-        if (drawnPolygon && drawnPolygon.length >= 3) {
-          queryRadius =
-            Math.max(
-              ...drawnPolygon.map(([lng, lat]) =>
-                haversineM(target[1], target[0], lat, lng), // FIX: centroid to vertex
-              ),
-            ) + 100; // FIX
-        } // FIX
-        queryRadius = Math.min(queryRadius, 2000); // FIX
+          let queryRadius = radiusM + 200; // FIX: larger default capture radius
+          if (drawnPolygon && drawnPolygon.length >= 3) {
+            queryRadius =
+              Math.max(
+                ...drawnPolygon.map(([lng, lat]) =>
+                  haversineM(target[1], target[0], lat, lng), // FIX: centroid to vertex
+                ),
+              ) + 100; // FIX
+          } // FIX
+          queryRadius = Math.min(queryRadius, 2000); // FIX
 
-        const osmBuildingsRaw = await backendBuildings(
-          apiBase, // FIX
-          authToken, // FIX
-          target[1], // FIX
-          target[0], // FIX
-          queryRadius, // FIX
-        ); // FIX
+          osmBuildingsRaw = await backendBuildings(
+            apiBase, // FIX
+            authToken, // FIX
+            target[1], // FIX
+            target[0], // FIX
+            queryRadius, // FIX
+          ); // FIX
+        }
 
         const osmBuildings = osmBuildingsRaw.filter((b) => {
           if (boundary.type === 'polygon') {
@@ -955,6 +1015,7 @@ export function useTopologyRender(args: {
               properties: {
                 segmentIndex: i + 1, // FIX: cascade segment
                 isCascade: true, // FIX
+                isStraight: distRouteIsStraight[i] === true, // GIS Issue 4
               },
             })), // FIX
           },
@@ -963,12 +1024,27 @@ export function useTopologyRender(args: {
           id: 'topo-dist-line', // FIX
           type: 'line', // FIX
           source: 'topo-distribution', // FIX
+          filter: ['!=', ['get', 'isStraight'], true], // GIS Issue 4: hanya rute jalan
           paint: {
             'line-color': '#3B82F6', // FIX: distribusi blue
             'line-width': 2.5, // FIX
             'line-opacity': 0.85, // FIX
           },
         }); // FIX
+        // GIS Issue 4: segmen fallback garis lurus (OSRM/Valhalla gagal) tampil
+        // dashed oranye — penanda "rute belum mengikuti jalan, perlu verifikasi"
+        safeAddLayer({
+          id: 'topo-dist-line-straight',
+          type: 'line',
+          source: 'topo-distribution',
+          filter: ['==', ['get', 'isStraight'], true],
+          paint: {
+            'line-color': '#F59E0B',
+            'line-width': 2.5,
+            'line-opacity': 0.9,
+            'line-dasharray': [2, 2],
+          },
+        });
 
         safeAddSource('topo-drop', {
           type: 'geojson', // FIX
@@ -1435,7 +1511,7 @@ export function useTopologyRender(args: {
         setRenderingTopology(false); // FIX
       }
     },
-    [clearTopology, inputMode, polygonPoints],
+    [clearTopology, inputMode, polygonPoints, customerPoints],
   );
 
   const renderStoredDesign = useCallback(

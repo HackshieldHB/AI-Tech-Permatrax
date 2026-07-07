@@ -76,7 +76,6 @@ export function useCalculation(args: {
 }) {
   const {
     mapRef,
-    clearTopology,
     renderTopology,
     inputMode,
     setInputMode,
@@ -125,14 +124,22 @@ export function useCalculation(args: {
     const map = mapRef.current; // FIX
     if (!map) return; // FIX
     clearCalcGraphics(); // FIX
-    clearTopology(); // FIX
+    // GIS Issue 6: JANGAN clearTopology() di sini — desain yang sudah dirender
+    // tetap tampil sampai kalkulasi baru benar-benar menggantikannya
+    // (renderTopology sudah melakukan clear sendiri saat mulai render).
+    // GIS Issue 6: sketch mode menelan klik peta (MapboxDraw) sehingga titik
+    // OLT/backbone tidak bisa ditandai — matikan otomatis saat mulai kalkulasi.
+    if (useDesignStore.getState().sketchMode) {
+      useDesignStore.getState().setSketchMode(false);
+      toast.info('✏️ Mode sketch dinonaktifkan sementara agar titik bisa ditandai');
+    }
     setCalcMode('backbone'); // FIX
     setBackbonePoint(null); // FIX
     setTargetPoint(null); // FIX
     setCalcResult(null); // FIX
     setNearestBackbone(null); // FIX
     toast.info('📍 Klik pada peta untuk menandai titik BACKBONE terdekat'); // FIX
-  }, [clearCalcGraphics, clearTopology]);
+  }, [clearCalcGraphics]);
 
   // FIX: polygon mode starts drawing instead
   const handleStartCalc = useCallback(() => {

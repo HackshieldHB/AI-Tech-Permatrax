@@ -5,55 +5,49 @@ import maplibregl from 'maplibre-gl';
 import type { NominatimResult } from './types';
 
 // ── TILE LAYERS ─────────────────────────────────────────
+// GIS Issue 2: kedua basemap hidup dalam SATU style dan diganti lewat
+// visibility toggle — bukan map.setStyle() yang menghapus seluruh layer
+// (desain/sketch/KMZ hilang). Bolak-balik OSM ↔ Satelit aman tanpa reload.
+const BASEMAP_STYLE = {
+  version: 8 as const,
+  sources: {
+    osm: {
+      type: 'raster' as const,
+      tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
+      tileSize: 256,
+      attribution: '© OpenStreetMap contributors',
+      maxzoom: 19,
+    },
+    satellite: {
+      type: 'raster' as const,
+      tiles: [
+        'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      ],
+      tileSize: 256,
+      attribution: '© Esri World Imagery',
+      maxzoom: 18,
+    },
+  },
+  layers: [
+    {
+      id: 'basemap-osm',
+      type: 'raster' as const,
+      source: 'osm',
+      layout: { visibility: 'visible' as const },
+    },
+    {
+      id: 'basemap-satellite',
+      type: 'raster' as const,
+      source: 'satellite',
+      layout: { visibility: 'none' as const },
+    },
+  ],
+};
+
+// Kept for the LeftSidebar toggle UI (label/icon per basemap type)
 const TILE_LAYERS = {
-  osm: {
-    label: 'OpenStreetMap', // FIX
-    icon: '🗺️', // FIX
-    style: {
-      version: 8 as const, // FIX
-      sources: {
-        osm: {
-          type: 'raster' as const, // FIX
-          tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'], // FIX
-          tileSize: 256, // FIX
-          attribution: '© OpenStreetMap contributors', // FIX
-          maxzoom: 19, // FIX
-        },
-      },
-      layers: [
-        {
-          id: 'osm', // FIX
-          type: 'raster' as const, // FIX
-          source: 'osm', // FIX
-        },
-      ],
-    },
-  },
-  satellite: {
-    label: 'Satelit', // FIX
-    icon: '🛰️', // FIX
-    style: {
-      version: 8 as const, // FIX
-      sources: {
-        satellite: {
-          type: 'raster' as const, // FIX
-          tiles: [
-            'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-          ], // FIX
-          tileSize: 256, // FIX
-          attribution: '© Esri World Imagery', // FIX
-          maxzoom: 18, // FIX
-        },
-      },
-      layers: [
-        {
-          id: 'satellite', // FIX
-          type: 'raster' as const, // FIX
-          source: 'satellite', // FIX
-        },
-      ],
-    },
-  },
+  osm: { label: 'OpenStreetMap', icon: '🗺️', style: BASEMAP_STYLE },
+  satellite: { label: 'Satelit', icon: '🛰️', style: BASEMAP_STYLE },
 };
 
 export type MapTileLayerBundle = typeof TILE_LAYERS;
@@ -82,7 +76,7 @@ export function useMapInstance(params: {
 
     const map = new maplibregl.Map({
       container: mapContainerRef.current, // FIX
-      style: TILE_LAYERS.osm.style, // FIX
+      style: BASEMAP_STYLE, // GIS Issue 2: single style with both basemaps
       center: [106.8456, -6.2088], // FIX: Jakarta default
       zoom: 11, // FIX
       maxZoom: 19, // FIX
@@ -169,19 +163,19 @@ export function useMapInstance(params: {
   }, []);
 
   // ── Switch map type ─────────────────────────────────────
+  // GIS Issue 2: toggle basemap visibility only — no setStyle(), so every
+  // design/sketch/KMZ/cluster layer stays on the map. Safe to switch back
+  // and forth (OSM ↔ Satelit) without losing anything.
   const switchMapType = useCallback((type: 'osm' | 'satellite') => {
     const map = mapRef.current; // FIX
     if (!map) return; // FIX
     setMapType(type); // FIX
-    map.setStyle(TILE_LAYERS[type].style); // FIX
-    map.once('style.load', () => {
-      // FIX: bump styleEpoch to trigger ALL layer useEffects
-      setStyleEpoch((prev) => prev + 1); // FIX
-      // FIX: small delay to ensure style fully loaded
-      setTimeout(() => {
-        setStyleEpoch((prev) => prev + 1); // FIX
-      }, 200); // FIX
-    }); // FIX
+    try {
+      map.setLayoutProperty('basemap-osm', 'visibility', type === 'osm' ? 'visible' : 'none');
+      map.setLayoutProperty('basemap-satellite', 'visibility', type === 'satellite' ? 'visible' : 'none');
+    } catch {
+      /* layers not ready yet — initial style still loading */
+    }
   }, []);
 
   return {
