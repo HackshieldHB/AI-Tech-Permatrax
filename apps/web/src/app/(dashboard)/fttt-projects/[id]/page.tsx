@@ -796,6 +796,73 @@ function JaminanSection({ project, onRefresh }: { project: FtttProject; onRefres
 
 // ─── Documentation & Acceptance — per-lifecycle card-based section ───────────
 // Admin Project uploads; PM FTTT reviews and approves/rejects.
+// ─── iFORTE Project Preparation: Supporting Document (Opsional) ───────────────
+// Upload PDF/Excel sebagai referensi project; BUKAN syarat lanjut fase.
+// Material tidak dikelola di PermaTrax (memakai material milik iFORTE).
+function IforteSupportingDocSection({ project, onRefresh }: { project: FtttProject; onRefresh: () => void }) {
+  const { user } = useAuthStore();
+  const [uploading, setUploading] = useState(false);
+  const [notes, setNotes] = useState('');
+  const fileRef = useRef<HTMLInputElement>(null);
+  const doc = project.reconDocs?.find((d) => d.docKey === 'SUPPORTING_DOC_IFORTE') ?? null;
+
+  const handleUpload = async (file: File) => {
+    setUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append('docKey', 'SUPPORTING_DOC_IFORTE');
+      if (notes) fd.append('notes', notes);
+      fd.append('file', file);
+      const res = await apiFetch(`/fttt-projects/${project.id}/recon-docs`, { method: 'POST', body: fd }, user?.id);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal upload');
+      toast.success('Supporting Document tersimpan sebagai histori project');
+      setNotes(''); onRefresh();
+    } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
+    finally { setUploading(false); }
+  };
+
+  return (
+    <div>
+      <p style={{ fontWeight: 600, fontSize: 14, marginBottom: 4 }}>📎 Supporting Document (Opsional)</p>
+      <p style={{ fontSize: 12, color: '#57606a', marginBottom: 12 }}>
+        Unggah dokumen pendukung (PDF / Excel) sebagai referensi project bila diperlukan. Upload bersifat opsional —
+        fase dapat dilanjutkan tanpa dokumen ini. Material tidak dikelola di PermaTrax karena menggunakan material milik iFORTE.
+      </p>
+
+      {doc ? (
+        <div style={{ background: '#F6F8FA', borderRadius: 10, padding: 12, marginBottom: 10, border: '1px solid #EAEEF2', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div>
+            <span style={{ fontSize: 12, fontWeight: 700 }}>✓ Supporting Document terunggah</span>
+            {doc.notes && <p style={{ margin: '2px 0 0', fontSize: 11, color: '#57606a' }}>📝 {doc.notes}</p>}
+            {doc.uploadedBy && <p style={{ margin: '2px 0 0', fontSize: 10, color: '#8c959f' }}>oleh {doc.uploadedBy.name}</p>}
+          </div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            {doc.fileUrl && <a href={fixFileUrl(doc.fileUrl)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: '#0969DA' }}>Lihat</a>}
+            <button type="button" onClick={() => fileRef.current?.click()} disabled={uploading}
+              style={{ padding: '4px 10px', borderRadius: 6, border: 'none', background: '#FFA500', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 11 }}>
+              {uploading ? '…' : '🔄 Ganti'}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div style={{ border: '1.5px dashed #D0D7DE', borderRadius: 10, padding: 14, marginBottom: 10, background: '#F9FAFB' }}>
+          <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Catatan dokumen (opsional)…"
+            style={{ width: '100%', padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12, marginBottom: 8, boxSizing: 'border-box' }} />
+          <button type="button" onClick={() => fileRef.current?.click()} disabled={uploading}
+            style={{ padding: '7px 14px', borderRadius: 6, border: 'none', background: '#0969DA', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 12 }}>
+            {uploading ? 'Mengunggah…' : '+ Upload Supporting Document (PDF / Excel)'}
+          </button>
+        </div>
+      )}
+      <input ref={fileRef} type="file" accept=".pdf,.xlsx,.xls" style={{ display: 'none' }}
+        onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleUpload(f); e.target.value = ''; }} />
+      <p style={{ fontSize: 11, color: '#8c959f' }}>
+        ✅ Fase Project Preparation dapat diselesaikan kapan saja — Supporting Document bukan persyaratan.
+      </p>
+    </div>
+  );
+}
+
 function DocumentationSection({ project, onRefresh, userRole }: { project: FtttProject; onRefresh: () => void; userRole: string }) {
   const { user } = useAuthStore();
   // Admin uploads; PM FTTT reviews/approves/rejects
@@ -1100,7 +1167,7 @@ const SPAN_LOG_CATEGORY_LABELS: Record<string, string> = {
   HANDHOLE: 'Handhole', JEMBATAN: 'Jembatan', JOIN_TERMINASI: 'Join Terminasi', MARKING_POS: 'Marking Pos',
 };
 
-function SpanSection({ project, onRefresh, isAdmin }: { project: FtttProject; onRefresh: () => void; isAdmin: boolean }) {
+function SpanSection({ project, onRefresh, isAdmin, canLog }: { project: FtttProject; onRefresh: () => void; isAdmin: boolean; canLog?: boolean }) {
   const { user } = useAuthStore();
   const spans: FtttSpan[] = project.spans ?? [];
   const [newSpanNumber, setNewSpanNumber] = useState('');
@@ -1109,9 +1176,13 @@ function SpanSection({ project, onRefresh, isAdmin }: { project: FtttProject; on
   const [uploadingLog, setUploadingLog] = useState<string | null>(null);
   const [logCategory, setLogCategory] = useState<string>('GALIAN');
   const [logCaption, setLogCaption] = useState('');
+  // iFORTE GENERAL: meter pekerjaan yang diselesaikan — wajib diisi per log harian
+  const [logMeter, setLogMeter] = useState('');
   const [uploadProgress, setUploadProgress] = useState('');
   const logFileRef = useRef<HTMLInputElement>(null);
   const logFolderRef = useRef<HTMLInputElement>(null);
+  // iFORTE: PM/Surveyor juga boleh mengisi Daily Log (backend memvalidasi role)
+  const mayLog = canLog ?? isAdmin;
 
   const handleCreateSpan = async () => {
     if (!newSpanNumber.trim()) return;
@@ -1140,6 +1211,12 @@ function SpanSection({ project, onRefresh, isAdmin }: { project: FtttProject; on
   const handleAddLogs = async (spanId: string, files: FileList | File[]) => {
     const arr = Array.from(files).filter((f) => f.size > 0);
     if (arr.length === 0) return;
+    // iFORTE GENERAL: meter wajib diisi setiap kali membuat log implementasi
+    const meterVal = Number(logMeter);
+    if (logMeter.trim() === '' || Number.isNaN(meterVal) || meterVal < 0) {
+      toast.error('Isi jumlah meter yang dikerjakan pada log ini (boleh 0 bila tidak ada penambahan)');
+      return;
+    }
     setUploadingLog(spanId);
     let ok = 0;
     try {
@@ -1148,12 +1225,14 @@ function SpanSection({ project, onRefresh, isAdmin }: { project: FtttProject; on
         const fd = new FormData();
         fd.append('category', logCategory);
         if (logCaption) fd.append('caption', logCaption);
+        // meter hanya dikirim pada file PERTAMA agar tidak terhitung ganda
+        if (i === 0) fd.append('meterDone', String(meterVal));
         fd.append('file', arr[i]);
         const res = await apiFetch(`/fttt-projects/spans/${spanId}/logs`, { method: 'POST', body: fd }, user?.id);
         if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error((e as { message?: string }).message ?? 'Gagal'); }
         ok++;
       }
-      setLogCaption('');
+      setLogCaption(''); setLogMeter('');
       toast.success(arr.length > 1 ? `${ok} file berhasil diunggah` : 'Log span berhasil diunggah');
       onRefresh();
     } catch (err: unknown) {
@@ -1176,7 +1255,7 @@ function SpanSection({ project, onRefresh, isAdmin }: { project: FtttProject; on
       <p style={{ fontWeight: 700, fontSize: 13, marginBottom: 8 }}>📍 Daily Implementation Log — Span</p>
 
       {/* Create Span */}
-      {isAdmin && (
+      {mayLog && (
         <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
           <input value={newSpanNumber} onChange={(e) => setNewSpanNumber(e.target.value)}
             placeholder="Nomor Span (mis. SP-001)"
@@ -1189,7 +1268,7 @@ function SpanSection({ project, onRefresh, isAdmin }: { project: FtttProject; on
       )}
 
       {spans.length === 0 && (
-        <p style={{ fontSize: 12, color: '#57606a' }}>Belum ada span. {isAdmin ? 'Tambahkan span pertama di atas.' : 'Admin akan membuat span.'}</p>
+        <p style={{ fontSize: 12, color: '#57606a' }}>Belum ada span. {mayLog ? 'Tambahkan span pertama di atas.' : 'Admin akan membuat span.'}</p>
       )}
 
       {spans.map((span) => (
@@ -1234,6 +1313,11 @@ function SpanSection({ project, onRefresh, isAdmin }: { project: FtttProject; on
                   <span style={{ fontSize: 11, fontWeight: 600, minWidth: 100 }}>{SPAN_LOG_CATEGORY_LABELS[log.category] ?? log.category}</span>
                   <div style={{ flex: 1 }}>
                     {log.caption && <span style={{ fontSize: 11, color: '#57606a' }}>{log.caption}</span>}
+                    {Number(log.meterDone ?? 0) > 0 && (
+                      <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: '#0969DA', background: '#EFF6FF', padding: '1px 6px', borderRadius: 999 }}>
+                        +{Number(log.meterDone).toLocaleString('id-ID')} m
+                      </span>
+                    )}
                     <span style={{ display: 'block', fontSize: 10, color: '#8c959f' }}>🕒 {fmtDateTimeWIB(log.createdAt)}</span>
                   </div>
                   {log.fileUrl && (
@@ -1247,7 +1331,7 @@ function SpanSection({ project, onRefresh, isAdmin }: { project: FtttProject; on
               ))}
 
               {/* Add log form */}
-              {isAdmin && (
+              {mayLog && (
                 <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                   <select value={logCategory} onChange={(e) => setLogCategory(e.target.value)}
                     style={{ padding: '5px 8px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 11 }}>
@@ -1255,6 +1339,11 @@ function SpanSection({ project, onRefresh, isAdmin }: { project: FtttProject; on
                       <option key={k} value={k}>{v}</option>
                     ))}
                   </select>
+                  {/* iFORTE GENERAL: meter dikerjakan — wajib per log harian */}
+                  <input type="number" min={0} value={logMeter} onChange={(e) => setLogMeter(e.target.value)}
+                    placeholder="Meter dikerjakan *"
+                    title="Jumlah meter yang berhasil dikerjakan pada log ini (wajib)"
+                    style={{ width: 130, padding: '5px 8px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 11 }} />
                   <input value={logCaption} onChange={(e) => setLogCaption(e.target.value)}
                     placeholder="Keterangan (opsional)"
                     style={{ flex: 1, minWidth: 120, padding: '5px 8px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 11 }} />
@@ -1466,9 +1555,11 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
   const isPmFttt     = userRole === 'PM_FTTT';
   const isTI         = project.ftttCompany === 'TELKOM_INFRA';
   const isPST        = project.ftttCompany === 'PST';
+  const isIforte     = project.ftttCompany === 'IFORTE';
   // JLM: PST chooses implementation type — Galian (span-based) vs KU (existing flow)
   const implType     = project.implementationType ?? null;
-  const useSpanFlow  = isTI || (isPST && implType === 'GALIAN');
+  // iFORTE: Daily Log Span adalah bagian dari business process Implementation
+  const useSpanFlow  = isTI || isIforte || (isPST && implType === 'GALIAN');
   // Issue 2: TI Implementation — Admin only; PST/iFORTE — Surveyor/PM/Admin
   const canUpload    = isTI ? isAdmin : (isSurveyor || isAdmin || isPmFttt);
   const canMonitoring = isAdmin;
@@ -1492,7 +1583,7 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
   const implProg = project.phaseProgresses.find((p) => p.phase === 'IMPLEMENTATION');
   const lapanganDone = implProg?.notes === 'SURVEYOR_DONE';
 
-  const [logType, setLogType] = useState<'PHOTO' | 'MONITORING_DOC' | 'NOTE'>('PHOTO');
+  const [logType, setLogType] = useState<'PHOTO' | 'MONITORING_DOC' | 'NOTE' | 'RFSD'>('PHOTO');
   const [caption, setCaption] = useState('');
   const [notes, setNotes]   = useState('');
   const [uploading, setUploading]   = useState(false);
@@ -1502,7 +1593,36 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
   const [implTab, setImplTab] = useState<'daily' | 'transaction' | 'activity'>('daily');
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const LOG_LABELS = { PHOTO: '📷 Foto Progress', MONITORING_DOC: '📊 Dokumen Monitoring', NOTE: '📝 Catatan Progress' };
+  const LOG_LABELS: Record<string, string> = { PHOTO: '📷 Foto Progress', MONITORING_DOC: '📊 Dokumen Monitoring', NOTE: '📝 Catatan Progress', RFSD: '📦 RFSD (Ready For Sales Document)' };
+
+  // ── iFORTE GENERAL: Progress (%) berdasarkan panjang implementasi (meter) ──
+  const totalPanjang = Number(project.totalPanjangMeter ?? 0);
+  const meterDoneTotal = (project.spans ?? []).reduce(
+    (sum, sp) => sum + sp.spanLogs.reduce((s, l) => s + Number(l.meterDone ?? 0), 0), 0,
+  );
+  const progressPct = totalPanjang > 0 ? Math.min(100, (meterDoneTotal / totalPanjang) * 100) : null;
+  const [editingTotal, setEditingTotal] = useState(false);
+  const [totalInput, setTotalInput] = useState('');
+  const [savingTotal, setSavingTotal] = useState(false);
+  const canSetTotal = isAdmin || isPmFttt;
+
+  const handleSaveTotal = async () => {
+    const m = Number(totalInput);
+    if (!m || m <= 0) { toast.error('Total panjang pekerjaan harus lebih dari 0'); return; }
+    setSavingTotal(true);
+    try {
+      const res = await apiFetch(`/fttt-projects/${project.id}/total-panjang`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ meters: m }),
+      }, user?.id);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
+      toast.success('Total panjang pekerjaan disimpan');
+      setEditingTotal(false); onRefresh();
+    } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
+    finally { setSavingTotal(false); }
+  };
+
+  // iFORTE: RFSD sudah diunggah? (indikator pekerjaan fisik selesai)
+  const hasRfsd = (project.implementationLogs ?? []).some((l) => l.logType === 'RFSD');
 
   const handleMarkDone = async () => {
     if (!confirm('Tandai pekerjaan lapangan selesai? Task akan diteruskan ke Admin untuk upload Dokumen Monitoring.')) return;
@@ -1598,6 +1718,63 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
         </div>
       )}
 
+      {/* iFORTE GENERAL: Total Panjang Pekerjaan (meter) + Progress (%) */}
+      {useSpanFlow && (
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center', border: '1px solid #D0D7DE', borderRadius: 10, padding: '10px 14px', marginBottom: 12, background: '#F6F8FA' }}>
+          <div style={{ flex: 1, minWidth: 200 }}>
+            <p style={{ margin: 0, fontSize: 11, fontWeight: 700, color: '#57606a', textTransform: 'uppercase' }}>Total Panjang Pekerjaan</p>
+            {editingTotal ? (
+              <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+                <input type="number" min={1} value={totalInput} onChange={(e) => setTotalInput(e.target.value)}
+                  placeholder="mis. 500"
+                  style={{ width: 110, padding: '4px 8px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12 }} />
+                <button type="button" onClick={() => void handleSaveTotal()} disabled={savingTotal}
+                  style={{ padding: '4px 10px', borderRadius: 6, border: 'none', background: '#1a7f37', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 11 }}>
+                  {savingTotal ? '…' : 'Simpan'}
+                </button>
+                <button type="button" onClick={() => setEditingTotal(false)}
+                  style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid #D0D7DE', background: '#fff', cursor: 'pointer', fontSize: 11 }}>
+                  Batal
+                </button>
+              </div>
+            ) : (
+              <p style={{ margin: '2px 0 0', fontSize: 16, fontWeight: 800, color: '#111' }}>
+                {totalPanjang > 0 ? `${totalPanjang.toLocaleString('id-ID')} meter` : 'Belum diatur'}
+                {canSetTotal && (
+                  <button type="button" onClick={() => { setTotalInput(totalPanjang > 0 ? String(totalPanjang) : ''); setEditingTotal(true); }}
+                    style={{ marginLeft: 8, padding: '2px 8px', borderRadius: 6, border: '1px solid #D0D7DE', background: '#fff', cursor: 'pointer', fontSize: 10, fontWeight: 600, color: '#0969DA' }}>
+                    ✏️ {totalPanjang > 0 ? 'Ubah' : 'Atur'}
+                  </button>
+                )}
+              </p>
+            )}
+          </div>
+          <div style={{ flex: 1, minWidth: 220 }}>
+            <p style={{ margin: 0, fontSize: 11, fontWeight: 700, color: '#57606a', textTransform: 'uppercase' }}>Progress Pekerjaan</p>
+            {progressPct != null ? (
+              <div style={{ marginTop: 6 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, marginBottom: 3 }}>
+                  <span style={{ color: '#57606a' }}>{meterDoneTotal.toLocaleString('id-ID')} m selesai</span>
+                  <span style={{ fontWeight: 800, color: progressPct >= 100 ? '#1a7f37' : '#0969DA' }}>{progressPct.toFixed(progressPct % 1 === 0 ? 0 : 1)}%</span>
+                </div>
+                <div style={{ height: 8, borderRadius: 999, background: '#EAEEF2', overflow: 'hidden' }}>
+                  <div style={{ height: '100%', width: `${progressPct}%`, background: progressPct >= 100 ? '#1a7f37' : '#0969DA', borderRadius: 999, transition: 'width 300ms' }} />
+                </div>
+              </div>
+            ) : (
+              <p style={{ margin: '2px 0 0', fontSize: 12, color: '#8c959f' }}>Atur total panjang pekerjaan untuk melihat progress (%)</p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* iFORTE: status RFSD — wajib sebelum lanjut ke Documentation & Acceptance */}
+      {isIforte && (
+        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 10px', borderRadius: 999, background: hasRfsd ? '#DAFBE1' : '#FFF8C5', fontSize: 11, fontWeight: 600, color: hasRfsd ? '#1a7f37' : '#9a6700', marginBottom: 10 }}>
+          {hasRfsd ? '📦 RFSD sudah diunggah — fase dapat diselesaikan' : '📦 RFSD (Ready For Sales Document) wajib diunggah sebelum lanjut ke Documentation & Acceptance'}
+        </div>
+      )}
+
       {/* JLM: Implementation tabs — Daily Log Span / Transaction Log / Log Aktivitas */}
       <div style={{ display: 'flex', gap: 4, marginBottom: 12, borderBottom: '1px solid #EAEEF2' }}>
         {([
@@ -1614,8 +1791,11 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
 
       {implTab === 'transaction' && <TransactionLogSection project={project} onRefresh={onRefresh} userRole={userRole} />}
 
-      {/* JLM: span-based daily log for TI and PST-Galian */}
-      {implTab === 'daily' && useSpanFlow && <SpanSection project={project} onRefresh={onRefresh} isAdmin={isAdmin} />}
+      {/* JLM: span-based daily log for TI, PST-Galian, dan iFORTE */}
+      {implTab === 'daily' && useSpanFlow && (
+        <SpanSection project={project} onRefresh={onRefresh} isAdmin={isAdmin}
+          canLog={isAdmin || (isIforte && (isPmFttt || isSurveyor))} />
+      )}
 
       {implTab === 'activity' && (
       <>
@@ -1627,7 +1807,7 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
       )}
       {logs.map((log) => (
         <div key={log.id} style={{ background: '#F6F8FA', borderRadius: 8, padding: 10, marginBottom: 6, display: 'flex', gap: 10, alignItems: 'flex-start' }}>
-          <span style={{ fontSize: 18 }}>{log.logType === 'PHOTO' ? '📷' : log.logType === 'MONITORING_DOC' ? '📊' : '📝'}</span>
+          <span style={{ fontSize: 18 }}>{log.logType === 'PHOTO' ? '📷' : log.logType === 'MONITORING_DOC' ? '📊' : log.logType === 'RFSD' ? '📦' : '📝'}</span>
           <div style={{ flex: 1 }}>
             <p style={{ margin: 0, fontSize: 12, fontWeight: 600 }}>{LOG_LABELS[log.logType]}</p>
             {log.caption && <p style={{ margin: '2px 0 0', fontSize: 12 }}>{log.caption}</p>}
@@ -1701,6 +1881,7 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
               style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12 }}>
               {canUpload && <option value="PHOTO">📷 Foto Progress</option>}
               {canMonitoring && <option value="MONITORING_DOC">📊 Dokumen Monitoring (Excel/PDF)</option>}
+              {isIforte && canUpload && <option value="RFSD">📦 RFSD — Ready For Sales Document</option>}
               <option value="NOTE">📝 Catatan Progress</option>
             </select>
             {!canMonitoring && userRole !== 'PM_FTTT' && (
@@ -1729,8 +1910,8 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
                 style={{ display: 'none' }}
                 onChange={(e) => { if (e.target.files && e.target.files.length > 0) void handleAdd(e.target.files); }} />
               <button type="button" onClick={() => fileRef.current?.click()} disabled={uploading}
-                style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: '#0969DA', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 12 }}>
-                {uploading ? (uploadProgress || 'Mengunggah…') : logType === 'PHOTO' ? '📷 Upload Foto (dapat pilih banyak)' : '+ Upload Dokumen'}
+                style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: logType === 'RFSD' ? '#1a7f37' : '#0969DA', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 12 }}>
+                {uploading ? (uploadProgress || 'Mengunggah…') : logType === 'PHOTO' ? '📷 Upload Foto (dapat pilih banyak)' : logType === 'RFSD' ? '📦 Upload RFSD' : '+ Upload Dokumen'}
               </button>
               {logType === 'PHOTO' && <span style={{ fontSize: 11, color: '#57606a', alignSelf: 'center' }}>Pilih 1 atau lebih foto • maks 20 MB/foto</span>}
             </>
@@ -1757,9 +1938,13 @@ const DOCUMENTATION_DOCS: Record<string, {
     { key: 'BAUT',            label: 'BAUT',           desc: 'Berita Acara Uji Terima — upload file',               generateForm: false, required: true },
     { key: 'BAUT_REKONSILIASI', label: 'BA Rekonsiliasi', desc: 'Berita Acara Rekonsiliasi — upload file',          generateForm: false, required: true },
   ],
+  // iFORTE (Testing Issues iForte): ATP + Dokumentasi Pekerjaan + Evidence wajib
+  // (approval PM lalu Admin); Punch List opsional — hanya bila ada temuan ATP fisik
   IFORTE: [
-    { key: 'ATP',     label: 'ATP',      desc: 'Acceptance Test Protocol dari iFORTE',       generateForm: false, required: true },
-    { key: 'EVIDENCE', label: 'Evidence', desc: 'Dokumentasi evidence dan foto project',     generateForm: false, required: true },
+    { key: 'ATP',         label: 'ATP',                   desc: 'Dokumen ATP (Acceptance Test Protocol) dari iFORTE',            generateForm: false, required: true },
+    { key: 'DOKUMENTASI', label: 'Dokumentasi Pekerjaan', desc: 'Dokumentasi hasil pekerjaan implementasi',                      generateForm: false, required: true },
+    { key: 'EVIDENCE',    label: 'Evidence',              desc: 'Evidence pendukung dan foto project',                           generateForm: false, required: true },
+    { key: 'PUNCH_LIST',  label: 'Punch List (Opsional)', desc: 'Temuan pada saat pelaksanaan ATP fisik — hanya bila ada temuan', generateForm: false, required: false },
   ],
 };
 
@@ -1791,13 +1976,13 @@ const RECON_DOCS: Record<string, {
     { key: 'GOOD_RECEIPT_PST', label: 'Good Receipt',  desc: 'Completion Cert. GERN & Lampiran Smile',                 uploaderRole: ['ADMIN', 'GENERAL_MANAGER'], requiresApproval: true },
     // NOTE: Invoice PST moved to Project Closing phase
   ],
+  // iFORTE (Testing Issues iForte): Endorsement (wajib, approval) + BAST/Termin MCV
+  // (wajib) + BA Justifikasi (opsional, hanya bila BOQ ILT ≠ BOQ iFORTE).
+  // PO Final terbit via sistem iFORTE (tidak diupload); Invoice pindah ke Project Closing.
   IFORTE: [
-    { key: 'PUNCHLIST',   label: 'Punchlist',              desc: 'Minor issue ditemukan — catatan & foto sebelum & sesudah diperbaiki', uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: false },
-    { key: 'ENDORSEMENT', label: 'Endorsement',            desc: 'Rekonsiliasi BOQ versi iFORTE bersama Surveyor',            uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: true },
-    { key: 'PO_FINAL',    label: 'PO Final',               desc: 'Diunggah setelah proses Sanggah clear',                     uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: false },
-    { key: 'PSS',         label: 'PSS',                    desc: 'Upload dokumen ke sistem iFORTE',                           uploaderRole: ['SURVEYOR_FTTT'], requiresApproval: false },
-    { key: 'MCV',         label: 'MCV',                    desc: 'Update progress di sistem iFORTE dengan dokumen pendukung',  uploaderRole: ['ADMIN'], requiresApproval: false },
-    { key: 'INVOICE_IFORTE', label: 'Invoice',             desc: 'Tagihan sesuai termin',                                     uploaderRole: ['FINANCE'], requiresApproval: false },
+    { key: 'ENDORSEMENT',    label: 'Endorsement',               desc: 'Dokumen Endorsement — diajukan juga pada sistem iFORTE',                      uploaderRole: ['SURVEYOR_FTTT', 'PM_FTTT', 'ADMIN'], requiresApproval: true },
+    { key: 'BA_JUSTIFIKASI', label: 'BA Justifikasi (Opsional)', desc: 'Hanya bila terdapat perbedaan antara BOQ ILT dan BOQ iFORTE',                 uploaderRole: ['SURVEYOR_FTTT', 'PM_FTTT', 'ADMIN'], requiresApproval: false },
+    { key: 'BAST_TERMIN_MCV', label: 'BAST / Termin MCV',        desc: 'Dasar proses penagihan (billing) — invoice dibuat berdasarkan dokumen ini',   uploaderRole: ['SURVEYOR_FTTT', 'PM_FTTT', 'ADMIN'], requiresApproval: false },
   ],
 };
 
@@ -2074,6 +2259,24 @@ function ClosingSection({ project, onRefresh, userRole }: { project: FtttProject
   const invoicePstClosing      = project.reconDocs?.find((d) => d.docKey === 'INVOICE_PST_CLOSING') ?? null;
   const jaminanPemeliharaanPst = project.reconDocs?.find((d) => d.docKey === 'JAMINAN_PEMELIHARAAN_PST') ?? null;
   const jaminanPelaksanaanPst  = project.reconDocs?.find((d) => d.docKey === 'JAMINAN_PELAKSANAAN_PST') ?? null;
+  // iFORTE closing (Testing Issues iForte): Finance uploads Invoice (dasar: BAST/Termin MCV)
+  const invoiceIforte          = project.reconDocs?.find((d) => d.docKey === 'INVOICE_IFORTE') ?? null;
+  const paymentStatus          = project.paymentStatus ?? null;
+  const [settingPayment, setSettingPayment] = useState(false);
+  const invoiceIforteRef       = useRef<HTMLInputElement>(null);
+
+  const handleSetPayment = async (status: 'UNPAID' | 'PAID') => {
+    setSettingPayment(true);
+    try {
+      const res = await apiFetch(`/fttt-projects/${project.id}/payment-status`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }),
+      }, user?.id);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
+      toast.success(status === 'PAID' ? 'Pembayaran ditandai LUNAS' : 'Status pembayaran: Belum Lunas');
+      onRefresh();
+    } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
+    finally { setSettingPayment(false); }
+  };
 
   const [logType, setLogType] = useState<'BAST_II' | 'EVIDENCE' | 'NOTE'>('BAST_II');
   const [caption, setCaption] = useState('');
@@ -2219,43 +2422,88 @@ function ClosingSection({ project, onRefresh, userRole }: { project: FtttProject
         </div>
       )}
 
-      {/* Maintenance period confirmation gate — iFORTE only (BAST II / Evidence) */}
-      {isIforte && canUpload && !maintenanceConfirmed && (
-        <div style={{ background: '#FFF8C5', border: '1px solid #d4a017', borderRadius: 10, padding: 14, marginBottom: 16 }}>
-          <p style={{ margin: '0 0 6px', fontWeight: 700, fontSize: 13, color: '#9a6700' }}>
-            ⚠️ Konfirmasi Masa Pemeliharaan
-          </p>
-          <p style={{ margin: '0 0 10px', fontSize: 12, color: '#9a6700' }}>
-            Dokumen BAST II, Evidence Serah Terima, dan Catatan Penutupan hanya dapat diproses setelah masa pemeliharaan project selesai. Pastikan seluruh kewajiban masa pemeliharaan telah terpenuhi sebelum melanjutkan.
-          </p>
-          <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer' }}>
-            <input type="checkbox" checked={maintenanceConfirmed} onChange={(e) => setMaintenanceConfirmed(e.target.checked)}
-              style={{ marginTop: 2, width: 16, height: 16, cursor: 'pointer' }} />
-            <span style={{ fontSize: 12, color: '#9a6700', fontWeight: 600 }}>
-              Saya konfirmasi bahwa masa pemeliharaan project telah selesai dan proses Project Closing dapat dilanjutkan.
-            </span>
-          </label>
-        </div>
-      )}
-      {isIforte && canUpload && maintenanceConfirmed && (
-        <div style={{ background: '#DAFBE1', border: '1px solid #2DA44E', borderRadius: 8, padding: 10, marginBottom: 14, fontSize: 12, color: '#1a7f37' }}>
-          ✅ Masa pemeliharaan dikonfirmasi — seluruh aktivitas penutupan project dapat dilakukan.
-        </div>
-      )}
-      {!canUpload && !isFinance && isIforte && (
-        <div style={{ background: '#F6F8FA', border: '1px solid #D0D7DE', borderRadius: 8, padding: 10, marginBottom: 14, fontSize: 12, color: '#57606a' }}>
-          🔒 Pengelolaan dokumen Project Closing hanya dapat dilakukan oleh Admin Project.
-        </div>
-      )}
       {!isFinance && (isTI || isPST) && (
         <div style={{ background: '#F6F8FA', border: '1px solid #D0D7DE', borderRadius: 8, padding: 10, marginBottom: 14, fontSize: 12, color: '#57606a' }}>
           ℹ️ Dokumen Project Closing diunggah oleh Finance.
         </div>
       )}
-      {isFinance && !canUpload && isIforte && (
-        <div style={{ background: '#F0F8FF', border: '1px solid #0969DA', borderRadius: 8, padding: 10, marginBottom: 14, fontSize: 12, color: '#0969DA' }}>
-          ℹ️ Finance dapat meng-upload dokumen Jaminan Pemeliharaan dan Invoice Final kapan saja pada fase Project Closing.
-        </div>
+
+      {/* ── iFORTE (Testing Issues iForte): Invoice + monitoring status pembayaran ── */}
+      {isIforte && (
+        <>
+          {!isFinance && (
+            <div style={{ background: '#F6F8FA', border: '1px solid #D0D7DE', borderRadius: 8, padding: 10, marginBottom: 14, fontSize: 12, color: '#57606a' }}>
+              ℹ️ Invoice diunggah oleh Finance berdasarkan dokumen BAST / Termin MCV, kemudian status pembayaran dimonitor hingga LUNAS.
+            </div>
+          )}
+
+          {/* Invoice */}
+          <div style={{ background: '#F6F8FA', borderRadius: 10, padding: 12, marginBottom: 10, border: '1px solid #EAEEF2' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <span style={{ fontSize: 13, fontWeight: 700 }}>🧾 Invoice</span>
+                  <span style={{ fontSize: 11, color: '#57606a', background: '#EDF2F4', padding: '2px 6px', borderRadius: 4 }}>Finance</span>
+                  {invoiceIforte
+                    ? <span style={{ fontSize: 10, fontWeight: 700, color: '#1a7f37' }}>✓ Diunggah</span>
+                    : <span style={{ fontSize: 10, color: '#cf222e', fontWeight: 600 }}>⚠️ WAJIB — belum diunggah</span>}
+                </div>
+                <p style={{ margin: '3px 0 0', fontSize: 11, color: '#57606a' }}>Diterbitkan berdasarkan dokumen BAST / Termin MCV</p>
+                {invoiceIforte?.uploadedBy && <p style={{ margin: '2px 0 0', fontSize: 10, color: '#8c959f' }}>oleh {invoiceIforte.uploadedBy.name}</p>}
+              </div>
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
+                {invoiceIforte?.fileUrl && <a href={fixFileUrl(invoiceIforte.fileUrl)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: '#0969DA' }}>Lihat</a>}
+                {isFinance && (
+                  <>
+                    <input ref={invoiceIforteRef} type="file" accept=".pdf,.xlsx,.xls,.jpg,.jpeg,.png" style={{ display: 'none' }}
+                      onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleReconUpload('INVOICE_IFORTE', f); }} />
+                    <button type="button" onClick={() => invoiceIforteRef.current?.click()} disabled={uploadingReconKey === 'INVOICE_IFORTE'}
+                      style={{ padding: '4px 10px', borderRadius: 6, border: 'none', background: invoiceIforte ? '#FFA500' : '#0969DA', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 11 }}>
+                      {uploadingReconKey === 'INVOICE_IFORTE' ? '…' : invoiceIforte ? '🔄 Ganti' : '+ Upload'}
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Monitoring status pembayaran */}
+          <div style={{ background: '#F6F8FA', borderRadius: 10, padding: 12, marginBottom: 10, border: '1px solid #EAEEF2' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+              <div>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <span style={{ fontSize: 13, fontWeight: 700 }}>💳 Status Pembayaran</span>
+                  <span style={{
+                    fontSize: 10, fontWeight: 800, padding: '2px 8px', borderRadius: 999,
+                    background: paymentStatus === 'PAID' ? '#DAFBE1' : '#FFF8C5',
+                    color: paymentStatus === 'PAID' ? '#1a7f37' : '#9a6700',
+                  }}>
+                    {paymentStatus === 'PAID' ? '✓ LUNAS (PAID)' : '⏳ BELUM LUNAS'}
+                  </span>
+                </div>
+                <p style={{ margin: '3px 0 0', fontSize: 11, color: '#57606a' }}>
+                  Project berubah menjadi Closed setelah invoice diunggah dan pembayaran ditandai LUNAS, lalu Admin menyelesaikan fase.
+                </p>
+              </div>
+              {(isFinance || canUpload) && (
+                <div style={{ display: 'flex', gap: 6 }}>
+                  {paymentStatus !== 'PAID' ? (
+                    <button type="button" onClick={() => void handleSetPayment('PAID')} disabled={settingPayment || !invoiceIforte}
+                      title={!invoiceIforte ? 'Upload Invoice terlebih dahulu' : ''}
+                      style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: !invoiceIforte ? '#8C959F' : '#1a7f37', color: '#fff', fontWeight: 700, cursor: !invoiceIforte ? 'not-allowed' : 'pointer', fontSize: 12 }}>
+                      {settingPayment ? '…' : '✅ Tandai LUNAS'}
+                    </button>
+                  ) : (
+                    <button type="button" onClick={() => void handleSetPayment('UNPAID')} disabled={settingPayment}
+                      style={{ padding: '6px 14px', borderRadius: 6, border: '1px solid #D0D7DE', background: '#fff', color: '#57606a', fontWeight: 600, cursor: 'pointer', fontSize: 12 }}>
+                      {settingPayment ? '…' : '↩️ Batalkan LUNAS'}
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </>
       )}
 
       {/* ── C5-Issue3: Jaminan Pemeliharaan + Invoice Final (Telkom Infra only, Finance) ── */}
@@ -2364,8 +2612,9 @@ function ClosingSection({ project, onRefresh, userRole }: { project: FtttProject
         </>
       )}
 
-      {/* ── iFORTE only: BAST II / Evidence / Catatan ── */}
-      {isIforte && (
+      {/* ── iFORTE legacy: BAST II / Evidence / Catatan — hanya tampil untuk project
+          lama yang sudah punya data closing log (proses baru memakai Invoice + Payment) ── */}
+      {isIforte && logs.length > 0 && (
         <>
           {/* BAST II */}
           <div style={{ background: '#F6F8FA', borderRadius: 10, padding: 12, marginBottom: 10, border: '1px solid #EAEEF2' }}>
@@ -2728,6 +2977,11 @@ export default function FtttProjectDetailPage() {
           {/* Preparation — Jaminan for Telkom Infra */}
           {project.currentPhase === 'PREPARATION' && project.ftttCompany === 'TELKOM_INFRA' && (
             <JaminanSection project={project} onRefresh={load} />
+          )}
+
+          {/* Preparation — iFORTE: Supporting Document (Opsional) */}
+          {project.currentPhase === 'PREPARATION' && project.ftttCompany === 'IFORTE' && (
+            <IforteSupportingDocSection project={project} onRefresh={load} />
           )}
 
           {/* C6-PST5: Procurement phase — PM uploads PO (PST only) */}

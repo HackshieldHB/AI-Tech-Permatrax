@@ -185,8 +185,23 @@ export type AddSpanDtoType = z.infer<typeof AddSpanDto>;
 export const AddSpanLogDto = z.object({
   category: z.nativeEnum(FtttSpanLogCategory),
   caption:  z.string().max(500).optional(),
+  // iFORTE GENERAL: meter pekerjaan yang diselesaikan pada log ini (frontend
+  // mengirimkannya sekali per submit — file kedua dst tidak membawa meter)
+  meterDone: z.coerce.number().nonnegative().optional(),
 });
 export type AddSpanLogDtoType = z.infer<typeof AddSpanLogDto>;
+
+// iFORTE GENERAL: total panjang pekerjaan (meter) per project
+export const SetTotalPanjangDto = z.object({
+  meters: z.coerce.number().positive('Total panjang pekerjaan harus lebih dari 0'),
+});
+export type SetTotalPanjangDtoType = z.infer<typeof SetTotalPanjangDto>;
+
+// iFORTE Closing: monitoring status pembayaran invoice
+export const SetPaymentStatusDto = z.object({
+  status: z.enum(['UNPAID', 'PAID']),
+});
+export type SetPaymentStatusDtoType = z.infer<typeof SetPaymentStatusDto>;
 
 export const FtttProjectFilterDto = z.object({
   company:  z.nativeEnum(FtttCompany).optional(),

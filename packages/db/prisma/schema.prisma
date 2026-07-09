@@ -2980,6 +2980,9 @@ enum FtttDocumentType {
   BAUT
   BAUT_REKONSILIASI
   BACT               // Berita Acara Commissioning Test — TI + PST Documentation & Acceptance
+  // iFORTE — Documentation & Acceptance
+  DOKUMENTASI        // dokumentasi pekerjaan
+  PUNCH_LIST         // temuan saat ATP fisik (opsional)
   // Telkom Infra — Documentation & Acceptance upload docs (legacy, kept for backward compat)
   KONTRAK
   PO
@@ -3022,6 +3025,10 @@ model FtttProject {
   maintenanceConfirmedAt    DateTime?
   maintenanceConfirmedById  String?
   lastMaintReminderAt       DateTime?
+  // iFORTE GENERAL: total panjang pekerjaan (meter) — dasar perhitungan Progress (%)
+  totalPanjangMeter         Decimal?  @db.Decimal(12, 2)
+  // iFORTE Closing: monitoring status pembayaran invoice (UNPAID | PAID)
+  paymentStatus             String?
   createdAt      DateTime          @default(now())
   updatedAt      DateTime          @updatedAt
 
@@ -3230,6 +3237,7 @@ enum FtttImplLogType {
   PHOTO
   MONITORING_DOC
   NOTE
+  RFSD // iFORTE: Ready For Sales Document — wajib sebelum lanjut ke Documentation & Acceptance
 }
 
 model FtttImplementationLog {
@@ -3284,6 +3292,9 @@ model FtttSpanLog {
   category     FtttSpanLogCategory
   fileUrl      String
   caption      String?
+  // iFORTE GENERAL: meter pekerjaan yang diselesaikan pada log harian ini —
+  // diakumulasi menjadi Progress (%) terhadap FtttProject.totalPanjangMeter
+  meterDone    Decimal?            @db.Decimal(10, 2)
   uploadedById String
   uploadedBy   User                @relation("FtttSpanLogUploader", fields: [uploadedById], references: [id])
   createdAt    DateTime            @default(now())

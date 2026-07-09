@@ -21,8 +21,10 @@ const RECON_NO_APPROVAL = new Set([
   'JAMINAN_PEMELIHARAAN', 'INVOICE_FINAL',
   // PST Closing — Finance uploads, auto-approved
   'INVOICE_PST_CLOSING', 'JAMINAN_PEMELIHARAAN_PST', 'JAMINAN_PELAKSANAAN_PST',
-  // iFORTE — no approval needed
+  // iFORTE — no approval needed (legacy keys kept for old projects)
   'PUNCHLIST', 'PO_FINAL', 'PSS', 'MCV', 'INVOICE_IFORTE',
+  // iFORTE — new business process (Testing Issues iForte)
+  'BA_JUSTIFIKASI', 'BAST_TERMIN_MCV', 'SUPPORTING_DOC_IFORTE',
 ]);
 
 // Required docs per company for RECONCILIATION phase readiness
@@ -49,13 +51,12 @@ const RECON_REQUIRED: Record<string, Array<[string, boolean, string]>> = {
     ['GOOD_RECEIPT_PST',  true, 'Good Receipt'],
     // Invoice moved to Closing phase
   ],
+  // iFORTE (Testing Issues iForte): Endorsement (approval) + BAST/Termin MCV wajib;
+  // BA Justifikasi opsional; PO Final terbit di sistem iFORTE (tidak diupload);
+  // Invoice pindah ke fase Project Closing (diunggah Finance)
   IFORTE: [
-    ['PUNCHLIST',         false, 'Punchlist'],
     ['ENDORSEMENT',       true,  'Endorsement (perlu disetujui)'],
-    ['PO_FINAL',          false, 'PO Final'],
-    ['PSS',               false, 'PSS'],
-    ['MCV',               false, 'MCV'],
-    ['INVOICE_IFORTE',    false, 'Invoice'],
+    ['BAST_TERMIN_MCV',   false, 'BAST / Termin MCV'],
   ],
 };
 
@@ -302,9 +303,18 @@ export class FtttProjectService {
       }
       const implLogs = (project as typeof project & { implementationLogs: { logType: string }[] })
         .implementationLogs ?? [];
-      const hasMonitoringDoc = implLogs.some((l) => l.logType === 'MONITORING_DOC');
-      if (!hasMonitoringDoc) {
-        reasons.push('Dokumen Monitoring belum diunggah oleh Admin');
+      if (company === FtttCompany.IFORTE) {
+        // iFORTE: RFSD (Ready For Sales Document) wajib sebagai indikator
+        // pekerjaan fisik selesai sebelum lanjut ke Documentation & Acceptance
+        const hasRfsd = implLogs.some((l) => l.logType === 'RFSD');
+        if (!hasRfsd) {
+          reasons.push('RFSD (Ready For Sales Document) belum diunggah');
+        }
+      } else {
+        const hasMonitoringDoc = implLogs.some((l) => l.logType === 'MONITORING_DOC');
+        if (!hasMonitoringDoc) {
+          reasons.push('Dokumen Monitoring belum diunggah oleh Admin');
+        }
       }
       // JLM: PST must choose an implementation type (Galian / KU) before completing Implementation
       if (
@@ -354,7 +364,9 @@ export class FtttProjectService {
           ['BAUT',            'BAUT'],
           ['BAUT_REKONSILIASI', 'BA Rekonsiliasi'],
         ],
-        IFORTE: [['ATP', 'ATP'], ['EVIDENCE', 'Evidence']],
+        // iFORTE (Testing Issues iForte): ATP + dokumentasi pekerjaan + evidence
+        // wajib disetujui (PM lalu Admin); Punch List opsional
+        IFORTE: [['ATP', 'ATP'], ['DOKUMENTASI', 'Dokumentasi Pekerjaan'], ['EVIDENCE', 'Evidence']],
       };
       const required = DOC_REQUIRED[company] ?? [];
       // project.documents is filtered to APPROVED only in the include above
@@ -393,21 +405,15 @@ export class FtttProjectService {
           reasons.push('Jaminan Pelaksanaan belum diunggah oleh Finance');
         }
       } else {
-        // iFORTE — BAST II must be approved + evidence/note
-        const closingLogs = (project as typeof project & {
-          closingLogs: { logType: string; approvalStatus: string | null }[];
-        }).closingLogs ?? [];
-
-        const bastII = closingLogs.find((l) => l.logType === 'BAST_II');
-        if (!bastII) {
-          reasons.push('Dokumen BAST II belum diunggah');
-        } else if (bastII.approvalStatus !== 'APPROVED') {
-          reasons.push('Dokumen BAST II belum disetujui PM FTTT');
+        // iFORTE (Testing Issues iForte): Finance mengunggah Invoice (berdasarkan
+        // BAST/Termin MCV) lalu memonitor pembayaran; project baru bisa Closed
+        // setelah invoice ada dan status pembayaran PAID.
+        if (!reconDocMap.has('INVOICE_IFORTE')) {
+          reasons.push('Invoice belum diunggah oleh Finance');
         }
-        const hasEvidence = closingLogs.some((l) => l.logType === 'EVIDENCE');
-        const hasNote     = closingLogs.some((l) => l.logType === 'NOTE');
-        if (!hasEvidence && !hasNote) {
-          reasons.push('Minimal satu evidence foto atau catatan serah terima wajib diunggah');
+        const payStatus = (project as typeof project & { paymentStatus: string | null }).paymentStatus;
+        if (payStatus !== 'PAID') {
+          reasons.push('Status pembayaran belum ditandai LUNAS (PAID) oleh Finance');
         }
       }
 
@@ -1178,12 +1184,14 @@ export class FtttProjectService {
       throw new ForbiddenException('Hanya Admin yang dapat menambahkan Span');
     }
     const project = await this.prisma.ftttProject.findUniqueOrThrow({ where: { id: projectId } });
-    // JLM: span-based log is for Telkom Infra, and for PST only when implementation type = Galian
+    // JLM: span-based log — Telkom Infra, PST (Galian), dan iFORTE (Daily Log Span
+    // adalah bagian dari business process Implementation iFORTE)
     const spanAllowed =
       project.ftttCompany === FtttCompany.TELKOM_INFRA ||
+      project.ftttCompany === FtttCompany.IFORTE ||
       (project.ftttCompany === FtttCompany.PST && project.implementationType === 'GALIAN');
     if (!spanAllowed) {
-      throw new BadRequestException('Span hanya tersedia untuk Telkom Infra atau PST jenis implementasi Galian');
+      throw new BadRequestException('Span hanya tersedia untuk Telkom Infra, iFORTE, atau PST jenis implementasi Galian');
     }
     return this.prisma.ftttSpan.create({
       data: { projectId, spanNumber: dto.spanNumber, createdById: userId },
@@ -1199,13 +1207,24 @@ export class FtttProjectService {
   }
 
   async addSpanLog(spanId: string, dto: AddSpanLogDtoType, file: Express.Multer.File, userId: string, userRole: Role) {
-    if (userRole !== Role.ADMIN && userRole !== Role.GENERAL_MANAGER) {
-      throw new ForbiddenException('Hanya Admin yang dapat mengunggah dokumentasi Span');
-    }
     const span = await this.prisma.ftttSpan.findUniqueOrThrow({ where: { id: spanId } });
+    // iFORTE: PM FTTT & Surveyor juga mengisi Daily Log; TI/PST tetap Admin-only
+    const project = await this.prisma.ftttProject.findUniqueOrThrow({ where: { id: span.projectId }, select: { ftttCompany: true } });
+    const allowed: Role[] =
+      project.ftttCompany === FtttCompany.IFORTE
+        ? [Role.ADMIN, Role.GENERAL_MANAGER, Role.PM_FTTT, Role.SURVEYOR_FTTT]
+        : [Role.ADMIN, Role.GENERAL_MANAGER];
+    if (!allowed.includes(userRole)) {
+      throw new ForbiddenException('Tidak memiliki akses untuk mengunggah dokumentasi Span');
+    }
     const fileUrl = await this.storage.uploadMulterFile(file, 'fttt-span', span.projectId);
     return this.prisma.ftttSpanLog.create({
-      data: { spanId, projectId: span.projectId, category: dto.category, fileUrl, caption: dto.caption ?? null, uploadedById: userId },
+      data: {
+        spanId, projectId: span.projectId, category: dto.category, fileUrl,
+        caption: dto.caption ?? null, uploadedById: userId,
+        // iFORTE GENERAL: meter diakumulasi menjadi Progress (%)
+        meterDone: dto.meterDone != null ? dto.meterDone : null,
+      },
       include: { uploadedBy: { select: { id: true, name: true } } },
     });
   }
@@ -1215,6 +1234,37 @@ export class FtttProjectService {
       throw new ForbiddenException('Hanya Admin yang dapat menghapus log Span');
     }
     return this.prisma.ftttSpanLog.delete({ where: { id: logId } });
+  }
+
+  // ─── iFORTE GENERAL: total panjang pekerjaan (meter) — dasar Progress (%) ──
+  async setTotalPanjang(id: string, meters: number, userId: string, userRole: Role) {
+    const allowed: Role[] = [Role.PM_FTTT, Role.ADMIN, Role.GENERAL_MANAGER];
+    if (!allowed.includes(userRole)) {
+      throw new ForbiddenException('Hanya PM FTTT atau Admin yang dapat mengatur total panjang pekerjaan');
+    }
+    await this.prisma.ftttProject.findUniqueOrThrow({ where: { id } });
+    await this.prisma.ftttProject.update({
+      where: { id },
+      data: { totalPanjangMeter: meters },
+    });
+    return this.prisma.ftttProject.findUniqueOrThrow({ where: { id }, include: this.fullInclude() });
+  }
+
+  // ─── iFORTE Closing: monitoring status pembayaran invoice ─────────────────
+  async setPaymentStatus(id: string, status: 'UNPAID' | 'PAID', userId: string, userRole: Role) {
+    const allowed: Role[] = [Role.FINANCE, Role.ADMIN, Role.GENERAL_MANAGER];
+    if (!allowed.includes(userRole)) {
+      throw new ForbiddenException('Hanya Finance atau Admin yang dapat mengubah status pembayaran');
+    }
+    const project = await this.prisma.ftttProject.findUniqueOrThrow({ where: { id } });
+    if (project.ftttCompany !== FtttCompany.IFORTE) {
+      throw new BadRequestException('Status pembayaran hanya untuk project iFORTE');
+    }
+    await this.prisma.ftttProject.update({
+      where: { id },
+      data: { paymentStatus: status },
+    });
+    return this.prisma.ftttProject.findUniqueOrThrow({ where: { id }, include: this.fullInclude() });
   }
 
   // ─── Private helpers ──────────────────────────────────────────────────────
@@ -1485,6 +1535,7 @@ export class FtttProjectService {
       'JAMINAN_PEMELIHARAAN', 'INVOICE_FINAL',           // TI Closing
       'INVOICE_PST_CLOSING', 'JAMINAN_PEMELIHARAAN_PST', // PST Closing
       'JAMINAN_PELAKSANAAN_PST',                         // PST Closing
+      'INVOICE_IFORTE',                                  // iFORTE Closing — Finance uploads Invoice
     ]);
     // PST Procurement PO — Finance only
     const isPoProcurement = dto.docKey === 'PO_PROCUREMENT';
@@ -1493,8 +1544,9 @@ export class FtttProjectService {
         throw new ForbiddenException('Hanya Finance yang dapat mengunggah dokumen ini');
       }
     } else {
-      // All other recon docs: Admin/GM (TI, PST), or Surveyor for iFORTE
-      const allowed: Role[] = [Role.ADMIN, Role.GENERAL_MANAGER, Role.FINANCE, Role.SURVEYOR_FTTT];
+      // All other recon docs: Admin/GM (TI, PST), Surveyor for iFORTE,
+      // PM FTTT for iFORTE Supporting Document / BA Justifikasi / BAST
+      const allowed: Role[] = [Role.ADMIN, Role.GENERAL_MANAGER, Role.FINANCE, Role.SURVEYOR_FTTT, Role.PM_FTTT];
       if (!allowed.includes(userRole)) {
         throw new ForbiddenException('Tidak memiliki akses untuk mengunggah dokumen rekonsiliasi');
       }

@@ -995,6 +995,7 @@ export type FtttSanggahStatus = 'SUBMITTED' | 'ACCEPTED' | 'REJECTED';
 export type FtttJaminanType = 'JAMINAN_UANG_MUKA' | 'JAMINAN_PELAKSANAAN';
 export type FtttDocumentType =
   | 'ATP' | 'EVIDENCE' | 'BAUT' | 'BAUT_REKONSILIASI' | 'BACT'
+  | 'DOKUMENTASI' | 'PUNCH_LIST' // iFORTE Documentation & Acceptance
   | 'KONTRAK' | 'PO' | 'AMANDEMEN_1' | 'DOK_PERUBAHAN_WAKTU'
   | 'SUPPORTING'; // legacy
 
@@ -1008,6 +1009,8 @@ export interface FtttSpanLog {
   category:    FtttSpanLogCategory;
   fileUrl:     string;
   caption:     string | null;
+  // iFORTE GENERAL: meter pekerjaan yang diselesaikan pada log ini
+  meterDone?:  string | number | null;
   createdAt:   string;
   uploadedBy:  { id: string; name: string };
 }
@@ -1098,6 +1101,10 @@ export interface FtttProject {
   maintenanceEndDate?:       string | null;
   maintenanceConfirmedAt?:   string | null;
   maintenanceConfirmedById?: string | null;
+  // iFORTE GENERAL: total panjang pekerjaan (meter) — dasar Progress (%)
+  totalPanjangMeter?:        string | number | null;
+  // iFORTE Closing: status pembayaran invoice (UNPAID | PAID)
+  paymentStatus?:            string | null;
   // JLM: Finance Project link + Implementation transaction log
   financeProjectId?:         string | null;
   financeProject?:           { id: string; code: string; name: string; projectType?: string; totalBudget: string | number; budgetPerizinan?: string | number | null; materialBudget?: string | number | null; jasaBudget?: string | number | null; budgetLainLain?: string | number | null } | null;
@@ -1190,7 +1197,7 @@ export interface FtttReconDoc {
   uploadedBy:      { id: string; name: string };
 }
 
-export type FtttImplLogType    = 'PHOTO' | 'MONITORING_DOC' | 'NOTE';
+export type FtttImplLogType    = 'PHOTO' | 'MONITORING_DOC' | 'NOTE' | 'RFSD';
 export type FtttClosingLogType = 'BAST_II' | 'EVIDENCE' | 'NOTE';
 
 export interface FtttClosingLog {
