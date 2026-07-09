@@ -32,7 +32,9 @@ import {
   FtttProjectFilterDto,
   ResolveSanggahDto,
   SetImplementationTypeDto,
+  SetPaymentStatusDto,
   SetPhasePlanDto,
+  SetTotalPanjangDto,
   SubmitSanggahDto,
   UploadDocumentDto,
   UploadDrmDocDto,
@@ -170,6 +172,26 @@ export class FtttProjectController {
     @CurrentUser() user: AuthUser,
   ) {
     return this.service.markImplementationLapanganDone(id, user.userId, user.role);
+  }
+
+  // PUT /fttt-projects/:id/total-panjang  (iFORTE GENERAL: total panjang pekerjaan meter)
+  @Put(':id/total-panjang')
+  setTotalPanjang(
+    @Param('id') id: string,
+    @Body(new ZodValidationPipe(SetTotalPanjangDto)) dto: { meters: number },
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.service.setTotalPanjang(id, dto.meters, user.userId, user.role);
+  }
+
+  // PUT /fttt-projects/:id/payment-status  (iFORTE Closing: monitoring pembayaran)
+  @Put(':id/payment-status')
+  setPaymentStatus(
+    @Param('id') id: string,
+    @Body(new ZodValidationPipe(SetPaymentStatusDto)) dto: { status: 'UNPAID' | 'PAID' },
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.service.setPaymentStatus(id, dto.status, user.userId, user.role);
   }
 
   // POST /fttt-projects/:id/advance-phase
