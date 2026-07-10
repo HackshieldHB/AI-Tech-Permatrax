@@ -189,7 +189,7 @@ export default function FinanceProjectDetailPage() {
     setSavingTimeline(true);
     try {
       await apiPut(`/finance-projects/${id}/timeline`, { milestones });
-      toast.success('Baseline timeline disimpan');
+      toast.success('Planning Kurva S disimpan (Planning Awal tetap sebagai baseline)');
       setTimelineOpen(false);
       setReloadKey((k) => k + 1);
     } catch (e) { toast.error(e instanceof Error ? e.message : 'Gagal menyimpan'); }
@@ -634,11 +634,11 @@ export default function FinanceProjectDetailPage() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
           <div className="bg-white rounded-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto p-6 space-y-4 shadow-xl">
             <div className="flex justify-between items-center">
-              <h3 className="font-black text-lg">Edit Planning — Baseline Kurva S</h3>
+              <h3 className="font-black text-lg">Edit Planning — Kurva S</h3>
               <button type="button" onClick={() => setTimelineOpen(false)} className="text-slate-400 text-lg">✕</button>
             </div>
             <p className="text-xs text-slate-500">
-              Tambahkan milestone Planning: Target Date, Planned Budget (kumulatif s/d tanggal tsb), dan Planned Progress (%). Setiap milestone menjadi titik pada Kurva S; titik-titik dihubungkan menjadi garis <b>Planning</b> (Biaya &amp; Progress). <b>Actual</b> berasal dari Transaction Log PM. Progress maksimal 100% di akhir project.
+              Planning pertama tersimpan sebagai <b>Planning Awal (baseline)</b> dan tidak berubah. Edit berikutnya menjadi garis <b>Perubahan Planning</b>. <b>Actual</b> hanya dari Transaction Log yang sudah punya Tanggal Dana Keluar. Default tampilan Kurva S: Weekly.
             </p>
             <div className="space-y-2">
               <div className="grid grid-cols-[1.2fr_1.4fr_1fr_auto] gap-2 text-[11px] font-bold text-slate-500 uppercase px-1">

@@ -798,11 +798,15 @@ function JaminanSection({ project, onRefresh }: { project: FtttProject; onRefres
 // Admin Project uploads; PM FTTT reviews and approves/rejects.
 // ─── iFORTE Project Preparation: Supporting Document (Opsional) ───────────────
 // Upload PDF/Excel sebagai referensi project; BUKAN syarat lanjut fase.
-// Material tidak dikelola di PermaTrax (memakai material milik iFORTE).
-function IforteSupportingDocSection({ project, onRefresh }: { project: FtttProject; onRefresh: () => void }) {
+// Admin Project upload → PM FTTT review/approval. Material tidak dikelola di PermaTrax.
+function IforteSupportingDocSection({ project, onRefresh, userRole }: { project: FtttProject; onRefresh: () => void; userRole: string }) {
   const { user } = useAuthStore();
+  const canUpload = userRole === 'ADMIN' || userRole === 'GENERAL_MANAGER';
+  const canPmApprove = userRole === 'PM_FTTT';
   const [uploading, setUploading] = useState(false);
   const [notes, setNotes] = useState('');
+  const [rejectReason, setRejectReason] = useState('');
+  const [rejectOpen, setRejectOpen] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const doc = project.reconDocs?.find((d) => d.docKey === 'SUPPORTING_DOC_IFORTE') ?? null;
 
@@ -815,36 +819,84 @@ function IforteSupportingDocSection({ project, onRefresh }: { project: FtttProje
       fd.append('file', file);
       const res = await apiFetch(`/fttt-projects/${project.id}/recon-docs`, { method: 'POST', body: fd }, user?.id);
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal upload');
-      toast.success('Supporting Document tersimpan sebagai histori project');
+      toast.success('Supporting Document tersimpan — menunggu review PM FTTT');
       setNotes(''); onRefresh();
     } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
     finally { setUploading(false); }
   };
 
+  const handleApprove = async (approved: boolean) => {
+    if (!doc) return;
+    if (!approved && !rejectReason.trim()) { toast.error('Alasan penolakan wajib diisi'); return; }
+    try {
+      const res = await apiFetch(`/fttt-projects/recon-docs/${doc.id}/approve`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ approved, rejectionNotes: approved ? undefined : rejectReason.trim() }),
+      }, user?.id);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
+      toast.success(approved ? 'Supporting Document disetujui' : 'Supporting Document ditolak');
+      setRejectOpen(false); setRejectReason(''); onRefresh();
+    } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
+  };
+
+  const STATUS_COLORS: Record<string, string> = { PENDING_PM: '#9a6700', APPROVED: '#1a7f37', REJECTED: '#cf222e' };
+  const STATUS_LABELS: Record<string, string> = { PENDING_PM: 'Menunggu PM', APPROVED: 'Disetujui', REJECTED: 'Ditolak' };
+
   return (
     <div>
       <p style={{ fontWeight: 600, fontSize: 14, marginBottom: 4 }}>📎 Supporting Document (Opsional)</p>
       <p style={{ fontSize: 12, color: '#57606a', marginBottom: 12 }}>
-        Unggah dokumen pendukung (PDF / Excel) sebagai referensi project bila diperlukan. Upload bersifat opsional —
-        fase dapat dilanjutkan tanpa dokumen ini. Material tidak dikelola di PermaTrax karena menggunakan material milik iFORTE.
+        Admin Project mengunggah dokumen pendukung (PDF / Excel) sebagai referensi. PM FTTT melakukan review &amp; approval.
+        Upload bersifat opsional — fase dapat dilanjutkan tanpa dokumen ini. Material tidak dikelola di PermaTrax (material milik iFORTE).
       </p>
 
       {doc ? (
-        <div style={{ background: '#F6F8FA', borderRadius: 10, padding: 12, marginBottom: 10, border: '1px solid #EAEEF2', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <div>
-            <span style={{ fontSize: 12, fontWeight: 700 }}>✓ Supporting Document terunggah</span>
-            {doc.notes && <p style={{ margin: '2px 0 0', fontSize: 11, color: '#57606a' }}>📝 {doc.notes}</p>}
-            {doc.uploadedBy && <p style={{ margin: '2px 0 0', fontSize: 10, color: '#8c959f' }}>oleh {doc.uploadedBy.name}</p>}
+        <div style={{ background: '#F6F8FA', borderRadius: 10, padding: 12, marginBottom: 10, border: '1px solid #EAEEF2' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+            <div>
+              <span style={{ fontSize: 12, fontWeight: 700 }}>Supporting Document terunggah</span>
+              <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 700, color: STATUS_COLORS[doc.approvalStatus] ?? '#57606a' }}>
+                {STATUS_LABELS[doc.approvalStatus] ?? doc.approvalStatus}
+              </span>
+              {doc.notes && <p style={{ margin: '2px 0 0', fontSize: 11, color: '#57606a' }}>📝 {doc.notes}</p>}
+              {doc.rejectionNotes && <p style={{ margin: '2px 0 0', fontSize: 11, color: '#cf222e' }}>Alasan: {doc.rejectionNotes}</p>}
+              {doc.uploadedBy && <p style={{ margin: '2px 0 0', fontSize: 10, color: '#8c959f' }}>oleh {doc.uploadedBy.name}</p>}
+            </div>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              {doc.fileUrl && <a href={fixFileUrl(doc.fileUrl)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: '#0969DA' }}>Lihat</a>}
+              {canUpload && (doc.approvalStatus === 'REJECTED' || doc.approvalStatus === 'APPROVED') && (
+                <button type="button" onClick={() => fileRef.current?.click()} disabled={uploading}
+                  style={{ padding: '4px 10px', borderRadius: 6, border: 'none', background: '#FFA500', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 11 }}>
+                  {uploading ? '…' : '🔄 Ganti'}
+                </button>
+              )}
+            </div>
           </div>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            {doc.fileUrl && <a href={fixFileUrl(doc.fileUrl)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: '#0969DA' }}>Lihat</a>}
-            <button type="button" onClick={() => fileRef.current?.click()} disabled={uploading}
-              style={{ padding: '4px 10px', borderRadius: 6, border: 'none', background: '#FFA500', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 11 }}>
-              {uploading ? '…' : '🔄 Ganti'}
-            </button>
-          </div>
+          {canPmApprove && doc.approvalStatus === 'PENDING_PM' && (
+            <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+              <button type="button" onClick={() => void handleApprove(true)}
+                style={{ padding: '6px 12px', borderRadius: 6, border: 'none', background: '#1a7f37', color: '#fff', fontWeight: 700, cursor: 'pointer', fontSize: 12 }}>
+                ✓ Setujui
+              </button>
+              {!rejectOpen ? (
+                <button type="button" onClick={() => setRejectOpen(true)}
+                  style={{ padding: '6px 12px', borderRadius: 6, border: 'none', background: '#cf222e', color: '#fff', fontWeight: 700, cursor: 'pointer', fontSize: 12 }}>
+                  ✕ Tolak
+                </button>
+              ) : (
+                <>
+                  <input value={rejectReason} onChange={(e) => setRejectReason(e.target.value)} placeholder="Alasan penolakan…"
+                    style={{ flex: 1, minWidth: 160, padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12 }} />
+                  <button type="button" onClick={() => void handleApprove(false)}
+                    style={{ padding: '6px 12px', borderRadius: 6, border: 'none', background: '#cf222e', color: '#fff', fontWeight: 700, cursor: 'pointer', fontSize: 12 }}>
+                    Konfirmasi Tolak
+                  </button>
+                </>
+              )}
+            </div>
+          )}
         </div>
-      ) : (
+      ) : canUpload ? (
         <div style={{ border: '1.5px dashed #D0D7DE', borderRadius: 10, padding: 14, marginBottom: 10, background: '#F9FAFB' }}>
           <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Catatan dokumen (opsional)…"
             style={{ width: '100%', padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12, marginBottom: 8, boxSizing: 'border-box' }} />
@@ -853,6 +905,8 @@ function IforteSupportingDocSection({ project, onRefresh }: { project: FtttProje
             {uploading ? 'Mengunggah…' : '+ Upload Supporting Document (PDF / Excel)'}
           </button>
         </div>
+      ) : (
+        <p style={{ fontSize: 12, color: '#57606a', marginBottom: 10 }}>Belum ada Supporting Document. Hanya Admin Project yang dapat mengunggah.</p>
       )}
       <input ref={fileRef} type="file" accept=".pdf,.xlsx,.xls" style={{ display: 'none' }}
         onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleUpload(f); e.target.value = ''; }} />
@@ -891,7 +945,7 @@ function DocumentationSection({ project, onRefresh, userRole }: { project: FtttP
 
   // Count how many required docs are APPROVED
   const approvedKeys = new Set(project.documents.filter((d) => d.approvalStatus === 'APPROVED').map((d) => d.docType));
-  const allDone = requiredDocs.every((d) => (approvedKeys as Set<string>).has(d.key));
+  const allDone = requiredDocs.filter((d) => d.required).every((d) => (approvedKeys as Set<string>).has(d.key));
 
   const handleUpload = async (docKey: string, file: File) => {
     setUploadingKey(docKey);
@@ -1341,9 +1395,9 @@ function SpanSection({ project, onRefresh, isAdmin, canLog }: { project: FtttPro
                   </select>
                   {/* iFORTE GENERAL: meter dikerjakan — wajib per log harian */}
                   <input type="number" min={0} value={logMeter} onChange={(e) => setLogMeter(e.target.value)}
-                    placeholder="Meter dikerjakan *"
-                    title="Jumlah meter yang berhasil dikerjakan pada log ini (wajib)"
-                    style={{ width: 130, padding: '5px 8px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 11 }} />
+                    placeholder="Panjang Selesai (m) *"
+                    title="Panjang Pekerjaan Selesai (Meter) — wajib diisi setiap Daily Log"
+                    style={{ width: 150, padding: '5px 8px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 11 }} />
                   <input value={logCaption} onChange={(e) => setLogCaption(e.target.value)}
                     placeholder="Keterangan (opsional)"
                     style={{ flex: 1, minWidth: 120, padding: '5px 8px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 11 }} />
@@ -1375,20 +1429,37 @@ function SpanSection({ project, onRefresh, isAdmin, canLog }: { project: FtttPro
 const TXN_CATEGORIES: FtttCostCategory[] = ['PERIZINAN', 'MATERIAL', 'JASA', 'LAIN_LAIN'];
 const txnInp: React.CSSProperties = { padding: '5px 8px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 11 };
 
-function SCurveMini({ title, data, keys, money }: { title: string; data: Record<string, unknown>[]; keys: [string, string, string][]; money?: boolean }) {
+function SCurveMini({ title, data, dataWeekly, keys, money }: {
+  title: string;
+  data: Record<string, unknown>[];
+  dataWeekly?: Record<string, unknown>[];
+  keys: [string, string, string][];
+  money?: boolean;
+}) {
+  const [period, setPeriod] = useState<'weekly' | 'monthly'>('weekly');
+  const shown = period === 'weekly' && dataWeekly && dataWeekly.length > 0 ? dataWeekly : data;
   return (
     <div style={{ marginBottom: 16 }}>
-      <p style={{ fontSize: 12, fontWeight: 700, margin: '0 0 6px' }}>{title}</p>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+        <p style={{ fontSize: 12, fontWeight: 700, margin: 0 }}>{title}</p>
+        <select value={period} onChange={(e) => setPeriod(e.target.value as 'weekly' | 'monthly')}
+          style={{ fontSize: 11, padding: '4px 8px', borderRadius: 6, border: '1px solid #D0D7DE' }}>
+          <option value="weekly">Weekly</option>
+          <option value="monthly">Monthly</option>
+        </select>
+      </div>
       <div style={{ height: 220, width: '100%' }}>
         <ResponsiveContainer width="100%" height="100%">
-          <ComposedChart data={data}>
+          <ComposedChart data={shown}>
             <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-            <XAxis dataKey="name" fontSize={10} tickLine={false} axisLine={false} />
+            <XAxis dataKey="name" fontSize={period === 'weekly' ? 8 : 10} tickLine={false} axisLine={false}
+              interval="preserveStartEnd" angle={period === 'weekly' ? -30 : 0} height={period === 'weekly' ? 44 : 30} />
             <YAxis fontSize={10} tickLine={false} axisLine={false} tickFormatter={(v) => money ? `${Math.round(Number(v) / 1e6)}M` : `${v}%`} />
             <RTooltip formatter={(v: number) => money ? 'Rp ' + Math.round(v).toLocaleString('id-ID') : `${v}%`} />
             <RLegend verticalAlign="top" height={28} />
             {keys.map(([k, label, color]) => (
-              <Line key={k} type="monotone" dataKey={k} name={label} stroke={color} strokeWidth={2} dot={{ r: 3, fill: color }} />
+              <Line key={k} type="monotone" dataKey={k} name={label} stroke={color} strokeWidth={2}
+                connectNulls={false} dot={{ r: period === 'weekly' ? 2 : 3, fill: color }} />
             ))}
           </ComposedChart>
         </ResponsiveContainer>
@@ -1404,7 +1475,17 @@ function TransactionLogSection({ project, onRefresh, userRole }: { project: Fttt
   const rab = fp ? Number(fp.totalBudget) : 0;
   const txns: FtttTransaction[] = project.transactions ?? [];
 
-  const [scurve, setScurve] = useState<{ byCategory: { category: string; budget: number; spent: number; remaining: number }[]; costCurve: Record<string, unknown>[]; progressCurve: Record<string, unknown>[] } | null>(null);
+  const isFinance = userRole === 'FINANCE' || userRole === 'GENERAL_MANAGER';
+  const [scurve, setScurve] = useState<{
+    byCategory: { category: string; budget: number; spent: number; remaining: number }[];
+    costCurve: Record<string, unknown>[];
+    progressCurve: Record<string, unknown>[];
+    costCurveWeekly?: Record<string, unknown>[];
+    progressCurveWeekly?: Record<string, unknown>[];
+  } | null>(null);
+  const [disburseId, setDisburseId] = useState<string | null>(null);
+  const [disburseDate, setDisburseDate] = useState('');
+  const [disbursing, setDisbursing] = useState(false);
   const [openCat, setOpenCat] = useState<FtttCostCategory | null>(null);
   const [form, setForm] = useState({ aktivitas: '', uom: '', qty: '', price: '', remarks: '' });
   const [saving, setSaving] = useState(false);
@@ -1449,6 +1530,22 @@ function TransactionLogSection({ project, onRefresh, userRole }: { project: Fttt
     } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
   };
 
+  const handleDisburse = async (id: string) => {
+    if (!disburseDate) { toast.error('Isi Tanggal Dana Keluar'); return; }
+    setDisbursing(true);
+    try {
+      const res = await apiFetch(`/fttt-projects/transactions/${id}/disburse`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ disbursedAt: new Date(disburseDate + 'T12:00:00').toISOString() }),
+      }, user?.id);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
+      toast.success('Tanggal Dana Keluar tersimpan — budget diperbarui');
+      setDisburseId(null); setDisburseDate('');
+      onRefresh(); void loadScurve();
+    } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
+    finally { setDisbursing(false); }
+  };
+
   if (!fp) {
     return (
       <div style={{ background: '#FFF8C5', border: '1px solid #d4a017', borderRadius: 10, padding: 14, fontSize: 12, color: '#9a6700' }}>
@@ -1465,9 +1562,14 @@ function TransactionLogSection({ project, onRefresh, userRole }: { project: Fttt
         <span>💰 Total RAB: <b>{fmtIDR(rab)}</b></span>
       </div>
 
-      {!isPm && (
+      {!isPm && !isFinance && (
         <div style={{ background: '#F6F8FA', border: '1px solid #D0D7DE', borderRadius: 8, padding: 10, marginBottom: 12, fontSize: 12, color: '#57606a' }}>
-          🔒 Hanya PM FTTT yang dapat mencatat Transaction Log.
+          🔒 PM FTTT mencatat Transaction Log; Finance mengisi Tanggal Dana Keluar untuk merealisasikan budget.
+        </div>
+      )}
+      {isPm && (
+        <div style={{ background: '#EFF6FF', border: '1px solid #BFDBFE', borderRadius: 8, padding: 10, marginBottom: 12, fontSize: 12, color: '#1e40af' }}>
+          ℹ️ Setelah Simpan, transaksi tersimpan sebagai rencana. Budget Finance belum berkurang sampai Finance mengisi Tanggal Dana Keluar.
         </div>
       )}
 
@@ -1517,17 +1619,48 @@ function TransactionLogSection({ project, onRefresh, userRole }: { project: Fttt
             ) : catTxns.map((t) => {
               const total = Number(t.total);
               const bobot = rab > 0 ? (total / rab) * 100 : 0;
+              const realized = !!t.disbursedAt;
               return (
                 <div key={t.id} style={{ padding: '8px 12px', borderBottom: '1px solid #F0F3F6', fontSize: 12 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
-                    <span style={{ fontWeight: 600 }}>{t.aktivitas}</span>
+                    <span style={{ fontWeight: 600 }}>{t.aktivitas}
+                      <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: realized ? '#1a7f37' : '#9a6700', background: realized ? '#DAFBE1' : '#FFF8C5', padding: '1px 6px', borderRadius: 999 }}>
+                        {realized ? 'Terealisasi' : 'Menunggu Dana Keluar'}
+                      </span>
+                    </span>
                     <span style={{ fontWeight: 700 }}>{fmtIDR(total)}</span>
                   </div>
                   <div style={{ fontSize: 11, color: '#57606a', marginTop: 2 }}>
                     {Number(t.qty)} {t.uom ?? ''} × {fmtIDR(Number(t.price))} · Bobot {bobot.toFixed(2)}%
                   </div>
                   <div style={{ fontSize: 10, color: '#8c959f', marginTop: 2 }}>📝 {t.remarks} · 🕒 {fmtDT(t.createdAt)} · {t.createdBy?.name}</div>
-                  {isPm && <button type="button" onClick={() => void handleDelete(t.id)} style={{ marginTop: 2, fontSize: 10, color: '#cf222e', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>Hapus</button>}
+                  {realized && (
+                    <div style={{ fontSize: 10, color: '#1a7f37', marginTop: 2 }}>
+                      💵 Dana keluar: {fmtDT(t.disbursedAt!)}{t.disbursedBy?.name ? ` · ${t.disbursedBy.name}` : ''}
+                    </div>
+                  )}
+                  {!realized && isFinance && (
+                    <div style={{ marginTop: 6, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                      {disburseId === t.id ? (
+                        <>
+                          <input type="date" value={disburseDate} onChange={(e) => setDisburseDate(e.target.value)}
+                            style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 11 }} />
+                          <button type="button" disabled={disbursing} onClick={() => void handleDisburse(t.id)}
+                            style={{ padding: '4px 10px', borderRadius: 6, border: 'none', background: '#1a7f37', color: '#fff', fontWeight: 700, fontSize: 11, cursor: 'pointer' }}>
+                            {disbursing ? '…' : 'Simpan Tanggal Dana Keluar'}
+                          </button>
+                          <button type="button" onClick={() => { setDisburseId(null); setDisburseDate(''); }}
+                            style={{ fontSize: 11, background: 'none', border: 'none', color: '#57606a', cursor: 'pointer' }}>Batal</button>
+                        </>
+                      ) : (
+                        <button type="button" onClick={() => { setDisburseId(t.id); setDisburseDate(new Date().toISOString().slice(0, 10)); }}
+                          style={{ padding: '4px 10px', borderRadius: 6, border: 'none', background: '#0969DA', color: '#fff', fontWeight: 600, fontSize: 11, cursor: 'pointer' }}>
+                          + Tanggal Dana Keluar
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  {isPm && !realized && <button type="button" onClick={() => void handleDelete(t.id)} style={{ marginTop: 2, fontSize: 10, color: '#cf222e', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>Hapus</button>}
                 </div>
               );
             })}
@@ -1540,8 +1673,10 @@ function TransactionLogSection({ project, onRefresh, userRole }: { project: Fttt
           <p style={{ fontSize: 11, color: '#8c959f', margin: '0 0 8px' }}>
             ℹ️ Baseline Planning Kurva S diatur oleh Finance di menu Finance Project → Edit Planning.
           </p>
-          <SCurveMini title="📈 Kurva S Biaya (Cost — Planning vs Actual)" data={scurve.costCurve} keys={[['plannedCost', 'Planned', '#94A3B8'], ['actualCost', 'Actual', '#00B89E']]} money />
-          <SCurveMini title="📊 Kurva S Progress (Schedule — Planning vs Actual)" data={scurve.progressCurve} keys={[['plannedProgress', 'Planned %', '#94A3B8'], ['actualProgress', 'Actual %', '#0969DA']]} />
+          <SCurveMini title="📈 Kurva S Biaya" data={scurve.costCurve} dataWeekly={scurve.costCurveWeekly}
+            keys={[['baselineCost', 'Planning Awal', '#94A3B8'], ['plannedCost', 'Perubahan Planning', '#F59E0B'], ['actualCost', 'Actual', '#00B89E']]} money />
+          <SCurveMini title="📊 Kurva S Progress" data={scurve.progressCurve} dataWeekly={scurve.progressCurveWeekly}
+            keys={[['baselineProgress', 'Planning Awal %', '#94A3B8'], ['plannedProgress', 'Perubahan Planning %', '#F59E0B'], ['actualProgress', 'Actual %', '#0969DA']]} />
         </div>
       )}
     </div>
@@ -1597,9 +1732,14 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
 
   // ── iFORTE GENERAL: Progress (%) berdasarkan panjang implementasi (meter) ──
   const totalPanjang = Number(project.totalPanjangMeter ?? 0);
-  const meterDoneTotal = (project.spans ?? []).reduce(
+  const meterFromSpans = (project.spans ?? []).reduce(
     (sum, sp) => sum + sp.spanLogs.reduce((s, l) => s + Number(l.meterDone ?? 0), 0), 0,
   );
+  // Prefer Log Aktivitas meters when Daily Log already mirrored there (avoid double-count)
+  const meterFromActivity = (project.implementationLogs ?? []).reduce(
+    (sum, l) => sum + Number(l.meterDone ?? 0), 0,
+  );
+  const meterDoneTotal = meterFromActivity > 0 ? meterFromActivity : meterFromSpans;
   const progressPct = totalPanjang > 0 ? Math.min(100, (meterDoneTotal / totalPanjang) * 100) : null;
   const [editingTotal, setEditingTotal] = useState(false);
   const [totalInput, setTotalInput] = useState('');
@@ -1676,7 +1816,9 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
     finally { setUploading(false); setUploadProgress(''); }
   };
 
-  const logs = project.implementationLogs ?? [];
+  const logs = [...(project.implementationLogs ?? [])].sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+  );
 
   // JLM: PST must pick implementation type before any implementation activity
   if (isPST && !implType) {
@@ -1811,6 +1953,11 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
           <div style={{ flex: 1 }}>
             <p style={{ margin: 0, fontSize: 12, fontWeight: 600 }}>{LOG_LABELS[log.logType]}</p>
             {log.caption && <p style={{ margin: '2px 0 0', fontSize: 12 }}>{log.caption}</p>}
+            {Number(log.meterDone ?? 0) > 0 && (
+              <p style={{ margin: '2px 0 0', fontSize: 11, fontWeight: 700, color: '#0969DA' }}>
+                Panjang Pekerjaan Selesai: {Number(log.meterDone).toLocaleString('id-ID')} m
+              </p>
+            )}
             {log.notes   && <p style={{ margin: '2px 0 0', fontSize: 11, color: '#57606a' }}>{log.notes}</p>}
             {/* C7-TI1/PST2: Display timestamp + user + role for audit trail */}
             <p style={{ margin: '3px 0 0', fontSize: 10, color: '#8c959f' }}>
@@ -1881,7 +2028,7 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
               style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12 }}>
               {canUpload && <option value="PHOTO">📷 Foto Progress</option>}
               {canMonitoring && <option value="MONITORING_DOC">📊 Dokumen Monitoring (Excel/PDF)</option>}
-              {isIforte && canUpload && <option value="RFSD">📦 RFSD — Ready For Sales Document</option>}
+              {isIforte && isAdmin && <option value="RFSD">📦 RFSD — Ready For Sales Document</option>}
               <option value="NOTE">📝 Catatan Progress</option>
             </select>
             {!canMonitoring && userRole !== 'PM_FTTT' && (
@@ -1938,12 +2085,11 @@ const DOCUMENTATION_DOCS: Record<string, {
     { key: 'BAUT',            label: 'BAUT',           desc: 'Berita Acara Uji Terima — upload file',               generateForm: false, required: true },
     { key: 'BAUT_REKONSILIASI', label: 'BA Rekonsiliasi', desc: 'Berita Acara Rekonsiliasi — upload file',          generateForm: false, required: true },
   ],
-  // iFORTE (Testing Issues iForte): ATP + Dokumentasi Pekerjaan + Evidence wajib
-  // (approval PM lalu Admin); Punch List opsional — hanya bila ada temuan ATP fisik
+  // iFORTE: seluruh dokumen Documentation & Acceptance bersifat opsional (non-mandatory)
   IFORTE: [
-    { key: 'ATP',         label: 'ATP',                   desc: 'Dokumen ATP (Acceptance Test Protocol) dari iFORTE',            generateForm: false, required: true },
-    { key: 'DOKUMENTASI', label: 'Dokumentasi Pekerjaan', desc: 'Dokumentasi hasil pekerjaan implementasi',                      generateForm: false, required: true },
-    { key: 'EVIDENCE',    label: 'Evidence',              desc: 'Evidence pendukung dan foto project',                           generateForm: false, required: true },
+    { key: 'ATP',         label: 'ATP (Opsional)',                   desc: 'Dokumen ATP (Acceptance Test Protocol) dari iFORTE',            generateForm: false, required: false },
+    { key: 'DOKUMENTASI', label: 'Dokumentasi Pekerjaan (Opsional)', desc: 'Dokumentasi hasil pekerjaan implementasi',                      generateForm: false, required: false },
+    { key: 'EVIDENCE',    label: 'Evidence (Opsional)',              desc: 'Evidence pendukung dan foto project',                           generateForm: false, required: false },
     { key: 'PUNCH_LIST',  label: 'Punch List (Opsional)', desc: 'Temuan pada saat pelaksanaan ATP fisik — hanya bila ada temuan', generateForm: false, required: false },
   ],
 };
@@ -1980,9 +2126,9 @@ const RECON_DOCS: Record<string, {
   // (wajib) + BA Justifikasi (opsional, hanya bila BOQ ILT ≠ BOQ iFORTE).
   // PO Final terbit via sistem iFORTE (tidak diupload); Invoice pindah ke Project Closing.
   IFORTE: [
-    { key: 'ENDORSEMENT',    label: 'Endorsement',               desc: 'Dokumen Endorsement — diajukan juga pada sistem iFORTE',                      uploaderRole: ['SURVEYOR_FTTT', 'PM_FTTT', 'ADMIN'], requiresApproval: true },
-    { key: 'BA_JUSTIFIKASI', label: 'BA Justifikasi (Opsional)', desc: 'Hanya bila terdapat perbedaan antara BOQ ILT dan BOQ iFORTE',                 uploaderRole: ['SURVEYOR_FTTT', 'PM_FTTT', 'ADMIN'], requiresApproval: false },
-    { key: 'BAST_TERMIN_MCV', label: 'BAST / Termin MCV',        desc: 'Dasar proses penagihan (billing) — invoice dibuat berdasarkan dokumen ini',   uploaderRole: ['SURVEYOR_FTTT', 'PM_FTTT', 'ADMIN'], requiresApproval: false },
+    { key: 'ENDORSEMENT',    label: 'Endorsement',               desc: 'Dokumen Endorsement — diajukan juga pada sistem iFORTE',                      uploaderRole: ['ADMIN', 'GENERAL_MANAGER'], requiresApproval: true },
+    { key: 'BA_JUSTIFIKASI', label: 'BA Justifikasi (Opsional)', desc: 'Hanya bila terdapat perbedaan antara BOQ ILT dan BOQ iFORTE',                 uploaderRole: ['ADMIN', 'GENERAL_MANAGER'], requiresApproval: false },
+    { key: 'BAST_TERMIN_MCV', label: 'BAST / Termin MCV',        desc: 'Dasar proses penagihan (billing) — invoice dibuat berdasarkan dokumen ini',   uploaderRole: ['ADMIN', 'GENERAL_MANAGER'], requiresApproval: false },
   ],
 };
 
@@ -2981,7 +3127,7 @@ export default function FtttProjectDetailPage() {
 
           {/* Preparation — iFORTE: Supporting Document (Opsional) */}
           {project.currentPhase === 'PREPARATION' && project.ftttCompany === 'IFORTE' && (
-            <IforteSupportingDocSection project={project} onRefresh={load} />
+            <IforteSupportingDocSection project={project} onRefresh={load} userRole={user?.role ?? ''} />
           )}
 
           {/* C6-PST5: Procurement phase — PM uploads PO (PST only) */}

@@ -4,8 +4,9 @@ import React, { useEffect, useState } from 'react';
 import {
   ComposedChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from 'recharts';
-import { apiGet } from '../../../../lib/api';
+import { apiGet, apiPut } from '../../../../lib/api';
 import { formatRupiah } from '../../../../lib/format';
+import { toast } from 'sonner';
 
 type Cat = 'PERIZINAN' | 'MATERIAL' | 'JASA' | 'LAIN_LAIN';
 const CAT_LABEL: Record<Cat, string> = { PERIZINAN: 'Perizinan', MATERIAL: 'Material', JASA: 'Jasa', LAIN_LAIN: 'Lain-Lain' };
@@ -17,23 +18,27 @@ interface MonitoringData {
   remaining?: number;
   ftttProject?: { id: string; name: string | null; currentPhase: string };
   byCategory?: { category: Cat; budget: number; spent: number; remaining: number }[];
-  costCurve?: Record<string, number | string>[];
-  progressCurve?: Record<string, number | string>[];
-  // JLM: weekly breakdown for the Kurva S period filter (Weekly/Monthly)
-  costCurveWeekly?: Record<string, number | string>[];
-  progressCurveWeekly?: Record<string, number | string>[];
+  costCurve?: Record<string, number | string | null>[];
+  progressCurve?: Record<string, number | string | null>[];
+  costCurveWeekly?: Record<string, number | string | null>[];
+  progressCurveWeekly?: Record<string, number | string | null>[];
   transactions?: {
     id: string; category: Cat; aktivitas: string; uom: string | null;
     qty: string | number; price: string | number; total: string | number; remarks: string;
-    createdAt: string; createdBy: { name: string } | null;
+    createdAt: string; disbursedAt?: string | null;
+    createdBy: { name: string } | null;
+    disbursedBy?: { name: string } | null;
   }[];
 }
 
-// JLM: each card has its own Weekly/Monthly period filter (default Monthly).
-// The filter only changes the display granularity — data comes precomputed
-// from the API for both periods, over the same project date range.
-function MiniCurve({ title, data, dataWeekly, keys, money }: { title: string; data: Record<string, number | string>[]; dataWeekly?: Record<string, number | string>[]; keys: [string, string, string][]; money?: boolean }) {
-  const [period, setPeriod] = useState<'monthly' | 'weekly'>('monthly');
+function MiniCurve({ title, data, dataWeekly, keys, money }: {
+  title: string;
+  data: Record<string, number | string | null>[];
+  dataWeekly?: Record<string, number | string | null>[];
+  keys: [string, string, string][];
+  money?: boolean;
+}) {
+  const [period, setPeriod] = useState<'monthly' | 'weekly'>('weekly');
   const shown = period === 'weekly' && dataWeekly && dataWeekly.length > 0 ? dataWeekly : data;
   return (
     <div className="bg-white rounded-2xl border border-slate-100 p-4">
@@ -45,8 +50,8 @@ function MiniCurve({ title, data, dataWeekly, keys, money }: { title: string; da
           className="text-xs font-bold rounded-lg border border-slate-200 px-2 py-1.5 bg-white text-slate-700"
           aria-label="Filter periode"
         >
-          <option value="monthly">Monthly</option>
           <option value="weekly">Weekly</option>
+          <option value="monthly">Monthly</option>
         </select>
       </div>
       <div className="h-72 w-full">
@@ -58,9 +63,10 @@ function MiniCurve({ title, data, dataWeekly, keys, money }: { title: string; da
             <YAxis fontSize={11} tickLine={false} axisLine={false}
               tickFormatter={(v) => money ? `${Math.round(Number(v) / 1e6)}M` : `${v}%`} />
             <Tooltip formatter={(v: number) => money ? formatRupiah(v) : `${v}%`} />
-            <Legend verticalAlign="top" height={30} />
+            <Legend verticalAlign="top" height={36} />
             {keys.map(([k, label, color]) => (
-              <Line key={k} type="monotone" dataKey={k} name={label} stroke={color} strokeWidth={2.5} dot={{ r: period === 'weekly' ? 2 : 3, fill: color }} />
+              <Line key={k} type="monotone" dataKey={k} name={label} stroke={color} strokeWidth={2.5}
+                connectNulls={false} dot={{ r: period === 'weekly' ? 2 : 3, fill: color }} />
             ))}
           </ComposedChart>
         </ResponsiveContainer>
@@ -72,6 +78,10 @@ function MiniCurve({ title, data, dataWeekly, keys, money }: { title: string; da
 export function FtttFinanceMonitor({ financeProjectId, tab, reloadKey = 0 }: { financeProjectId: string; tab: 'overview' | 'transactions' | 'scurve'; reloadKey?: number }) {
   const [data, setData] = useState<MonitoringData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [disburseId, setDisburseId] = useState<string | null>(null);
+  const [disburseDate, setDisburseDate] = useState('');
+  const [disbursing, setDisbursing] = useState(false);
+  const [localReload, setLocalReload] = useState(0);
 
   useEffect(() => {
     let active = true;
@@ -81,7 +91,24 @@ export function FtttFinanceMonitor({ financeProjectId, tab, reloadKey = 0 }: { f
       .catch(() => { if (active) setData({ linked: false }); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [financeProjectId, reloadKey]);
+  }, [financeProjectId, reloadKey, localReload]);
+
+  const handleDisburse = async (txId: string) => {
+    if (!disburseDate) { toast.error('Isi Tanggal Dana Keluar'); return; }
+    setDisbursing(true);
+    try {
+      await apiPut(`/fttt-projects/transactions/${txId}/disburse`, {
+        disbursedAt: new Date(disburseDate + 'T12:00:00').toISOString(),
+      });
+      toast.success('Tanggal Dana Keluar tersimpan — budget diperbarui');
+      setDisburseId(null); setDisburseDate('');
+      setLocalReload((k) => k + 1);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Gagal');
+    } finally {
+      setDisbursing(false);
+    }
+  };
 
   if (loading) return <div className="p-8 text-center text-slate-500">Memuat data FTTT…</div>;
   if (!data || !data.linked) {
@@ -139,23 +166,32 @@ export function FtttFinanceMonitor({ financeProjectId, tab, reloadKey = 0 }: { f
     const txns = data.transactions ?? [];
     return (
       <div className="rounded-2xl border border-slate-100 bg-white overflow-x-auto">
+        <p className="px-3 pt-3 text-xs text-slate-500">
+          Budget hanya berkurang setelah Tanggal Dana Keluar diisi. Transaksi tanpa tanggal masih berupa rencana.
+        </p>
         <table className="min-w-full text-sm">
           <thead>
             <tr className="text-left text-xs text-slate-500 border-b border-slate-100">
-              <th className="px-3 py-2">Timestamp</th><th className="px-3 py-2">Kategori</th><th className="px-3 py-2">Aktivitas</th>
+              <th className="px-3 py-2">Timestamp</th><th className="px-3 py-2">Status</th><th className="px-3 py-2">Kategori</th><th className="px-3 py-2">Aktivitas</th>
               <th className="px-3 py-2 text-right">Qty</th><th className="px-3 py-2 text-right">Price</th>
-              <th className="px-3 py-2 text-right">Total</th><th className="px-3 py-2 text-right">Bobot%</th><th className="px-3 py-2">Remarks</th><th className="px-3 py-2">Oleh</th>
+              <th className="px-3 py-2 text-right">Total</th><th className="px-3 py-2 text-right">Bobot%</th><th className="px-3 py-2">Remarks</th><th className="px-3 py-2">Oleh</th><th className="px-3 py-2">Dana Keluar</th>
             </tr>
           </thead>
           <tbody>
             {txns.length === 0 ? (
-              <tr><td colSpan={9} className="px-3 py-6 text-center text-slate-400">Belum ada transaksi.</td></tr>
+              <tr><td colSpan={11} className="px-3 py-6 text-center text-slate-400">Belum ada transaksi.</td></tr>
             ) : txns.map((t) => {
               const total = num(t.total);
               const bobot = rab > 0 ? (total / rab) * 100 : 0;
+              const realized = !!t.disbursedAt;
               return (
                 <tr key={t.id} className="border-b border-slate-50">
                   <td className="px-3 py-2 text-xs text-slate-500 whitespace-nowrap">{new Date(t.createdAt).toLocaleString('id-ID', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</td>
+                  <td className="px-3 py-2">
+                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${realized ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
+                      {realized ? 'Terealisasi' : 'Menunggu'}
+                    </span>
+                  </td>
                   <td className="px-3 py-2">{CAT_LABEL[t.category]}</td>
                   <td className="px-3 py-2">{t.aktivitas}</td>
                   <td className="px-3 py-2 text-right tabular-nums">{num(t.qty)} {t.uom ?? ''}</td>
@@ -164,6 +200,27 @@ export function FtttFinanceMonitor({ financeProjectId, tab, reloadKey = 0 }: { f
                   <td className="px-3 py-2 text-right tabular-nums">{bobot.toFixed(2)}%</td>
                   <td className="px-3 py-2 text-xs text-slate-500">{t.remarks}</td>
                   <td className="px-3 py-2 text-xs text-slate-500">{t.createdBy?.name ?? '—'}</td>
+                  <td className="px-3 py-2 text-xs">
+                    {realized ? (
+                      <span className="text-emerald-700 whitespace-nowrap">
+                        {new Date(t.disbursedAt!).toLocaleDateString('id-ID')}
+                      </span>
+                    ) : disburseId === t.id ? (
+                      <div className="flex items-center gap-1">
+                        <input type="date" value={disburseDate} onChange={(e) => setDisburseDate(e.target.value)}
+                          className="text-xs border rounded px-1 py-0.5" />
+                        <button type="button" disabled={disbursing} onClick={() => void handleDisburse(t.id)}
+                          className="text-xs font-bold bg-emerald-600 text-white rounded px-2 py-0.5">
+                          {disbursing ? '…' : 'Simpan'}
+                        </button>
+                      </div>
+                    ) : (
+                      <button type="button" onClick={() => { setDisburseId(t.id); setDisburseDate(new Date().toISOString().slice(0, 10)); }}
+                        className="text-xs font-bold text-blue-600 hover:underline">
+                        + Tanggal
+                      </button>
+                    )}
+                  </td>
                 </tr>
               );
             })}
@@ -176,10 +233,18 @@ export function FtttFinanceMonitor({ financeProjectId, tab, reloadKey = 0 }: { f
   // tab === 'scurve'
   return (
     <div className="space-y-6">
-      <MiniCurve title="Kurva S Biaya (Cost — Planning vs Actual)" data={data.costCurve ?? []} dataWeekly={data.costCurveWeekly}
-        keys={[['plannedCost', 'Planned', '#94A3B8'], ['actualCost', 'Actual', '#00B89E']]} money />
-      <MiniCurve title="Kurva S Progress (Schedule — Planning vs Actual)" data={data.progressCurve ?? []} dataWeekly={data.progressCurveWeekly}
-        keys={[['plannedProgress', 'Planned %', '#94A3B8'], ['actualProgress', 'Actual %', '#0969DA']]} />
+      <MiniCurve title="Kurva S Biaya (Cost)" data={data.costCurve ?? []} dataWeekly={data.costCurveWeekly}
+        keys={[
+          ['baselineCost', 'Planning Awal', '#94A3B8'],
+          ['plannedCost', 'Perubahan Planning', '#F59E0B'],
+          ['actualCost', 'Actual', '#00B89E'],
+        ]} money />
+      <MiniCurve title="Kurva S Progress (Schedule)" data={data.progressCurve ?? []} dataWeekly={data.progressCurveWeekly}
+        keys={[
+          ['baselineProgress', 'Planning Awal %', '#94A3B8'],
+          ['plannedProgress', 'Perubahan Planning %', '#F59E0B'],
+          ['actualProgress', 'Actual %', '#0969DA'],
+        ]} />
     </div>
   );
 }
