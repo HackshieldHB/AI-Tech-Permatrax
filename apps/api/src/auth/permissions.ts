@@ -234,6 +234,8 @@ export const PERMISSIONS = {
     Role.OPERATIONAL_MANAGER,
   ],
   FINANCE_PROJECT_MANAGE: [Role.FINANCE, Role.GENERAL_MANAGER],
+  /** FTTT Kurva S planning — Finance sets Plan Awal; Finance + PM FTTT may Edit Planning */
+  FINANCE_PROJECT_TIMELINE_EDIT: [Role.FINANCE, Role.GENERAL_MANAGER, Role.PM_FTTT],
   BUDGET_TRANSFER_SUBMIT: [Role.FINANCE],
   BUDGET_TRANSFER_APPROVE: [Role.GENERAL_MANAGER],
   /** Daftar / detail transfer (inbox GM, daftar Finance, oversight Admin) */

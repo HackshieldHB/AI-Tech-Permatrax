@@ -23,8 +23,7 @@ const RECON_NO_APPROVAL = new Set([
   'INVOICE_PST_CLOSING', 'JAMINAN_PEMELIHARAAN_PST', 'JAMINAN_PELAKSANAAN_PST',
   // iFORTE — no approval needed (legacy keys kept for old projects)
   'PUNCHLIST', 'PO_FINAL', 'PSS', 'MCV', 'INVOICE_IFORTE',
-  // iFORTE — new business process (Testing Issues iForte)
-  'BA_JUSTIFIKASI', 'BAST_TERMIN_MCV',
+  // iFORTE Reconciliation: Endorsement, BA Justifikasi, BAST/Termin MCV all need PM approval
   // SUPPORTING_DOC_IFORTE requires PM FTTT review/approval (removed from auto-approve)
 ]);
 
@@ -56,8 +55,9 @@ const RECON_REQUIRED: Record<string, Array<[string, boolean, string]>> = {
   // BA Justifikasi opsional; PO Final terbit di sistem iFORTE (tidak diupload);
   // Invoice pindah ke fase Project Closing (diunggah Finance)
   IFORTE: [
-    ['ENDORSEMENT',       true,  'Endorsement (perlu disetujui)'],
-    ['BAST_TERMIN_MCV',   false, 'BAST / Termin MCV'],
+    ['ENDORSEMENT',       true, 'Endorsement (perlu disetujui)'],
+    ['BAST_TERMIN_MCV',   true, 'BAST / Termin MCV (perlu disetujui)'],
+    // BA_JUSTIFIKASI remains optional upload, but when present must be APPROVED (checked separately)
   ],
 };
 
@@ -428,10 +428,9 @@ export class FtttProjectService {
     // Fix #2: RECONCILIATION phase readiness — all required docs must be uploaded/approved
     if (phase === FtttPhase.RECONCILIATION) {
       const required = RECON_REQUIRED[company] ?? [];
-      const reconDocMap = new Map(
-        (project as typeof project & { reconDocs: { docKey: string; approvalStatus: string }[] })
-          .reconDocs.map((d) => [d.docKey, d.approvalStatus]),
-      );
+      const reconDocs = (project as typeof project & { reconDocs: { docKey: string; approvalStatus: string }[] })
+        .reconDocs ?? [];
+      const reconDocMap = new Map(reconDocs.map((d) => [d.docKey, d.approvalStatus]));
 
       for (const [docKey, needsApproval, label] of required) {
         const status = reconDocMap.get(docKey);
@@ -439,6 +438,13 @@ export class FtttProjectService {
           reasons.push(`${label} belum diunggah`);
         } else if (needsApproval && status !== 'APPROVED') {
           reasons.push(`${label} belum disetujui`);
+        }
+      }
+      // iFORTE: BA Justifikasi opsional, tetapi jika diunggah wajib disetujui PM
+      if (company === FtttCompany.IFORTE) {
+        const baJust = reconDocMap.get('BA_JUSTIFIKASI');
+        if (baJust && baJust !== 'APPROVED') {
+          reasons.push('BA Justifikasi belum disetujui');
         }
       }
     }
@@ -840,50 +846,18 @@ export class FtttProjectService {
     });
   }
 
-  // ─── Sanggah (iForte only, max 2) ─────────────────────────────────────────
+  // ─── Sanggah (removed from iFORTE business process — Testing Issues v3) ───
   async submitSanggah(
     id: string,
     dto: SubmitSanggahDtoType,
     file: Express.Multer.File | undefined,
     userId: string,
   ) {
-    const project = await this.prisma.ftttProject.findUniqueOrThrow({ where: { id } });
-    if (project.ftttCompany !== FtttCompany.IFORTE) {
-      throw new BadRequestException('Sanggah hanya tersedia untuk project iForte');
-    }
-
-    const existing = await this.prisma.ftttSanggah.count({ where: { projectId: id } });
-    if (existing >= 2) {
-      throw new BadRequestException('Maksimal 2 kali pengajuan sanggah');
-    }
-
-    let fileUrl: string | undefined;
-    if (file) {
-      fileUrl = await this.storage.uploadMulterFile(file, 'fttt-sanggah', id);
-    }
-
-    return this.prisma.ftttSanggah.create({
-      data: {
-        projectId:    id,
-        attemptNumber: existing + 1,
-        reason:       dto.reason,
-        fileUrl:      fileUrl ?? null,
-        submittedById: userId,
-      },
-      include: { submittedBy: { select: { id: true, name: true } } },
-    });
+    throw new BadRequestException('Proses Sanggah sudah tidak digunakan pada lifecycle iFORTE');
   }
 
   async resolveSanggah(sanggahId: string, dto: ResolveSanggahDtoType, userId: string) {
-    return this.prisma.ftttSanggah.update({
-      where: { id: sanggahId },
-      data:  {
-        status:        dto.status,
-        resolvedAt:    new Date(),
-        resolvedById:  userId,
-        responseNotes: dto.responseNotes ?? null,
-      },
-    });
+    throw new BadRequestException('Proses Sanggah sudah tidak digunakan pada lifecycle iFORTE');
   }
 
   // ─── Jaminan (Telkom Infra only, Finance role only) ───────────────────────
@@ -1389,6 +1363,12 @@ export class FtttProjectService {
     if (Number.isNaN(d.getTime())) {
       throw new BadRequestException('Tanggal Dana Keluar tidak valid');
     }
+    // Max today (local calendar day) — cannot pick a future date
+    const todayEnd = new Date();
+    todayEnd.setHours(23, 59, 59, 999);
+    if (d.getTime() > todayEnd.getTime()) {
+      throw new BadRequestException('Tanggal Dana Keluar tidak boleh melebihi hari ini');
+    }
     return this.prisma.ftttTransaction.update({
       where: { id: txId },
       data: { disbursedAt: d, disbursedById: userId },
@@ -1445,13 +1425,18 @@ export class FtttProjectService {
       rows
         .map((mm) => ({ t: new Date(mm.targetDate).getTime(), budget: num(mm.plannedBudget), pct: num(mm.plannedProgressPct) }))
         .sort((a, b) => a.t - b.t);
-    const currentMs = toMs(allMilestones.filter((m) => (m as { kind?: string }).kind !== 'BASELINE'));
+    const currentMs = toMs(allMilestones.filter((m) => (m as { kind?: string }).kind === 'CURRENT'));
     const baselineMsRaw = toMs(allMilestones.filter((m) => (m as { kind?: string }).kind === 'BASELINE'));
-    // If no explicit baseline yet, treat current as both (first save will snapshot)
+    // Plan Awal = BASELINE; Perubahan Planning only after a real Edit Planning (CURRENT differs from BASELINE)
     const baselineMs = baselineMsRaw.length > 0 ? baselineMsRaw : currentMs;
-    const revisedMs = currentMs.length > 0 ? currentMs : baselineMs;
     const hasBaseline = baselineMs.length > 0;
-    const hasRevised = revisedMs.length > 0;
+    const msEqual = (a: typeof baselineMs, b: typeof currentMs) => {
+      if (a.length !== b.length) return false;
+      return a.every((x, i) => x.t === b[i].t && x.budget === b[i].budget && x.pct === b[i].pct);
+    };
+    const hasRevision = baselineMsRaw.length > 0 && currentMs.length > 0 && !msEqual(baselineMsRaw, currentMs);
+    const revisedMs = hasRevision ? currentMs : baselineMs;
+    const hasRevised = hasRevision;
     const lastMs = hasRevised
       ? new Date(revisedMs[revisedMs.length - 1].t)
       : (hasBaseline ? new Date(baselineMs[baselineMs.length - 1].t) : null);
@@ -1589,6 +1574,9 @@ export class FtttProjectService {
       progressCurve: monthly.prog,
       costCurveWeekly: weekly.cost,
       progressCurveWeekly: weekly.prog,
+      // v3: Perubahan Planning line only after Edit Planning (hasRevision)
+      hasBaseline,
+      hasRevision,
       phasePlan: planPhases.map((p) => ({
         phase: p.phase,
         status: p.status,

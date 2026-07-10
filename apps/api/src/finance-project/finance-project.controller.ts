@@ -72,8 +72,8 @@ export class FinanceProjectController {
   }
 
   @Put(':id/timeline')
-  @Roles(...PERMISSIONS.FINANCE_PROJECT_MANAGE)
-  @ApiOperation({ summary: 'Atur baseline timeline (milestone) Kurva S FTTT' })
+  @Roles(...PERMISSIONS.FINANCE_PROJECT_TIMELINE_EDIT)
+  @ApiOperation({ summary: 'Set Plan Awal / Edit Planning Kurva S FTTT (Finance + PM FTTT)' })
   async setTimeline(@Param('id') id: string, @Body() body: unknown) {
     const parsed = SetTimelineDto.safeParse(body);
     if (!parsed.success) throw new BadRequestException(parsed.error.issues);

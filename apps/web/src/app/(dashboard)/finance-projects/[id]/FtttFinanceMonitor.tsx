@@ -22,6 +22,7 @@ interface MonitoringData {
   progressCurve?: Record<string, number | string | null>[];
   costCurveWeekly?: Record<string, number | string | null>[];
   progressCurveWeekly?: Record<string, number | string | null>[];
+  hasRevision?: boolean;
   transactions?: {
     id: string; category: Cat; aktivitas: string; uom: string | null;
     qty: string | number; price: string | number; total: string | number; remarks: string;
@@ -40,6 +41,7 @@ function MiniCurve({ title, data, dataWeekly, keys, money }: {
 }) {
   const [period, setPeriod] = useState<'monthly' | 'weekly'>('weekly');
   const shown = period === 'weekly' && dataWeekly && dataWeekly.length > 0 ? dataWeekly : data;
+  const chartWidth = Math.max(640, shown.length * (period === 'weekly' ? 56 : 72));
   return (
     <div className="bg-white rounded-2xl border border-slate-100 p-4">
       <div className="flex items-center justify-between mb-2 gap-2">
@@ -54,22 +56,24 @@ function MiniCurve({ title, data, dataWeekly, keys, money }: {
           <option value="monthly">Monthly</option>
         </select>
       </div>
-      <div className="h-72 w-full">
-        <ResponsiveContainer width="100%" height="100%">
-          <ComposedChart data={shown}>
-            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-            <XAxis dataKey="name" fontSize={period === 'weekly' ? 9 : 11} tickLine={false} axisLine={false}
-              interval="preserveStartEnd" angle={period === 'weekly' ? -30 : 0} height={period === 'weekly' ? 44 : 30} />
-            <YAxis fontSize={11} tickLine={false} axisLine={false}
-              tickFormatter={(v) => money ? `${Math.round(Number(v) / 1e6)}M` : `${v}%`} />
-            <Tooltip formatter={(v: number) => money ? formatRupiah(v) : `${v}%`} />
-            <Legend verticalAlign="top" height={36} />
-            {keys.map(([k, label, color]) => (
-              <Line key={k} type="monotone" dataKey={k} name={label} stroke={color} strokeWidth={2.5}
-                connectNulls={false} dot={{ r: period === 'weekly' ? 2 : 3, fill: color }} />
-            ))}
-          </ComposedChart>
-        </ResponsiveContainer>
+      <div className="h-80 w-full overflow-x-auto overflow-y-hidden">
+        <div style={{ width: chartWidth, minWidth: '100%', height: 288 }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <ComposedChart data={shown} margin={{ left: 4, right: 12, top: 8, bottom: 8 }}>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+              <XAxis dataKey="name" fontSize={period === 'weekly' ? 9 : 11} tickLine={false} axisLine={false}
+                interval={0} angle={period === 'weekly' ? -30 : 0} height={period === 'weekly' ? 48 : 30} />
+              <YAxis fontSize={11} tickLine={false} axisLine={false}
+                tickFormatter={(v) => money ? `${Math.round(Number(v) / 1e6)}M` : `${v}%`} />
+              <Tooltip formatter={(v: number) => money ? formatRupiah(v) : `${v}%`} />
+              <Legend verticalAlign="top" height={36} />
+              {keys.map(([k, label, color]) => (
+                <Line key={k} type="monotone" dataKey={k} name={label} stroke={color} strokeWidth={2.5}
+                  connectNulls={false} dot={{ r: period === 'weekly' ? 2 : 3, fill: color }} />
+              ))}
+            </ComposedChart>
+          </ResponsiveContainer>
+        </div>
       </div>
     </div>
   );
@@ -95,6 +99,8 @@ export function FtttFinanceMonitor({ financeProjectId, tab, reloadKey = 0 }: { f
 
   const handleDisburse = async (txId: string) => {
     if (!disburseDate) { toast.error('Isi Tanggal Dana Keluar'); return; }
+    const today = new Date().toISOString().slice(0, 10);
+    if (disburseDate > today) { toast.error('Tanggal Dana Keluar tidak boleh melebihi hari ini'); return; }
     setDisbursing(true);
     try {
       await apiPut(`/fttt-projects/transactions/${txId}/disburse`, {
@@ -207,7 +213,13 @@ export function FtttFinanceMonitor({ financeProjectId, tab, reloadKey = 0 }: { f
                       </span>
                     ) : disburseId === t.id ? (
                       <div className="flex items-center gap-1">
-                        <input type="date" value={disburseDate} onChange={(e) => setDisburseDate(e.target.value)}
+                        <input type="date" value={disburseDate} max={new Date().toISOString().slice(0, 10)}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            const today = new Date().toISOString().slice(0, 10);
+                            if (v && v > today) { toast.error('Tanggal Dana Keluar tidak boleh melebihi hari ini'); return; }
+                            setDisburseDate(v);
+                          }}
                           className="text-xs border rounded px-1 py-0.5" />
                         <button type="button" disabled={disbursing} onClick={() => void handleDisburse(t.id)}
                           className="text-xs font-bold bg-emerald-600 text-white rounded px-2 py-0.5">
@@ -231,20 +243,17 @@ export function FtttFinanceMonitor({ financeProjectId, tab, reloadKey = 0 }: { f
   }
 
   // tab === 'scurve'
+  const showRevision = !!data.hasRevision;
   return (
     <div className="space-y-6">
       <MiniCurve title="Kurva S Biaya (Cost)" data={data.costCurve ?? []} dataWeekly={data.costCurveWeekly}
-        keys={[
-          ['baselineCost', 'Planning Awal', '#94A3B8'],
-          ['plannedCost', 'Perubahan Planning', '#F59E0B'],
-          ['actualCost', 'Actual', '#00B89E'],
-        ]} money />
+        keys={showRevision
+          ? [['baselineCost', 'Planning Awal', '#94A3B8'], ['plannedCost', 'Perubahan Planning', '#F59E0B'], ['actualCost', 'Actual', '#00B89E']]
+          : [['baselineCost', 'Planning Awal', '#94A3B8'], ['actualCost', 'Actual', '#00B89E']]} money />
       <MiniCurve title="Kurva S Progress (Schedule)" data={data.progressCurve ?? []} dataWeekly={data.progressCurveWeekly}
-        keys={[
-          ['baselineProgress', 'Planning Awal %', '#94A3B8'],
-          ['plannedProgress', 'Perubahan Planning %', '#F59E0B'],
-          ['actualProgress', 'Actual %', '#0969DA'],
-        ]} />
+        keys={showRevision
+          ? [['baselineProgress', 'Planning Awal %', '#94A3B8'], ['plannedProgress', 'Perubahan Planning %', '#F59E0B'], ['actualProgress', 'Actual %', '#0969DA']]
+          : [['baselineProgress', 'Planning Awal %', '#94A3B8'], ['actualProgress', 'Actual %', '#0969DA']]} />
     </div>
   );
 }

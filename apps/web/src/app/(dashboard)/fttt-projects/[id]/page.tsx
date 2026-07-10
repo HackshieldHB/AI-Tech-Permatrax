@@ -1438,6 +1438,7 @@ function SCurveMini({ title, data, dataWeekly, keys, money }: {
 }) {
   const [period, setPeriod] = useState<'weekly' | 'monthly'>('weekly');
   const shown = period === 'weekly' && dataWeekly && dataWeekly.length > 0 ? dataWeekly : data;
+  const chartWidth = Math.max(640, shown.length * (period === 'weekly' ? 56 : 72));
   return (
     <div style={{ marginBottom: 16 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 6 }}>
@@ -1448,21 +1449,23 @@ function SCurveMini({ title, data, dataWeekly, keys, money }: {
           <option value="monthly">Monthly</option>
         </select>
       </div>
-      <div style={{ height: 220, width: '100%' }}>
-        <ResponsiveContainer width="100%" height="100%">
-          <ComposedChart data={shown}>
-            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-            <XAxis dataKey="name" fontSize={period === 'weekly' ? 8 : 10} tickLine={false} axisLine={false}
-              interval="preserveStartEnd" angle={period === 'weekly' ? -30 : 0} height={period === 'weekly' ? 44 : 30} />
-            <YAxis fontSize={10} tickLine={false} axisLine={false} tickFormatter={(v) => money ? `${Math.round(Number(v) / 1e6)}M` : `${v}%`} />
-            <RTooltip formatter={(v: number) => money ? 'Rp ' + Math.round(v).toLocaleString('id-ID') : `${v}%`} />
-            <RLegend verticalAlign="top" height={28} />
-            {keys.map(([k, label, color]) => (
-              <Line key={k} type="monotone" dataKey={k} name={label} stroke={color} strokeWidth={2}
-                connectNulls={false} dot={{ r: period === 'weekly' ? 2 : 3, fill: color }} />
-            ))}
-          </ComposedChart>
-        </ResponsiveContainer>
+      <div style={{ height: 240, width: '100%', overflowX: 'auto', overflowY: 'hidden' }}>
+        <div style={{ width: chartWidth, minWidth: '100%', height: 220 }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <ComposedChart data={shown} margin={{ left: 4, right: 12, top: 8, bottom: 8 }}>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+              <XAxis dataKey="name" fontSize={period === 'weekly' ? 8 : 10} tickLine={false} axisLine={false}
+                interval={0} angle={period === 'weekly' ? -30 : 0} height={period === 'weekly' ? 48 : 30} />
+              <YAxis fontSize={10} tickLine={false} axisLine={false} tickFormatter={(v) => money ? `${Math.round(Number(v) / 1e6)}M` : `${v}%`} />
+              <RTooltip formatter={(v: number) => money ? 'Rp ' + Math.round(v).toLocaleString('id-ID') : `${v}%`} />
+              <RLegend verticalAlign="top" height={28} />
+              {keys.map(([k, label, color]) => (
+                <Line key={k} type="monotone" dataKey={k} name={label} stroke={color} strokeWidth={2}
+                  connectNulls={false} dot={{ r: period === 'weekly' ? 2 : 3, fill: color }} />
+              ))}
+            </ComposedChart>
+          </ResponsiveContainer>
+        </div>
       </div>
     </div>
   );
@@ -1482,6 +1485,7 @@ function TransactionLogSection({ project, onRefresh, userRole }: { project: Fttt
     progressCurve: Record<string, unknown>[];
     costCurveWeekly?: Record<string, unknown>[];
     progressCurveWeekly?: Record<string, unknown>[];
+    hasRevision?: boolean;
   } | null>(null);
   const [disburseId, setDisburseId] = useState<string | null>(null);
   const [disburseDate, setDisburseDate] = useState('');
@@ -1489,6 +1493,61 @@ function TransactionLogSection({ project, onRefresh, userRole }: { project: Fttt
   const [openCat, setOpenCat] = useState<FtttCostCategory | null>(null);
   const [form, setForm] = useState({ aktivitas: '', uom: '', qty: '', price: '', remarks: '' });
   const [saving, setSaving] = useState(false);
+  const [planOpen, setPlanOpen] = useState(false);
+  const [planRows, setPlanRows] = useState<{ targetDate: string; plannedBudget: string; plannedProgressPct: string }[]>([]);
+  const [hasBaselinePlan, setHasBaselinePlan] = useState(false);
+  const [savingPlan, setSavingPlan] = useState(false);
+
+  const formatBudgetInput = (raw: string) => {
+    const digits = raw.replace(/\D/g, '');
+    if (!digits) return '';
+    return Number(digits).toLocaleString('id-ID');
+  };
+  const parseBudgetInput = (display: string) => Number(display.replace(/\D/g, '')) || 0;
+
+  const openPlanEditor = async () => {
+    if (!fp) return;
+    setPlanOpen(true);
+    try {
+      const res = await apiFetch(`/finance-projects/${fp.id}/timeline`, { method: 'GET' }, user?.id);
+      if (!res.ok) throw new Error('Gagal memuat planning');
+      const data = await res.json();
+      const rows = Array.isArray(data) ? data : (data.milestones ?? []);
+      setHasBaselinePlan(Array.isArray(data) ? rows.length > 0 : !!data.hasBaseline);
+      setPlanRows(rows.length
+        ? rows.map((r: { targetDate: string; plannedBudget: string | number; plannedProgressPct: string | number }) => ({
+            targetDate: String(r.targetDate).slice(0, 10),
+            plannedBudget: Number(r.plannedBudget) ? Number(r.plannedBudget).toLocaleString('id-ID') : '',
+            plannedProgressPct: String(Number(r.plannedProgressPct)),
+          }))
+        : [{ targetDate: '', plannedBudget: '', plannedProgressPct: '' }]);
+    } catch {
+      setPlanRows([{ targetDate: '', plannedBudget: '', plannedProgressPct: '' }]);
+    }
+  };
+
+  const savePlanEditor = async () => {
+    if (!fp) return;
+    const milestones = planRows
+      .filter((r) => r.targetDate)
+      .map((r) => ({
+        targetDate: new Date(r.targetDate + 'T12:00:00').toISOString(),
+        plannedBudget: parseBudgetInput(r.plannedBudget),
+        plannedProgressPct: Math.min(100, Number(r.plannedProgressPct) || 0),
+      }));
+    setSavingPlan(true);
+    try {
+      const res = await apiFetch(`/finance-projects/${fp.id}/timeline`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ milestones }),
+      }, user?.id);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
+      toast.success(hasBaselinePlan ? 'Perubahan Planning tersimpan' : 'Plan Awal tersimpan');
+      setPlanOpen(false);
+      void loadScurve();
+    } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
+    finally { setSavingPlan(false); }
+  };
 
   const loadScurve = useCallback(async () => {
     try {
@@ -1532,6 +1591,8 @@ function TransactionLogSection({ project, onRefresh, userRole }: { project: Fttt
 
   const handleDisburse = async (id: string) => {
     if (!disburseDate) { toast.error('Isi Tanggal Dana Keluar'); return; }
+    const today = new Date().toISOString().slice(0, 10);
+    if (disburseDate > today) { toast.error('Tanggal Dana Keluar tidak boleh melebihi hari ini'); return; }
     setDisbursing(true);
     try {
       const res = await apiFetch(`/fttt-projects/transactions/${id}/disburse`, {
@@ -1643,7 +1704,13 @@ function TransactionLogSection({ project, onRefresh, userRole }: { project: Fttt
                     <div style={{ marginTop: 6, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
                       {disburseId === t.id ? (
                         <>
-                          <input type="date" value={disburseDate} onChange={(e) => setDisburseDate(e.target.value)}
+                          <input type="date" value={disburseDate} max={new Date().toISOString().slice(0, 10)}
+                            onChange={(e) => {
+                              const v = e.target.value;
+                              const today = new Date().toISOString().slice(0, 10);
+                              if (v && v > today) { toast.error('Tanggal Dana Keluar tidak boleh melebihi hari ini'); return; }
+                              setDisburseDate(v);
+                            }}
                             style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 11 }} />
                           <button type="button" disabled={disbursing} onClick={() => void handleDisburse(t.id)}
                             style={{ padding: '4px 10px', borderRadius: 6, border: 'none', background: '#1a7f37', color: '#fff', fontWeight: 700, fontSize: 11, cursor: 'pointer' }}>
@@ -1670,13 +1737,64 @@ function TransactionLogSection({ project, onRefresh, userRole }: { project: Fttt
 
       {scurve && (
         <div style={{ marginTop: 14 }}>
-          <p style={{ fontSize: 11, color: '#8c959f', margin: '0 0 8px' }}>
-            ℹ️ Baseline Planning Kurva S diatur oleh Finance di menu Finance Project → Edit Planning.
-          </p>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+            <p style={{ fontSize: 11, color: '#8c959f', margin: 0 }}>
+              ℹ️ Planning Awal diatur lewat Set Plan Awal; Edit Planning menambah garis Perubahan Planning.
+            </p>
+            {(isPm || isFinance) && fp && (
+              <button type="button" onClick={() => void openPlanEditor()}
+                style={{ padding: '5px 10px', borderRadius: 6, border: 'none', background: '#0F1B2D', color: '#fff', fontWeight: 700, fontSize: 11, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                {hasBaselinePlan || scurve.hasRevision || (scurve.costCurve?.length ?? 0) > 0 ? '✏️ Edit Planning' : '📌 Set Plan Awal'}
+              </button>
+            )}
+          </div>
           <SCurveMini title="📈 Kurva S Biaya" data={scurve.costCurve} dataWeekly={scurve.costCurveWeekly}
-            keys={[['baselineCost', 'Planning Awal', '#94A3B8'], ['plannedCost', 'Perubahan Planning', '#F59E0B'], ['actualCost', 'Actual', '#00B89E']]} money />
+            keys={scurve.hasRevision
+              ? [['baselineCost', 'Planning Awal', '#94A3B8'], ['plannedCost', 'Perubahan Planning', '#F59E0B'], ['actualCost', 'Actual', '#00B89E']]
+              : [['baselineCost', 'Planning Awal', '#94A3B8'], ['actualCost', 'Actual', '#00B89E']]} money />
           <SCurveMini title="📊 Kurva S Progress" data={scurve.progressCurve} dataWeekly={scurve.progressCurveWeekly}
-            keys={[['baselineProgress', 'Planning Awal %', '#94A3B8'], ['plannedProgress', 'Perubahan Planning %', '#F59E0B'], ['actualProgress', 'Actual %', '#0969DA']]} />
+            keys={scurve.hasRevision
+              ? [['baselineProgress', 'Planning Awal %', '#94A3B8'], ['plannedProgress', 'Perubahan Planning %', '#F59E0B'], ['actualProgress', 'Actual %', '#0969DA']]
+              : [['baselineProgress', 'Planning Awal %', '#94A3B8'], ['actualProgress', 'Actual %', '#0969DA']]} />
+        </div>
+      )}
+
+      {planOpen && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 50, background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+          <div style={{ background: '#fff', borderRadius: 16, maxWidth: 640, width: '100%', maxHeight: '90vh', overflow: 'auto', padding: 20 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+              <p style={{ margin: 0, fontWeight: 800, fontSize: 15 }}>{hasBaselinePlan ? 'Edit Planning — Kurva S' : 'Set Plan Awal — Kurva S'}</p>
+              <button type="button" onClick={() => setPlanOpen(false)} style={{ border: 'none', background: 'none', cursor: 'pointer', fontSize: 16 }}>✕</button>
+            </div>
+            <p style={{ fontSize: 11, color: '#57606a', marginBottom: 10 }}>
+              {hasBaselinePlan
+                ? 'Edit ini menyimpan garis Perubahan Planning. Planning Awal tetap tidak berubah.'
+                : 'Simpan sebagai Plan Awal (baseline). Garis Perubahan Planning baru muncul setelah Edit Planning.'}
+            </p>
+            {planRows.map((r, i) => (
+              <div key={i} style={{ display: 'grid', gridTemplateColumns: '1.2fr 1.4fr 1fr auto', gap: 6, marginBottom: 6 }}>
+                <input type="date" value={r.targetDate} onChange={(e) => { const n = [...planRows]; n[i] = { ...n[i], targetDate: e.target.value }; setPlanRows(n); }}
+                  style={{ padding: '6px 8px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12 }} />
+                <input type="text" inputMode="numeric" placeholder="1.000.000" value={r.plannedBudget}
+                  onChange={(e) => { const n = [...planRows]; n[i] = { ...n[i], plannedBudget: formatBudgetInput(e.target.value) }; setPlanRows(n); }}
+                  style={{ padding: '6px 8px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12 }} />
+                <input type="number" placeholder="0-100" value={r.plannedProgressPct}
+                  onChange={(e) => { const n = [...planRows]; n[i] = { ...n[i], plannedProgressPct: e.target.value }; setPlanRows(n); }}
+                  style={{ padding: '6px 8px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12 }} />
+                <button type="button" onClick={() => setPlanRows(planRows.filter((_, x) => x !== i))} style={{ color: '#cf222e', border: 'none', background: 'none', cursor: 'pointer' }}>✕</button>
+              </div>
+            ))}
+            <button type="button" onClick={() => setPlanRows([...planRows, { targetDate: '', plannedBudget: '', plannedProgressPct: '' }])}
+              style={{ fontSize: 11, fontWeight: 700, color: '#00B89E', border: 'none', background: 'none', cursor: 'pointer', marginBottom: 10 }}>+ Tambah Milestone</button>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button type="button" disabled={savingPlan} onClick={() => void savePlanEditor()}
+                style={{ flex: 1, padding: '8px 12px', borderRadius: 8, border: 'none', background: '#0F1B2D', color: '#fff', fontWeight: 700, fontSize: 12, cursor: 'pointer' }}>
+                {savingPlan ? 'Menyimpan…' : (hasBaselinePlan ? 'Simpan Perubahan Planning' : 'Simpan Plan Awal')}
+              </button>
+              <button type="button" onClick={() => setPlanOpen(false)}
+                style={{ flex: 1, padding: '8px 12px', borderRadius: 8, border: '1px solid #D0D7DE', background: '#fff', fontSize: 12, cursor: 'pointer' }}>Batal</button>
+            </div>
+          </div>
         </div>
       )}
     </div>
@@ -2127,8 +2245,8 @@ const RECON_DOCS: Record<string, {
   // PO Final terbit via sistem iFORTE (tidak diupload); Invoice pindah ke Project Closing.
   IFORTE: [
     { key: 'ENDORSEMENT',    label: 'Endorsement',               desc: 'Dokumen Endorsement — diajukan juga pada sistem iFORTE',                      uploaderRole: ['ADMIN', 'GENERAL_MANAGER'], requiresApproval: true },
-    { key: 'BA_JUSTIFIKASI', label: 'BA Justifikasi (Opsional)', desc: 'Hanya bila terdapat perbedaan antara BOQ ILT dan BOQ iFORTE',                 uploaderRole: ['ADMIN', 'GENERAL_MANAGER'], requiresApproval: false },
-    { key: 'BAST_TERMIN_MCV', label: 'BAST / Termin MCV',        desc: 'Dasar proses penagihan (billing) — invoice dibuat berdasarkan dokumen ini',   uploaderRole: ['ADMIN', 'GENERAL_MANAGER'], requiresApproval: false },
+    { key: 'BA_JUSTIFIKASI', label: 'BA Justifikasi (Opsional)', desc: 'Hanya bila terdapat perbedaan antara BOQ ILT dan BOQ iFORTE — wajib disetujui PM bila diunggah', uploaderRole: ['ADMIN', 'GENERAL_MANAGER'], requiresApproval: true },
+    { key: 'BAST_TERMIN_MCV', label: 'BAST / Termin MCV',        desc: 'Dasar proses penagihan (billing) — wajib disetujui PM FTTT',   uploaderRole: ['ADMIN', 'GENERAL_MANAGER'], requiresApproval: true },
   ],
 };
 
@@ -3145,12 +3263,6 @@ export default function FtttProjectDetailPage() {
             <ReconciliationSection project={project} onRefresh={load} userRole={userRole} />
           )}
 
-          {/* Sanggah — iForte, available during RECONCILIATION */}
-          {project.currentPhase === 'RECONCILIATION' && project.ftttCompany === 'IFORTE' && (
-            <div style={{ marginTop: 16, borderTop: '1px solid #EAEEF2', paddingTop: 12 }}>
-              <SanggahSection project={project} onRefresh={load} isAdmin={userRole === 'ADMIN'} />
-            </div>
-          )}
 
           {/* Implementation phase */}
           {project.currentPhase === 'IMPLEMENTATION' && (
@@ -3168,12 +3280,6 @@ export default function FtttProjectDetailPage() {
             </p>
           )}
 
-          {/* Also show Sanggah history if iForte project */}
-          {project.ftttCompany === 'IFORTE' && project.sanggahs.length > 0 && project.currentPhase !== 'RECONCILIATION' && (
-            <div style={{ marginTop: 16, borderTop: '1px solid #EAEEF2', paddingTop: 12 }}>
-              <SanggahSection project={project} onRefresh={load} isAdmin={userRole === 'ADMIN'} />
-            </div>
-          )}
 
           {/* DRM history always visible for PST */}
           {project.ftttCompany === 'PST' && project.drmDocuments.length > 0 && project.currentPhase !== 'PREPARATION' && (
