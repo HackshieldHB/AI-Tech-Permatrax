@@ -354,6 +354,7 @@ model User {
   ftttSpanLogs           FtttSpanLog[]            @relation("FtttSpanLogUploader")
   ftttMaintConfirmations FtttProject[]            @relation("FtttMaintConfirmer")
   ftttTransactions       FtttTransaction[]        @relation("FtttTransactionCreator")
+  ftttTransactionsDisbursed FtttTransaction[]     @relation("FtttTransactionDisburser")
 }
 
 // Phase 4 — GM-controlled feature visibility per role
@@ -3066,7 +3067,7 @@ enum FtttCostCategory {
 }
 
 // JLM: S-Curve baseline milestone (Finance-owned) — Target Date + cumulative Planned
-// Budget + Planned Progress %. Basis for the Planning line on both S-curves.
+// Budget + Planned Progress %. kind=BASELINE is immutable first planning; CURRENT is revised.
 model FtttMilestone {
   id                 String         @id @default(cuid())
   financeProjectId   String
@@ -3074,9 +3075,12 @@ model FtttMilestone {
   targetDate         DateTime
   plannedBudget      Decimal        @db.Decimal(18, 2) // cumulative planned cost up to targetDate
   plannedProgressPct Decimal        @db.Decimal(6, 2)  // 0–100
+  // BASELINE = Planning Awal (immutable); CURRENT = Perubahan Planning (revised)
+  kind               String         @default("CURRENT")
   createdAt          DateTime       @default(now())
 
   @@index([financeProjectId])
+  @@index([financeProjectId, kind])
 }
 
 model FtttTransaction {
@@ -3092,14 +3096,19 @@ model FtttTransaction {
   remarks          String
   createdById      String
   createdAt        DateTime         @default(now()) // immutable, real-time
+  // Stage 2 — Finance confirms dana keluar; only then counts toward budget/S-curve Actual
+  disbursedAt      DateTime?
+  disbursedById    String?
 
   ftttProject    FtttProject     @relation(fields: [ftttProjectId], references: [id], onDelete: Cascade)
   financeProject FinanceProject? @relation(fields: [financeProjectId], references: [id])
   createdBy      User            @relation("FtttTransactionCreator", fields: [createdById], references: [id])
+  disbursedBy    User?           @relation("FtttTransactionDisburser", fields: [disbursedById], references: [id])
 
   @@index([ftttProjectId])
   @@index([financeProjectId])
   @@index([category])
+  @@index([disbursedAt])
 }
 
 model FtttPhaseProgress {
@@ -3250,6 +3259,8 @@ model FtttImplementationLog {
   fileUrl      String?
   caption      String?
   notes        String?
+  // iFORTE: meter from Daily Log / Log Aktivitas — feeds Progress (%)
+  meterDone    Decimal?         @db.Decimal(10, 2)
   createdAt    DateTime         @default(now())
   updatedAt    DateTime         @updatedAt
 

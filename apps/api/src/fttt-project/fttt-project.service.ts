@@ -24,7 +24,8 @@ const RECON_NO_APPROVAL = new Set([
   // iFORTE — no approval needed (legacy keys kept for old projects)
   'PUNCHLIST', 'PO_FINAL', 'PSS', 'MCV', 'INVOICE_IFORTE',
   // iFORTE — new business process (Testing Issues iForte)
-  'BA_JUSTIFIKASI', 'BAST_TERMIN_MCV', 'SUPPORTING_DOC_IFORTE',
+  'BA_JUSTIFIKASI', 'BAST_TERMIN_MCV',
+  // SUPPORTING_DOC_IFORTE requires PM FTTT review/approval (removed from auto-approve)
 ]);
 
 // Required docs per company for RECONCILIATION phase readiness
@@ -364,9 +365,8 @@ export class FtttProjectService {
           ['BAUT',            'BAUT'],
           ['BAUT_REKONSILIASI', 'BA Rekonsiliasi'],
         ],
-        // iFORTE (Testing Issues iForte): ATP + dokumentasi pekerjaan + evidence
-        // wajib disetujui (PM lalu Admin); Punch List opsional
-        IFORTE: [['ATP', 'ATP'], ['DOKUMENTASI', 'Dokumentasi Pekerjaan'], ['EVIDENCE', 'Evidence']],
+        // iFORTE: seluruh dokumen Documentation & Acceptance bersifat opsional (non-mandatory)
+        IFORTE: [],
       };
       const required = DOC_REQUIRED[company] ?? [];
       // project.documents is filtered to APPROVED only in the include above
@@ -1108,8 +1108,13 @@ export class FtttProjectService {
     userRole: Role,
   ) {
     const project = await this.prisma.ftttProject.findUniqueOrThrow({ where: { id }, select: { ftttCompany: true } });
-    // TI: Admin-only; PST/iFORTE: Surveyor, PM, Admin
-    if (project.ftttCompany === FtttCompany.TELKOM_INFRA) {
+    // iFORTE RFSD: Admin Project only
+    if (dto.logType === FtttImplLogType.RFSD) {
+      if (userRole !== Role.ADMIN && userRole !== Role.GENERAL_MANAGER) {
+        throw new ForbiddenException('Hanya Admin Project yang dapat mengunggah RFSD');
+      }
+    } else if (project.ftttCompany === FtttCompany.TELKOM_INFRA) {
+      // TI: Admin-only
       if (userRole !== Role.ADMIN && userRole !== Role.GENERAL_MANAGER) {
         throw new ForbiddenException('Hanya Admin Project yang dapat menambahkan log implementasi untuk project Telkom Infra');
       }
@@ -1120,8 +1125,13 @@ export class FtttProjectService {
       }
     }
 
-    // File required for PHOTO and MONITORING_DOC
-    if ((dto.logType === FtttImplLogType.PHOTO || dto.logType === FtttImplLogType.MONITORING_DOC) && !file) {
+    // File required for PHOTO, MONITORING_DOC, RFSD
+    if (
+      (dto.logType === FtttImplLogType.PHOTO ||
+        dto.logType === FtttImplLogType.MONITORING_DOC ||
+        dto.logType === FtttImplLogType.RFSD) &&
+      !file
+    ) {
       throw new BadRequestException('File wajib untuk tipe log ini');
     }
 
@@ -1138,6 +1148,7 @@ export class FtttProjectService {
         fileUrl:     fileUrl ?? null,
         caption:     dto.caption ?? null,
         notes:       dto.notes ?? null,
+        meterDone:   dto.meterDone != null ? dto.meterDone : null,
       },
       include: { uploadedBy: { select: { id: true, name: true, role: true } } },
     });
@@ -1218,7 +1229,7 @@ export class FtttProjectService {
       throw new ForbiddenException('Tidak memiliki akses untuk mengunggah dokumentasi Span');
     }
     const fileUrl = await this.storage.uploadMulterFile(file, 'fttt-span', span.projectId);
-    return this.prisma.ftttSpanLog.create({
+    const spanLog = await this.prisma.ftttSpanLog.create({
       data: {
         spanId, projectId: span.projectId, category: dto.category, fileUrl,
         caption: dto.caption ?? null, uploadedById: userId,
@@ -1227,6 +1238,22 @@ export class FtttProjectService {
       },
       include: { uploadedBy: { select: { id: true, name: true } } },
     });
+    // iFORTE: setiap Daily Log Span juga masuk ke Log Aktivitas (histori project)
+    if (project.ftttCompany === FtttCompany.IFORTE) {
+      const catLabel = String(dto.category).replace(/_/g, ' ');
+      await this.prisma.ftttImplementationLog.create({
+        data: {
+          projectId: span.projectId,
+          uploadedById: userId,
+          logType: FtttImplLogType.PHOTO,
+          fileUrl,
+          caption: dto.caption ?? `Daily Log Span — ${catLabel}`,
+          notes: dto.meterDone != null ? `Meter selesai: ${dto.meterDone} m` : null,
+          meterDone: dto.meterDone != null ? dto.meterDone : null,
+        },
+      });
+    }
+    return spanLog;
   }
 
   async deleteSpanLog(logId: string, userId: string, userRole: Role) {
@@ -1290,7 +1317,13 @@ export class FtttProjectService {
       },
       // JLM: Finance link + implementation transaction log
       financeProject: { select: { id: true, code: true, name: true, projectType: true, totalBudget: true, budgetPerizinan: true, materialBudget: true, jasaBudget: true, budgetLainLain: true } },
-      transactions:   { include: { createdBy: { select: { id: true, name: true } } }, orderBy: { createdAt: 'desc' as const } },
+      transactions:   {
+        include: {
+          createdBy: { select: { id: true, name: true } },
+          disbursedBy: { select: { id: true, name: true } },
+        },
+        orderBy: { createdAt: 'desc' as const },
+      },
     } as const;
   }
 
@@ -1307,6 +1340,7 @@ export class FtttProjectService {
   }
 
   // ─── JLM: Implementation Transaction Log (PM FTTT) ───────────────────────────
+  // Stage 1: PM creates plan/need — does NOT reduce Finance budget until disbursed
   async addTransaction(projectId: string, dto: AddFtttTransactionDtoType, userId: string, userRole: Role) {
     if (userRole !== Role.PM_FTTT && userRole !== Role.GENERAL_MANAGER) {
       throw new ForbiddenException('Hanya PM FTTT yang dapat mencatat Transaction Log');
@@ -1333,13 +1367,43 @@ export class FtttProjectService {
         total:            total.toString(),
         remarks:          dto.remarks.trim(),
         createdById:      userId,
+        // disbursedAt left null — budget not affected until Finance confirms
       },
-      include: { createdBy: { select: { id: true, name: true } } },
+      include: {
+        createdBy: { select: { id: true, name: true } },
+        disbursedBy: { select: { id: true, name: true } },
+      },
+    });
+  }
+
+  // Stage 2: Finance sets Tanggal Dana Keluar → only then counts toward budget / S-curve Actual
+  async disburseTransaction(txId: string, disbursedAtIso: string, userId: string, userRole: Role) {
+    if (userRole !== Role.FINANCE && userRole !== Role.GENERAL_MANAGER) {
+      throw new ForbiddenException('Hanya Finance yang dapat mengisi Tanggal Dana Keluar');
+    }
+    const tx = await this.prisma.ftttTransaction.findUniqueOrThrow({ where: { id: txId } });
+    if (tx.disbursedAt) {
+      throw new BadRequestException('Transaksi ini sudah memiliki Tanggal Dana Keluar');
+    }
+    const d = new Date(disbursedAtIso);
+    if (Number.isNaN(d.getTime())) {
+      throw new BadRequestException('Tanggal Dana Keluar tidak valid');
+    }
+    return this.prisma.ftttTransaction.update({
+      where: { id: txId },
+      data: { disbursedAt: d, disbursedById: userId },
+      include: {
+        createdBy: { select: { id: true, name: true } },
+        disbursedBy: { select: { id: true, name: true } },
+      },
     });
   }
 
   async deleteTransaction(txId: string, userId: string, userRole: Role) {
     const tx = await this.prisma.ftttTransaction.findUniqueOrThrow({ where: { id: txId } });
+    if (tx.disbursedAt) {
+      throw new BadRequestException('Transaksi yang sudah terealisasi (ada Tanggal Dana Keluar) tidak dapat dihapus');
+    }
     if (userRole !== Role.PM_FTTT && userRole !== Role.GENERAL_MANAGER && userRole !== Role.ADMIN) {
       throw new ForbiddenException('Tidak berwenang menghapus transaksi');
     }
@@ -1352,7 +1416,7 @@ export class FtttProjectService {
       where: { id: projectId },
       include: {
         financeProject: { select: { id: true, code: true, name: true, totalBudget: true, budgetPerizinan: true, materialBudget: true, jasaBudget: true, budgetLainLain: true, createdAt: true, endDate: true } },
-        transactions: { orderBy: { createdAt: 'asc' }, include: { createdBy: { select: { id: true, name: true } } } },
+        transactions: { orderBy: { createdAt: 'asc' }, include: { createdBy: { select: { id: true, name: true } }, disbursedBy: { select: { id: true, name: true } } } },
         phaseProgresses: true,
       },
     });
@@ -1367,27 +1431,37 @@ export class FtttProjectService {
     };
     const totalBudget = num(fp?.totalBudget) || (budgets.PERIZINAN + budgets.MATERIAL + budgets.JASA + budgets.LAIN_LAIN);
 
-    // Spent per category (from transactions)
+    // Only disbursed transactions count toward spent / Actual (Stage 2)
+    const realized = project.transactions.filter((t) => t.disbursedAt != null);
     const spent = { PERIZINAN: 0, MATERIAL: 0, JASA: 0, LAIN_LAIN: 0 } as Record<string, number>;
-    for (const t of project.transactions) spent[t.category] += num(t.total);
+    for (const t of realized) spent[t.category] += num(t.total);
     const totalSpent = spent.PERIZINAN + spent.MATERIAL + spent.JASA + spent.LAIN_LAIN;
 
-    // JLM: Finance-owned baseline milestones drive the Planning lines
-    const milestones = fp
+    // Finance-owned milestones: BASELINE (Planning Awal) + CURRENT (Perubahan Planning)
+    const allMilestones = fp
       ? await this.prisma.ftttMilestone.findMany({ where: { financeProjectId: fp.id }, orderBy: { targetDate: 'asc' } })
       : [];
-    const ms = milestones
-      .map((mm) => ({ t: new Date(mm.targetDate).getTime(), budget: num(mm.plannedBudget), pct: num(mm.plannedProgressPct) }))
-      .sort((a, b) => a.t - b.t);
-    const hasMilestones = ms.length > 0;
-    const lastMs = hasMilestones ? new Date(ms[ms.length - 1].t) : null;
-    const lastTx = project.transactions.length ? new Date(project.transactions[project.transactions.length - 1].createdAt) : null;
-    // JLM: X-axis follows the Finance project period — created date → end date
+    const toMs = (rows: typeof allMilestones) =>
+      rows
+        .map((mm) => ({ t: new Date(mm.targetDate).getTime(), budget: num(mm.plannedBudget), pct: num(mm.plannedProgressPct) }))
+        .sort((a, b) => a.t - b.t);
+    const currentMs = toMs(allMilestones.filter((m) => (m as { kind?: string }).kind !== 'BASELINE'));
+    const baselineMsRaw = toMs(allMilestones.filter((m) => (m as { kind?: string }).kind === 'BASELINE'));
+    // If no explicit baseline yet, treat current as both (first save will snapshot)
+    const baselineMs = baselineMsRaw.length > 0 ? baselineMsRaw : currentMs;
+    const revisedMs = currentMs.length > 0 ? currentMs : baselineMs;
+    const hasBaseline = baselineMs.length > 0;
+    const hasRevised = revisedMs.length > 0;
+    const lastMs = hasRevised
+      ? new Date(revisedMs[revisedMs.length - 1].t)
+      : (hasBaseline ? new Date(baselineMs[baselineMs.length - 1].t) : null);
+    const lastTx = realized.length
+      ? new Date(realized[realized.length - 1].disbursedAt ?? realized[realized.length - 1].createdAt)
+      : null;
     const start = new Date(fp?.createdAt ?? project.createdAt);
     const end = fp?.endDate
       ? new Date(fp.endDate)
       : (lastMs ?? lastTx ?? new Date(start.getFullYear(), start.getMonth() + 3, 1));
-    // guard: horizon must be on/after start
     const horizon = end.getTime() >= start.getTime() ? end : new Date(start.getFullYear(), start.getMonth() + 1, 1);
     const months: { name: string; year: number; month: number }[] = [];
     const cur = new Date(start.getFullYear(), start.getMonth(), 1);
@@ -1398,13 +1472,11 @@ export class FtttProjectService {
     }
     const endOfMonth = (m: { year: number; month: number }) => new Date(m.year, m.month, 0, 23, 59, 59).getTime();
 
-    // Actual progress from phase completion (equal-weighted, time-aware)
     const planPhases = project.phaseProgresses.filter((p) => p.status !== 'SKIPPED');
     const phaseW = 100 / Math.max(1, planPhases.length);
 
-    // Planned lines: linear-interpolate cumulative milestone value at a given time
-    const interp = (x: number, key: 'budget' | 'pct'): number => {
-      if (!hasMilestones) return 0;
+    const interp = (ms: { t: number; budget: number; pct: number }[], x: number, key: 'budget' | 'pct'): number => {
+      if (!ms.length) return 0;
       if (x >= ms[ms.length - 1].t) return ms[ms.length - 1][key];
       const startT = start.getTime();
       if (x <= ms[0].t) {
@@ -1421,8 +1493,6 @@ export class FtttProjectService {
       return ms[ms.length - 1][key];
     };
 
-    // JLM: period buckets — Monthly (existing) + Weekly (each month split into 4:
-    // days 1–7, 8–14, 15–21, 22–end). Both follow the project period (start → endDate).
     type Bucket = { name: string; end: number };
     const monthlyBuckets: Bucket[] = months.map((m) => ({ name: m.name, end: endOfMonth(m) }));
     const weeklyBuckets: Bucket[] = months.flatMap((m) => {
@@ -1433,34 +1503,78 @@ export class FtttProjectService {
       }));
     });
 
-    const txPoints = project.transactions
-      .map((t) => ({ t: new Date(t.createdAt).getTime(), v: num(t.total) }))
+    // Actual uses disbursedAt (or createdAt fallback for legacy rows already counted)
+    const txPoints = realized
+      .map((t) => ({ t: new Date(t.disbursedAt ?? t.createdAt).getTime(), v: num(t.total) }))
       .sort((a, b) => a.t - b.t);
-    // Cumulative Planning vs Actual at each bucket end — same data, only the
-    // display granularity differs between Weekly and Monthly
+    const now = Date.now();
+
     const buildCurves = (buckets: Bucket[]) => {
-      const cost: { name: string; plannedCost: number; actualCost: number }[] = [];
-      const prog: { name: string; plannedProgress: number; actualProgress: number }[] = [];
+      const cost: {
+        name: string;
+        baselineCost: number;
+        plannedCost: number;
+        actualCost: number | null;
+      }[] = [];
+      const prog: {
+        name: string;
+        baselineProgress: number;
+        plannedProgress: number;
+        actualProgress: number | null;
+      }[] = [];
       const n = Math.max(1, buckets.length);
       let cumActual = 0;
       let ptr = 0;
+      let lastActualCost = 0;
+      let lastActualProg = 0;
       for (let i = 0; i < buckets.length; i++) {
         const b = buckets[i];
-        while (ptr < txPoints.length && txPoints[ptr].t <= b.end) { cumActual += txPoints[ptr].v; ptr++; }
-        // Planning from Finance milestones; fall back to linear when no baseline set
-        const plannedProgress = hasMilestones ? interp(b.end, 'pct') : Math.min(100, ((i + 1) / n) * 100);
-        const plannedCost = hasMilestones ? interp(b.end, 'budget') : (totalBudget * plannedProgress) / 100;
-        // Actual progress = phases completed by end of the bucket
-        const actualProgress = planPhases.filter((p) => p.completedAt && new Date(p.completedAt).getTime() <= b.end).length * phaseW;
-        prog.push({ name: b.name, plannedProgress: Math.round(plannedProgress), actualProgress: Math.round(Math.min(100, actualProgress)) });
-        cost.push({ name: b.name, plannedCost: Math.round(plannedCost), actualCost: Math.round(cumActual) });
+        // Planning lines always shown for full project horizon
+        const baselineProgress = hasBaseline ? interp(baselineMs, b.end, 'pct') : Math.min(100, ((i + 1) / n) * 100);
+        const plannedProgress = hasRevised ? interp(revisedMs, b.end, 'pct') : baselineProgress;
+        const baselineCost = hasBaseline ? interp(baselineMs, b.end, 'budget') : (totalBudget * baselineProgress) / 100;
+        const plannedCost = hasRevised ? interp(revisedMs, b.end, 'budget') : baselineCost;
+
+        // Actual: only for periods that have already ended (or are current); future = null
+        if (b.end <= now) {
+          while (ptr < txPoints.length && txPoints[ptr].t <= b.end) {
+            cumActual += txPoints[ptr].v;
+            ptr++;
+          }
+          lastActualCost = cumActual;
+          lastActualProg = planPhases.filter((p) => p.completedAt && new Date(p.completedAt).getTime() <= b.end).length * phaseW;
+          cost.push({
+            name: b.name,
+            baselineCost: Math.round(baselineCost),
+            plannedCost: Math.round(plannedCost),
+            actualCost: Math.round(lastActualCost),
+          });
+          prog.push({
+            name: b.name,
+            baselineProgress: Math.round(baselineProgress),
+            plannedProgress: Math.round(plannedProgress),
+            actualProgress: Math.round(Math.min(100, lastActualProg)),
+          });
+        } else {
+          // Future periods: planning continues; Actual is null so the line does not project forward
+          cost.push({
+            name: b.name,
+            baselineCost: Math.round(baselineCost),
+            plannedCost: Math.round(plannedCost),
+            actualCost: null,
+          });
+          prog.push({
+            name: b.name,
+            baselineProgress: Math.round(baselineProgress),
+            plannedProgress: Math.round(plannedProgress),
+            actualProgress: null,
+          });
+        }
       }
       return { cost, prog };
     };
     const monthly = buildCurves(monthlyBuckets);
     const weekly = buildCurves(weeklyBuckets);
-    const costCurve = monthly.cost;
-    const progressCurve = monthly.prog;
 
     return {
       financeProject: fp,
@@ -1471,12 +1585,10 @@ export class FtttProjectService {
       byCategory: (['PERIZINAN', 'MATERIAL', 'JASA', 'LAIN_LAIN'] as const).map((c) => ({
         category: c, budget: budgets[c], spent: spent[c], remaining: budgets[c] - spent[c],
       })),
-      costCurve,
-      progressCurve,
-      // JLM: Weekly breakdown for the Kurva S period filter (Weekly/Monthly)
+      costCurve: monthly.cost,
+      progressCurve: monthly.prog,
       costCurveWeekly: weekly.cost,
       progressCurveWeekly: weekly.prog,
-      // JLM: current per-phase plan (for the timeline editor)
       phasePlan: planPhases.map((p) => ({
         phase: p.phase,
         status: p.status,
@@ -1487,7 +1599,10 @@ export class FtttProjectService {
       transactions: project.transactions.map((t) => ({
         id: t.id, category: t.category, aktivitas: t.aktivitas, uom: t.uom,
         qty: t.qty, price: t.price, total: t.total, remarks: t.remarks,
-        createdAt: t.createdAt, createdBy: (t as typeof t & { createdBy?: { name: string } }).createdBy ?? null,
+        createdAt: t.createdAt,
+        disbursedAt: t.disbursedAt,
+        createdBy: (t as typeof t & { createdBy?: { name: string } }).createdBy ?? null,
+        disbursedBy: (t as typeof t & { disbursedBy?: { name: string } | null }).disbursedBy ?? null,
       })),
     };
   }
@@ -1543,9 +1658,13 @@ export class FtttProjectService {
       if (userRole !== Role.FINANCE && userRole !== Role.GENERAL_MANAGER) {
         throw new ForbiddenException('Hanya Finance yang dapat mengunggah dokumen ini');
       }
+    } else if (dto.docKey === 'SUPPORTING_DOC_IFORTE') {
+      // iFORTE Project Preparation: hanya Admin Project yang boleh upload
+      if (userRole !== Role.ADMIN && userRole !== Role.GENERAL_MANAGER) {
+        throw new ForbiddenException('Hanya Admin Project yang dapat mengunggah Supporting Document');
+      }
     } else {
-      // All other recon docs: Admin/GM (TI, PST), Surveyor for iFORTE,
-      // PM FTTT for iFORTE Supporting Document / BA Justifikasi / BAST
+      // Recon docs: Admin/GM; Surveyor/PM for some iFORTE flows
       const allowed: Role[] = [Role.ADMIN, Role.GENERAL_MANAGER, Role.FINANCE, Role.SURVEYOR_FTTT, Role.PM_FTTT];
       if (!allowed.includes(userRole)) {
         throw new ForbiddenException('Tidak memiliki akses untuk mengunggah dokumen rekonsiliasi');
