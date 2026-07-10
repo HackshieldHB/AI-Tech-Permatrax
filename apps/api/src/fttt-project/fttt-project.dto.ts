@@ -79,6 +79,12 @@ export const AddFtttTransactionDto = z.object({
 });
 export type AddFtttTransactionDtoType = z.infer<typeof AddFtttTransactionDto>;
 
+// Stage 2 — Finance confirms Tanggal Dana Keluar (budget only reduced after this)
+export const DisburseFtttTransactionDto = z.object({
+  disbursedAt: z.string().min(1, 'Tanggal Dana Keluar wajib diisi'),
+});
+export type DisburseFtttTransactionDtoType = z.infer<typeof DisburseFtttTransactionDto>;
+
 export const AdvancePhaseDto = z.object({
   notes: z.string().max(1000).optional(),
 });
@@ -164,6 +170,8 @@ export const AddImplLogDto = z.object({
   logType: z.nativeEnum(FtttImplLogType),
   caption: z.string().max(500).optional(),
   notes:   z.string().max(2000).optional(),
+  // iFORTE: meter pekerjaan selesai — diakumulasi ke Progress (%)
+  meterDone: z.coerce.number().nonnegative().optional(),
 });
 export type AddImplLogDtoType = z.infer<typeof AddImplLogDto>;
 

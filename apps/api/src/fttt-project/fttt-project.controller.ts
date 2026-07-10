@@ -29,6 +29,7 @@ import {
   AdvancePhaseDto,
   ApproveDocumentDto,
   CreateFtttProjectDto,
+  DisburseFtttTransactionDto,
   FtttProjectFilterDto,
   ResolveSanggahDto,
   SetImplementationTypeDto,
@@ -122,6 +123,16 @@ export class FtttProjectController {
     @CurrentUser() user: AuthUser,
   ) {
     return this.service.addTransaction(id, dto, user.userId, user.role);
+  }
+
+  // PUT /fttt-projects/transactions/:txId/disburse  (Finance — Tanggal Dana Keluar)
+  @Put('transactions/:txId/disburse')
+  disburseTransaction(
+    @Param('txId') txId: string,
+    @Body(new ZodValidationPipe(DisburseFtttTransactionDto)) dto: any,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.service.disburseTransaction(txId, dto.disbursedAt, user.userId, user.role);
   }
 
   // DELETE /fttt-projects/transactions/:txId

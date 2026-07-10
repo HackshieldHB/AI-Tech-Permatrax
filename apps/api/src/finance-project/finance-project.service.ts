@@ -417,8 +417,9 @@ export class FinanceProjectService {
   // JLM: FTTT S-Curve baseline milestones (Finance-owned)
   async getTimeline(id: string) {
     await this.ensureProjectExists(id);
+    // Editor shows CURRENT (revised) planning; BASELINE is immutable and used only on Kurva S
     return this.prisma.ftttMilestone.findMany({
-      where: { financeProjectId: id },
+      where: { financeProjectId: id, kind: 'CURRENT' },
       orderBy: { targetDate: 'asc' },
     });
   }
@@ -432,11 +433,41 @@ export class FinanceProjectService {
         targetDate: new Date(m.targetDate),
         plannedBudget: new Prisma.Decimal(m.plannedBudget),
         plannedProgressPct: new Prisma.Decimal(m.plannedProgressPct),
+        kind: 'CURRENT',
       }));
-    await this.prisma.$transaction([
-      this.prisma.ftttMilestone.deleteMany({ where: { financeProjectId: id } }),
-      ...(rows.length ? [this.prisma.ftttMilestone.createMany({ data: rows })] : []),
-    ]);
+
+    // Preserve BASELINE (Planning Awal) on first save; subsequent edits only replace CURRENT
+    const existingBaseline = await this.prisma.ftttMilestone.count({
+      where: { financeProjectId: id, kind: 'BASELINE' },
+    });
+    const existingCurrent = await this.prisma.ftttMilestone.findMany({
+      where: { financeProjectId: id, kind: 'CURRENT' },
+      orderBy: { targetDate: 'asc' },
+    });
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.ftttMilestone.deleteMany({ where: { financeProjectId: id, kind: 'CURRENT' } });
+      if (rows.length) {
+        await tx.ftttMilestone.createMany({ data: rows });
+      }
+      // First-ever planning → also snapshot as BASELINE (immutable Planning Awal)
+      if (existingBaseline === 0 && rows.length > 0) {
+        await tx.ftttMilestone.createMany({
+          data: rows.map((r) => ({ ...r, kind: 'BASELINE' })),
+        });
+      } else if (existingBaseline === 0 && existingCurrent.length > 0) {
+        // Edge: had CURRENT without kind column before migration
+        await tx.ftttMilestone.createMany({
+          data: existingCurrent.map((r) => ({
+            financeProjectId: id,
+            targetDate: r.targetDate,
+            plannedBudget: r.plannedBudget,
+            plannedProgressPct: r.plannedProgressPct,
+            kind: 'BASELINE',
+          })),
+        });
+      }
+    });
     return this.getTimeline(id);
   }
 

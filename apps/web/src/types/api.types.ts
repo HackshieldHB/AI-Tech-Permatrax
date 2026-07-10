@@ -1036,7 +1036,10 @@ export interface FtttTransaction {
   total:       string | number;
   remarks:     string;
   createdAt:   string;
+  // Stage 2 — set by Finance; null = belum memotong budget
+  disbursedAt?: string | null;
   createdBy:   { id: string; name: string };
+  disbursedBy?: { id: string; name: string } | null;
 }
 
 export const FTTT_COST_CATEGORY_LABELS: Record<FtttCostCategory, string> = {
@@ -1219,6 +1222,7 @@ export interface FtttImplementationLog {
   fileUrl:     string | null;
   caption:     string | null;
   notes:       string | null;
+  meterDone?:  string | number | null;
   createdAt:   string;
   uploadedBy:  { id: string; name: string; role?: string };
 }
