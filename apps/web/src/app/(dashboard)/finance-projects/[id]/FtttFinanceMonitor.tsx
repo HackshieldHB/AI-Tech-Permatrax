@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   ComposedChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
 } from 'recharts';
@@ -40,11 +40,25 @@ function MiniCurve({ title, data, dataWeekly, keys, money }: {
   money?: boolean;
 }) {
   const [period, setPeriod] = useState<'monthly' | 'weekly'>('weekly');
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [containerW, setContainerW] = useState(0);
   const shown = period === 'weekly' && dataWeekly && dataWeekly.length > 0 ? dataWeekly : data;
-  // Fixed pixel width (not ResponsiveContainer) so overflow-x scroll actually expands the chart.
   const pxPerTick = period === 'weekly' ? 88 : 96;
   const chartHeight = 288;
-  const chartWidth = Math.max(640, shown.length * pxPerTick + 72);
+  // Fill container when short; expand past container when many weeks → real horizontal scroll
+  const contentW = Math.max(1, shown.length * pxPerTick + 72);
+  const chartWidth = Math.max(containerW || contentW, contentW);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const apply = () => setContainerW(Math.floor(el.clientWidth));
+    apply();
+    const ro = new ResizeObserver(apply);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   return (
     <div className="bg-white rounded-2xl border border-slate-100 p-4">
       <div className="flex items-center justify-between mb-2 gap-2">
@@ -59,8 +73,12 @@ function MiniCurve({ title, data, dataWeekly, keys, money }: {
           <option value="monthly">Monthly</option>
         </select>
       </div>
-      <div className="w-full overflow-x-auto overflow-y-hidden" style={{ WebkitOverflowScrolling: 'touch' }}>
-        <div style={{ width: chartWidth, minWidth: '100%' }}>
+      <div
+        ref={scrollRef}
+        className="w-full overflow-x-auto overflow-y-hidden"
+        style={{ WebkitOverflowScrolling: 'touch' }}
+      >
+        <div style={{ width: chartWidth, height: chartHeight }}>
           <ComposedChart width={chartWidth} height={chartHeight} data={shown}
             margin={{ left: 8, right: 24, top: 8, bottom: period === 'weekly' ? 16 : 8 }}>
             <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
