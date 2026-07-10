@@ -145,6 +145,7 @@ export default function FinanceProjectDetailPage() {
   const id = params.id as string;
   const { user } = useAuthStore();
   const manage = canManageFinance(user?.role);
+  const canEditTimeline = manage || user?.role === 'PM_FTTT' || user?.role === 'GENERAL_MANAGER';
 
   const [tab, setTab] = useState<Tab>('overview');
   const [detail, setDetail] = useState<FinanceProjectDetail | null>(null);
@@ -171,27 +172,55 @@ export default function FinanceProjectDetailPage() {
   const [savingTimeline, setSavingTimeline] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
   const [msRows, setMsRows] = useState<{ targetDate: string; plannedBudget: string; plannedProgressPct: string }[]>([]);
+  const [hasBaselinePlan, setHasBaselinePlan] = useState(false);
+
+  const formatBudgetInput = (raw: string) => {
+    const digits = raw.replace(/\D/g, '');
+    if (!digits) return '';
+    return Number(digits).toLocaleString('id-ID');
+  };
+  const parseBudgetInput = (display: string) => Number(display.replace(/\D/g, '')) || 0;
 
   const openTimeline = useCallback(async () => {
     setTimelineOpen(true);
     try {
-      const rows = await apiGet<{ targetDate: string; plannedBudget: string | number; plannedProgressPct: string | number }[]>(`/finance-projects/${id}/timeline`);
+      const res = await apiGet<{
+        milestones: { targetDate: string; plannedBudget: string | number; plannedProgressPct: string | number }[];
+        hasBaseline: boolean;
+        hasRevision: boolean;
+      } | { targetDate: string; plannedBudget: string | number; plannedProgressPct: string | number }[]>(`/finance-projects/${id}/timeline`);
+      const rows = Array.isArray(res) ? res : (res.milestones ?? []);
+      const baseline = Array.isArray(res) ? rows.length > 0 : !!res.hasBaseline;
+      setHasBaselinePlan(baseline);
       setMsRows(rows.length
-        ? rows.map((r) => ({ targetDate: r.targetDate.slice(0, 10), plannedBudget: String(Number(r.plannedBudget)), plannedProgressPct: String(Number(r.plannedProgressPct)) }))
+        ? rows.map((r) => ({
+            targetDate: String(r.targetDate).slice(0, 10),
+            plannedBudget: Number(r.plannedBudget) ? Number(r.plannedBudget).toLocaleString('id-ID') : '',
+            plannedProgressPct: String(Number(r.plannedProgressPct)),
+          }))
         : [{ targetDate: '', plannedBudget: '', plannedProgressPct: '' }]);
-    } catch { setMsRows([{ targetDate: '', plannedBudget: '', plannedProgressPct: '' }]); }
+    } catch {
+      setHasBaselinePlan(false);
+      setMsRows([{ targetDate: '', plannedBudget: '', plannedProgressPct: '' }]);
+    }
   }, [id]);
 
   const saveTimeline = async () => {
     const milestones = msRows
       .filter((r) => r.targetDate)
-      .map((r) => ({ targetDate: new Date(r.targetDate + 'T12:00:00').toISOString(), plannedBudget: Number(r.plannedBudget) || 0, plannedProgressPct: Math.min(100, Number(r.plannedProgressPct) || 0) }));
+      .map((r) => ({
+        targetDate: new Date(r.targetDate + 'T12:00:00').toISOString(),
+        plannedBudget: parseBudgetInput(r.plannedBudget),
+        plannedProgressPct: Math.min(100, Number(r.plannedProgressPct) || 0),
+      }));
     setSavingTimeline(true);
     try {
-      await apiPut(`/finance-projects/${id}/timeline`, { milestones });
-      toast.success('Planning Kurva S disimpan (Planning Awal tetap sebagai baseline)');
+      const res = await apiPut<{ hasBaseline?: boolean }>(`/finance-projects/${id}/timeline`, { milestones });
+      toast.success(hasBaselinePlan ? 'Perubahan Planning tersimpan' : 'Plan Awal tersimpan sebagai baseline');
+      setHasBaselinePlan(true);
       setTimelineOpen(false);
       setReloadKey((k) => k + 1);
+      void res;
     } catch (e) { toast.error(e instanceof Error ? e.message : 'Gagal menyimpan'); }
     finally { setSavingTimeline(false); }
   };
@@ -201,6 +230,13 @@ export default function FinanceProjectDetailPage() {
     try {
       const d = await apiGet<FinanceProjectDetail>(`/finance-projects/${id}`);
       setDetail(d);
+      if (d.projectType === 'FTTT') {
+        try {
+          const tl = await apiGet<{ hasBaseline?: boolean; milestones?: unknown[] } | unknown[]>(`/finance-projects/${id}/timeline`);
+          if (Array.isArray(tl)) setHasBaselinePlan(tl.length > 0);
+          else setHasBaselinePlan(!!tl.hasBaseline || (Array.isArray(tl.milestones) && tl.milestones.length > 0));
+        } catch { /* ignore */ }
+      }
       setEditName(d.name);
       setEditDesc(d.description ?? '');
       setBudgetTotal(String(num(d.totalBudget)));
@@ -336,13 +372,13 @@ export default function FinanceProjectDetailPage() {
         </div>
         <div className="flex items-center gap-2">
           {/* JLM: Finance sets the S-Curve Planning baseline (milestones) for linked FTTT projects */}
-          {isFttt && manage ? (
+          {isFttt && canEditTimeline ? (
             <button
               type="button"
               onClick={() => void openTimeline()}
               className="inline-flex items-center gap-2 rounded-xl bg-[#0F1B2D] text-white px-3 py-2 text-sm font-bold"
             >
-              ✏️ Edit Planning
+              {hasBaselinePlan ? '✏️ Edit Planning' : '📌 Set Plan Awal'}
             </button>
           ) : null}
           {manage ? (
@@ -634,11 +670,14 @@ export default function FinanceProjectDetailPage() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
           <div className="bg-white rounded-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto p-6 space-y-4 shadow-xl">
             <div className="flex justify-between items-center">
-              <h3 className="font-black text-lg">Edit Planning — Kurva S</h3>
+              <h3 className="font-black text-lg">{hasBaselinePlan ? 'Edit Planning — Kurva S' : 'Set Plan Awal — Kurva S'}</h3>
               <button type="button" onClick={() => setTimelineOpen(false)} className="text-slate-400 text-lg">✕</button>
             </div>
             <p className="text-xs text-slate-500">
-              Planning pertama tersimpan sebagai <b>Planning Awal (baseline)</b> dan tidak berubah. Edit berikutnya menjadi garis <b>Perubahan Planning</b>. <b>Actual</b> hanya dari Transaction Log yang sudah punya Tanggal Dana Keluar. Default tampilan Kurva S: Weekly.
+              {hasBaselinePlan
+                ? <>Edit ini menyimpan garis <b>Perubahan Planning</b>. <b>Planning Awal</b> tetap tidak berubah.</>
+                : <>Simpan sebagai <b>Plan Awal (baseline)</b>. Garis Perubahan Planning baru muncul setelah Edit Planning.</>}
+              {' '}<b>Actual</b> hanya dari Transaction Log yang sudah punya Tanggal Dana Keluar.
             </p>
             <div className="space-y-2">
               <div className="grid grid-cols-[1.2fr_1.4fr_1fr_auto] gap-2 text-[11px] font-bold text-slate-500 uppercase px-1">
@@ -647,7 +686,7 @@ export default function FinanceProjectDetailPage() {
               {msRows.map((r, i) => (
                 <div key={i} className="grid grid-cols-[1.2fr_1.4fr_1fr_auto] gap-2 items-center">
                   <input type="date" value={r.targetDate} onChange={(e) => { const n = [...msRows]; n[i] = { ...n[i], targetDate: e.target.value }; setMsRows(n); }} className="rounded-lg border border-slate-200 px-2 py-1.5 text-sm" />
-                  <input type="number" placeholder="0" value={r.plannedBudget} onChange={(e) => { const n = [...msRows]; n[i] = { ...n[i], plannedBudget: e.target.value }; setMsRows(n); }} className="rounded-lg border border-slate-200 px-2 py-1.5 text-sm" />
+                  <input type="text" inputMode="numeric" placeholder="1.000.000" value={r.plannedBudget} onChange={(e) => { const n = [...msRows]; n[i] = { ...n[i], plannedBudget: formatBudgetInput(e.target.value) }; setMsRows(n); }} className="rounded-lg border border-slate-200 px-2 py-1.5 text-sm" />
                   <input type="number" placeholder="0-100" value={r.plannedProgressPct} onChange={(e) => { const n = [...msRows]; n[i] = { ...n[i], plannedProgressPct: e.target.value }; setMsRows(n); }} className="rounded-lg border border-slate-200 px-2 py-1.5 text-sm" />
                   <button type="button" onClick={() => setMsRows(msRows.filter((_, x) => x !== i))} className="text-red-500 text-sm px-2">✕</button>
                 </div>
@@ -655,7 +694,7 @@ export default function FinanceProjectDetailPage() {
               <button type="button" onClick={() => setMsRows([...msRows, { targetDate: '', plannedBudget: '', plannedProgressPct: '' }])} className="text-xs font-bold text-[#00B89E]">+ Tambah Milestone</button>
             </div>
             <div className="flex gap-2 pt-2">
-              <button type="button" disabled={savingTimeline} onClick={() => void saveTimeline()} className="flex-1 bg-[#0F1B2D] text-white font-bold py-2 rounded-xl text-sm disabled:opacity-50">{savingTimeline ? 'Menyimpan…' : 'Simpan Baseline'}</button>
+              <button type="button" disabled={savingTimeline} onClick={() => void saveTimeline()} className="flex-1 bg-[#0F1B2D] text-white font-bold py-2 rounded-xl text-sm disabled:opacity-50">{savingTimeline ? 'Menyimpan…' : (hasBaselinePlan ? 'Simpan Perubahan Planning' : 'Simpan Plan Awal')}</button>
               <button type="button" onClick={() => setTimelineOpen(false)} className="flex-1 bg-white border py-2 rounded-xl text-sm">Batal</button>
             </div>
           </div>
