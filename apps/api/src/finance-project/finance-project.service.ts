@@ -414,14 +414,29 @@ export class FinanceProjectService {
     });
   }
 
-  // JLM: FTTT S-Curve baseline milestones (Finance-owned)
+  // JLM: FTTT S-Curve baseline milestones (Finance-owned + PM FTTT may revise)
   async getTimeline(id: string) {
     await this.ensureProjectExists(id);
-    // Editor shows CURRENT (revised) planning; BASELINE is immutable and used only on Kurva S
-    return this.prisma.ftttMilestone.findMany({
+    const baseline = await this.prisma.ftttMilestone.findMany({
+      where: { financeProjectId: id, kind: 'BASELINE' },
+      orderBy: { targetDate: 'asc' },
+    });
+    const current = await this.prisma.ftttMilestone.findMany({
       where: { financeProjectId: id, kind: 'CURRENT' },
       orderBy: { targetDate: 'asc' },
     });
+    const hasBaseline = baseline.length > 0;
+    const same = (a: typeof baseline, b: typeof current) =>
+      a.length === b.length &&
+      a.every((x, i) =>
+        x.targetDate.getTime() === b[i].targetDate.getTime() &&
+        Number(x.plannedBudget) === Number(b[i].plannedBudget) &&
+        Number(x.plannedProgressPct) === Number(b[i].plannedProgressPct),
+      );
+    // v2 dual-write left identical CURRENT; treat as no revision until Edit Planning changes it
+    const hasRevision = hasBaseline && current.length > 0 && !same(baseline, current);
+    const milestones = hasRevision ? current : baseline;
+    return { milestones, hasBaseline, hasRevision };
   }
 
   async setTimeline(id: string, dto: SetTimelineInput) {
@@ -433,39 +448,29 @@ export class FinanceProjectService {
         targetDate: new Date(m.targetDate),
         plannedBudget: new Prisma.Decimal(m.plannedBudget),
         plannedProgressPct: new Prisma.Decimal(m.plannedProgressPct),
-        kind: 'CURRENT',
       }));
 
-    // Preserve BASELINE (Planning Awal) on first save; subsequent edits only replace CURRENT
     const existingBaseline = await this.prisma.ftttMilestone.count({
       where: { financeProjectId: id, kind: 'BASELINE' },
     });
-    const existingCurrent = await this.prisma.ftttMilestone.findMany({
-      where: { financeProjectId: id, kind: 'CURRENT' },
-      orderBy: { targetDate: 'asc' },
-    });
 
     await this.prisma.$transaction(async (tx) => {
-      await tx.ftttMilestone.deleteMany({ where: { financeProjectId: id, kind: 'CURRENT' } });
-      if (rows.length) {
-        await tx.ftttMilestone.createMany({ data: rows });
-      }
-      // First-ever planning → also snapshot as BASELINE (immutable Planning Awal)
-      if (existingBaseline === 0 && rows.length > 0) {
-        await tx.ftttMilestone.createMany({
-          data: rows.map((r) => ({ ...r, kind: 'BASELINE' })),
-        });
-      } else if (existingBaseline === 0 && existingCurrent.length > 0) {
-        // Edge: had CURRENT without kind column before migration
-        await tx.ftttMilestone.createMany({
-          data: existingCurrent.map((r) => ({
-            financeProjectId: id,
-            targetDate: r.targetDate,
-            plannedBudget: r.plannedBudget,
-            plannedProgressPct: r.plannedProgressPct,
-            kind: 'BASELINE',
-          })),
-        });
+      if (existingBaseline === 0) {
+        // Set Plan Awal — immutable baseline only (no Perubahan Planning yet)
+        await tx.ftttMilestone.deleteMany({ where: { financeProjectId: id } });
+        if (rows.length) {
+          await tx.ftttMilestone.createMany({
+            data: rows.map((r) => ({ ...r, kind: 'BASELINE' })),
+          });
+        }
+      } else {
+        // Edit Planning — replace CURRENT only; BASELINE stays
+        await tx.ftttMilestone.deleteMany({ where: { financeProjectId: id, kind: 'CURRENT' } });
+        if (rows.length) {
+          await tx.ftttMilestone.createMany({
+            data: rows.map((r) => ({ ...r, kind: 'CURRENT' })),
+          });
+        }
       }
     });
     return this.getTimeline(id);
