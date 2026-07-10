@@ -1437,17 +1437,25 @@ export class FtttProjectService {
     const hasRevision = baselineMsRaw.length > 0 && currentMs.length > 0 && !msEqual(baselineMsRaw, currentMs);
     const revisedMs = hasRevision ? currentMs : baselineMs;
     const hasRevised = hasRevision;
-    const lastMs = hasRevised
-      ? new Date(revisedMs[revisedMs.length - 1].t)
-      : (hasBaseline ? new Date(baselineMs[baselineMs.length - 1].t) : null);
+    // Horizon follows the latest active planning milestone (BASELINE and/or CURRENT),
+    // not a hard cap on financeProject.endDate — Edit Planning can extend past Plan Awal.
+    const lastBaselineT = baselineMs.length ? baselineMs[baselineMs.length - 1].t : 0;
+    const lastCurrentT = currentMs.length ? currentMs[currentMs.length - 1].t : 0;
+    const lastMsT = Math.max(lastBaselineT, lastCurrentT);
     const lastTx = realized.length
       ? new Date(realized[realized.length - 1].disbursedAt ?? realized[realized.length - 1].createdAt)
       : null;
     const start = new Date(fp?.createdAt ?? project.createdAt);
-    const end = fp?.endDate
-      ? new Date(fp.endDate)
-      : (lastMs ?? lastTx ?? new Date(start.getFullYear(), start.getMonth() + 3, 1));
+    const endCandidates = [
+      lastMsT,
+      lastTx?.getTime() ?? 0,
+      fp?.endDate ? new Date(fp.endDate).getTime() : 0,
+    ].filter((t) => t > 0);
+    const end = endCandidates.length
+      ? new Date(Math.max(...endCandidates))
+      : new Date(start.getFullYear(), start.getMonth() + 3, 1);
     const horizon = end.getTime() >= start.getTime() ? end : new Date(start.getFullYear(), start.getMonth() + 1, 1);
+    const horizonT = horizon.getTime();
     const months: { name: string; year: number; month: number }[] = [];
     const cur = new Date(start.getFullYear(), start.getMonth(), 1);
     const stop = new Date(horizon.getFullYear(), horizon.getMonth(), 1);
@@ -1480,12 +1488,18 @@ export class FtttProjectService {
 
     type Bucket = { name: string; end: number };
     const monthlyBuckets: Bucket[] = months.map((m) => ({ name: m.name, end: endOfMonth(m) }));
+    // Weekly ticks only through the week that contains the horizon (no empty trailing weeks)
     const weeklyBuckets: Bucket[] = months.flatMap((m) => {
       const eom = endOfMonth(m);
-      return [7, 14, 21, 0].map((day, wi) => ({
-        name: `${m.name} W${wi + 1}`,
-        end: day === 0 ? eom : new Date(m.year, m.month - 1, day, 23, 59, 59).getTime(),
-      }));
+      const weeks: { name: string; end: number; startDay: number }[] = [
+        { name: `${m.name} W1`, end: new Date(m.year, m.month - 1, 7, 23, 59, 59).getTime(), startDay: 1 },
+        { name: `${m.name} W2`, end: new Date(m.year, m.month - 1, 14, 23, 59, 59).getTime(), startDay: 8 },
+        { name: `${m.name} W3`, end: new Date(m.year, m.month - 1, 21, 23, 59, 59).getTime(), startDay: 15 },
+        { name: `${m.name} W4`, end: eom, startDay: 22 },
+      ];
+      return weeks
+        .filter((w) => new Date(m.year, m.month - 1, w.startDay).getTime() <= horizonT)
+        .map(({ name, end: weekEnd }) => ({ name, end: weekEnd }));
     });
 
     // Actual uses disbursedAt (or createdAt fallback for legacy rows already counted)

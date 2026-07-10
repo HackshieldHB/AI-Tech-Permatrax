@@ -472,6 +472,17 @@ export class FinanceProjectService {
           });
         }
       }
+      // Keep project endDate at least as far as the latest planning milestone (Kurva S horizon)
+      if (rows.length) {
+        const lastMilestone = rows.reduce((a, b) => (a.targetDate > b.targetDate ? a : b));
+        const fp = await tx.financeProject.findUnique({ where: { id }, select: { endDate: true } });
+        if (!fp?.endDate || lastMilestone.targetDate > fp.endDate) {
+          await tx.financeProject.update({
+            where: { id },
+            data: { endDate: lastMilestone.targetDate },
+          });
+        }
+      }
     });
     return this.getTimeline(id);
   }
