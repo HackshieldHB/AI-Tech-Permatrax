@@ -25,7 +25,7 @@ import {
 } from '../../../../types/api.types';
 import { io, Socket } from 'socket.io-client';
 import {
-  ComposedChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RTooltip, Legend as RLegend, ResponsiveContainer,
+  ComposedChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RTooltip, Legend as RLegend,
 } from 'recharts';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -1438,7 +1438,10 @@ function SCurveMini({ title, data, dataWeekly, keys, money }: {
 }) {
   const [period, setPeriod] = useState<'weekly' | 'monthly'>('weekly');
   const shown = period === 'weekly' && dataWeekly && dataWeekly.length > 0 ? dataWeekly : data;
-  const chartWidth = Math.max(640, shown.length * (period === 'weekly' ? 56 : 72));
+  // Fixed pixel width (not ResponsiveContainer) so overflow-x scroll actually expands the chart.
+  const pxPerTick = period === 'weekly' ? 88 : 96;
+  const chartHeight = 220;
+  const chartWidth = Math.max(640, shown.length * pxPerTick + 72);
   return (
     <div style={{ marginBottom: 16 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 6 }}>
@@ -1449,22 +1452,23 @@ function SCurveMini({ title, data, dataWeekly, keys, money }: {
           <option value="monthly">Monthly</option>
         </select>
       </div>
-      <div style={{ height: 240, width: '100%', overflowX: 'auto', overflowY: 'hidden' }}>
-        <div style={{ width: chartWidth, minWidth: '100%', height: 220 }}>
-          <ResponsiveContainer width="100%" height="100%">
-            <ComposedChart data={shown} margin={{ left: 4, right: 12, top: 8, bottom: 8 }}>
-              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-              <XAxis dataKey="name" fontSize={period === 'weekly' ? 8 : 10} tickLine={false} axisLine={false}
-                interval={0} angle={period === 'weekly' ? -30 : 0} height={period === 'weekly' ? 48 : 30} />
-              <YAxis fontSize={10} tickLine={false} axisLine={false} tickFormatter={(v) => money ? `${Math.round(Number(v) / 1e6)}M` : `${v}%`} />
-              <RTooltip formatter={(v: number) => money ? 'Rp ' + Math.round(v).toLocaleString('id-ID') : `${v}%`} />
-              <RLegend verticalAlign="top" height={28} />
-              {keys.map(([k, label, color]) => (
-                <Line key={k} type="monotone" dataKey={k} name={label} stroke={color} strokeWidth={2}
-                  connectNulls={false} dot={{ r: period === 'weekly' ? 2 : 3, fill: color }} />
-              ))}
-            </ComposedChart>
-          </ResponsiveContainer>
+      <div style={{ width: '100%', overflowX: 'auto', overflowY: 'hidden', WebkitOverflowScrolling: 'touch' }}>
+        <div style={{ width: chartWidth, minWidth: '100%' }}>
+          <ComposedChart width={chartWidth} height={chartHeight} data={shown}
+            margin={{ left: 8, right: 24, top: 8, bottom: period === 'weekly' ? 16 : 8 }}>
+            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+            <XAxis dataKey="name" fontSize={period === 'weekly' ? 8 : 10} tickLine={false} axisLine={false}
+              interval={0} angle={period === 'weekly' ? -35 : 0} textAnchor={period === 'weekly' ? 'end' : 'middle'}
+              height={period === 'weekly' ? 56 : 30} />
+            <YAxis fontSize={10} tickLine={false} axisLine={false} width={44}
+              tickFormatter={(v) => money ? `${Math.round(Number(v) / 1e6)}M` : `${v}%`} />
+            <RTooltip formatter={(v: number) => money ? 'Rp ' + Math.round(v).toLocaleString('id-ID') : `${v}%`} />
+            <RLegend verticalAlign="top" height={28} />
+            {keys.map(([k, label, color]) => (
+              <Line key={k} type="monotone" dataKey={k} name={label} stroke={color} strokeWidth={2}
+                connectNulls={false} dot={{ r: period === 'weekly' ? 2 : 3, fill: color }} />
+            ))}
+          </ComposedChart>
         </div>
       </div>
     </div>

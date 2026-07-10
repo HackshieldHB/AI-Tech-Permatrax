@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import {
-  ComposedChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
+  ComposedChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
 } from 'recharts';
 import { apiGet, apiPut } from '../../../../lib/api';
 import { formatRupiah } from '../../../../lib/format';
@@ -41,7 +41,10 @@ function MiniCurve({ title, data, dataWeekly, keys, money }: {
 }) {
   const [period, setPeriod] = useState<'monthly' | 'weekly'>('weekly');
   const shown = period === 'weekly' && dataWeekly && dataWeekly.length > 0 ? dataWeekly : data;
-  const chartWidth = Math.max(640, shown.length * (period === 'weekly' ? 56 : 72));
+  // Fixed pixel width (not ResponsiveContainer) so overflow-x scroll actually expands the chart.
+  const pxPerTick = period === 'weekly' ? 88 : 96;
+  const chartHeight = 288;
+  const chartWidth = Math.max(640, shown.length * pxPerTick + 72);
   return (
     <div className="bg-white rounded-2xl border border-slate-100 p-4">
       <div className="flex items-center justify-between mb-2 gap-2">
@@ -56,23 +59,23 @@ function MiniCurve({ title, data, dataWeekly, keys, money }: {
           <option value="monthly">Monthly</option>
         </select>
       </div>
-      <div className="h-80 w-full overflow-x-auto overflow-y-hidden">
-        <div style={{ width: chartWidth, minWidth: '100%', height: 288 }}>
-          <ResponsiveContainer width="100%" height="100%">
-            <ComposedChart data={shown} margin={{ left: 4, right: 12, top: 8, bottom: 8 }}>
-              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-              <XAxis dataKey="name" fontSize={period === 'weekly' ? 9 : 11} tickLine={false} axisLine={false}
-                interval={0} angle={period === 'weekly' ? -30 : 0} height={period === 'weekly' ? 48 : 30} />
-              <YAxis fontSize={11} tickLine={false} axisLine={false}
-                tickFormatter={(v) => money ? `${Math.round(Number(v) / 1e6)}M` : `${v}%`} />
-              <Tooltip formatter={(v: number) => money ? formatRupiah(v) : `${v}%`} />
-              <Legend verticalAlign="top" height={36} />
-              {keys.map(([k, label, color]) => (
-                <Line key={k} type="monotone" dataKey={k} name={label} stroke={color} strokeWidth={2.5}
-                  connectNulls={false} dot={{ r: period === 'weekly' ? 2 : 3, fill: color }} />
-              ))}
-            </ComposedChart>
-          </ResponsiveContainer>
+      <div className="w-full overflow-x-auto overflow-y-hidden" style={{ WebkitOverflowScrolling: 'touch' }}>
+        <div style={{ width: chartWidth, minWidth: '100%' }}>
+          <ComposedChart width={chartWidth} height={chartHeight} data={shown}
+            margin={{ left: 8, right: 24, top: 8, bottom: period === 'weekly' ? 16 : 8 }}>
+            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+            <XAxis dataKey="name" fontSize={period === 'weekly' ? 9 : 11} tickLine={false} axisLine={false}
+              interval={0} angle={period === 'weekly' ? -35 : 0} textAnchor={period === 'weekly' ? 'end' : 'middle'}
+              height={period === 'weekly' ? 56 : 30} />
+            <YAxis fontSize={11} tickLine={false} axisLine={false} width={48}
+              tickFormatter={(v) => money ? `${Math.round(Number(v) / 1e6)}M` : `${v}%`} />
+            <Tooltip formatter={(v: number) => money ? formatRupiah(v) : `${v}%`} />
+            <Legend verticalAlign="top" height={36} />
+            {keys.map(([k, label, color]) => (
+              <Line key={k} type="monotone" dataKey={k} name={label} stroke={color} strokeWidth={2.5}
+                connectNulls={false} dot={{ r: period === 'weekly' ? 2 : 3, fill: color }} />
+            ))}
+          </ComposedChart>
         </div>
       </div>
     </div>
