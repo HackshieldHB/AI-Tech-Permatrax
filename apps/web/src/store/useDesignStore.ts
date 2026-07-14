@@ -259,6 +259,9 @@ export interface DesignStoreState {
   sketchMode: boolean;
   sketchTopology: any;
   sketchOpacity: number;
+  /** Incremented to ask MapboxDraw to trash the currently selected sketch feature(s). */
+  sketchTrashTick: number;
+  requestSketchTrash: () => void;
   hydrate: (
     designId: string,
     payload: any,
@@ -293,6 +296,8 @@ export const useDesignStore = create<DesignStoreState>()(
   sketchMode: false,
   sketchTopology: { type: 'FeatureCollection', features: [] },
   sketchOpacity: 1,
+  sketchTrashTick: 0,
+  requestSketchTrash: () => set((s) => ({ sketchTrashTick: s.sketchTrashTick + 1 })),
   editMode: false,
   activeTool: null,
   drawingEdgeStartRef: null,

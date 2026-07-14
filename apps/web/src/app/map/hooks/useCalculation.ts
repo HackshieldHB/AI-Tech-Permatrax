@@ -76,6 +76,7 @@ export function useCalculation(args: {
 }) {
   const {
     mapRef,
+    clearTopology,
     renderTopology,
     inputMode,
     setInputMode,
@@ -141,9 +142,15 @@ export function useCalculation(args: {
     toast.info('📍 Klik pada peta untuk menandai titik BACKBONE terdekat'); // FIX
   }, [clearCalcGraphics]);
 
-  // FIX: polygon mode starts drawing instead
+  // FIX: polygon mode starts drawing — if polygon already closed, reuse it
+  // and only re-pick backbone/target (JLM Phase 2 Issue 3).
   const handleStartCalc = useCallback(() => {
     if (inputMode === 'polygon') {
+      if (polygonAreaSqM && polygonAreaSqM > 0 && polygonPoints.length >= 3) {
+        startCalculation();
+        toast.info('🔷 Area polygon dipertahankan — tandai ulang titik Backbone');
+        return;
+      }
       setIsDrawingPolygon(true); // FIX
       setPolygonPoints([]); // FIX
       setPolygonAreaSqM(null); // FIX
@@ -159,7 +166,42 @@ export function useCalculation(args: {
     } else {
       startCalculation(); // FIX
     } // FIX
-  }, [inputMode, startCalculation]);
+  }, [inputMode, polygonAreaSqM, polygonPoints.length, startCalculation]);
+
+  /** Re-pick Backbone only — keep polygon + Target (JLM Phase 2 Issue 3). */
+  const remapBackbone = useCallback(() => {
+    if (useDesignStore.getState().sketchMode) {
+      useDesignStore.getState().setSketchMode(false);
+    }
+    clearTopology();
+    backboneMarkerRef.current?.remove();
+    backboneMarkerRef.current = null;
+    setBackbonePoint(null);
+    setNearestBackbone(null);
+    setCalcResult(null);
+    setCalcMode('backbone');
+    toast.info('📡 Klik ulang titik BACKBONE — area & Target tetap dipertahankan');
+  }, [clearTopology]);
+
+  /** Re-pick Target only — keep polygon + Backbone (JLM Phase 2 Issue 3). */
+  const remapTarget = useCallback(() => {
+    if (useDesignStore.getState().sketchMode) {
+      useDesignStore.getState().setSketchMode(false);
+    }
+    clearTopology();
+    targetMarkerRef.current?.remove();
+    targetMarkerRef.current = null;
+    setTargetPoint(null);
+    setCalcResult(null);
+    const map = mapRef.current;
+    if (map && inputMode === 'radius') {
+      if (map.getLayer('calc-circle-fill')) map.removeLayer('calc-circle-fill');
+      if (map.getLayer('calc-circle-line')) map.removeLayer('calc-circle-line');
+      if (map.getSource('calc-circle')) map.removeSource('calc-circle');
+    }
+    setCalcMode('target');
+    toast.info('🎯 Klik ulang area TARGET — area & Backbone tetap dipertahankan');
+  }, [clearTopology, inputMode]);
 
   // FIX: polygon drawing click handler
   useEffect(() => {
@@ -319,7 +361,6 @@ export function useCalculation(args: {
       if (calcMode === 'backbone') {
         backboneMarkerRef.current?.remove(); // FIX
         setBackbonePoint([lng, lat]); // FIX
-        setCalcMode('target'); // FIX
 
         const m = new maplibregl.Marker({ color: '#3B82F6' }) // FIX
           .setLngLat([lng, lat]) // FIX
@@ -341,7 +382,14 @@ export function useCalculation(args: {
           // FIX: tetap lanjut tanpa Overpass
         }
 
-        toast.info('🎯 Sekarang klik area TARGET yang ingin dipasang FTTH'); // FIX
+        // JLM Phase 2 Issue 3: if Target already exists (remap backbone), keep it
+        if (targetPoint) {
+          setCalcMode('result');
+          toast.success('📡 Backbone diperbarui — Target tetap. Klik Hitung Sekarang bila siap.');
+        } else {
+          setCalcMode('target');
+          toast.info('🎯 Sekarang klik area TARGET yang ingin dipasang FTTH');
+        }
       } else if (calcMode === 'target') {
         targetMarkerRef.current?.remove(); // FIX
         setTargetPoint([lng, lat]); // FIX
@@ -389,7 +437,7 @@ export function useCalculation(args: {
     return () => {
       map.off('click', handleClick); // FIX
     };
-  }, [calcMode, areaRadius, isDrawingPolygon, inputMode]);
+  }, [calcMode, areaRadius, isDrawingPolygon, inputMode, targetPoint]);
 
   // ── Run calculation ─────────────────────────────────────
   const runCalculation = useCallback(async () => {
@@ -485,5 +533,7 @@ export function useCalculation(args: {
     handleStartCalc,
     startCalculation,
     clearCalcGraphics,
+    remapBackbone,
+    remapTarget,
   };
 }

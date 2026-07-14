@@ -358,7 +358,7 @@ export class MapService {
     profile: 'driving' | 'walking' | 'foot' = 'driving',
   ): Promise<{ coordinates: [number, number][]; distanceM: number; source: 'osrm' | 'valhalla' | 'straight' }> {
     const cacheKey =
-      `route:v2:${fromLng.toFixed(4)},${fromLat.toFixed(4)}` +
+      `route:v3:${fromLng.toFixed(4)},${fromLat.toFixed(4)}` +
       `:${toLng.toFixed(4)},${toLat.toFixed(4)}:${profile}`; // FIX
 
     const cached = await this.redisJsonGet<{
@@ -390,15 +390,20 @@ export class MapService {
       }; // FIX
     }; // FIX
 
-    const tryOsrm = async (): Promise<{ coordinates: [number, number][]; distanceM: number; source: 'osrm' } | null> => {
+    const tryOsrm = async (
+      osrmProfile: 'driving' | 'foot' = 'driving',
+      baseUrl = 'https://router.project-osrm.org',
+    ): Promise<{ coordinates: [number, number][]; distanceM: number; source: 'osrm' } | null> => {
       try {
+        // FOSSGIS routed-foot ignores one-way (cable-friendly). Public OSRM demo is car-only.
+        const pathProfile = osrmProfile === 'foot' ? 'foot' : 'driving';
         const url =
-          `https://router.project-osrm.org/route/v1/driving/` +
+          `${baseUrl}/route/v1/${pathProfile}/` +
           `${fromLng},${fromLat};${toLng},${toLat}` +
           `?overview=full&geometries=geojson`; // FIX
 
         const res = await fetch(url, {
-          signal: AbortSignal.timeout(4000), // FIX
+          signal: AbortSignal.timeout(5000), // FIX
           headers: { 'User-Agent': 'PermaTrax-GIS/1.0' }, // FIX
         }); // FIX
 
@@ -467,11 +472,15 @@ export class MapService {
     };
 
     return osrmLimiter.run(async () => {
-      // GIS Issue 9: cable routing (foot) ignores one-way — pedestrian first
+      // JLM Phase 2: cable routing must NOT fall back to car OSRM (one-way rules).
+      // Order: Valhalla pedestrian → FOSSGIS foot OSRM → straight last resort.
       const attempts =
         profile === 'foot' || profile === 'walking'
-          ? [() => tryValhalla('pedestrian'), tryOsrm]
-          : [tryOsrm, () => tryValhalla('auto')];
+          ? [
+              () => tryValhalla('pedestrian'),
+              () => tryOsrm('foot', 'https://routing.openstreetmap.de/routed-foot'),
+            ]
+          : [() => tryOsrm('driving'), () => tryValhalla('auto')];
 
       for (const attempt of attempts) {
         const result = await attempt();
@@ -527,7 +536,7 @@ export class MapService {
     }
 
     const coordStr = waypoints.map(([lng, lat]) => `${lng},${lat}`).join(';'); // FIX
-    const cacheKey = `multiroute:v2:${coordStr.slice(0, 120)}:${profile}`; // FIX
+    const cacheKey = `multiroute:v3:${coordStr.slice(0, 120)}:${profile}`; // FIX
     const cached = await this.redisJsonGet<{
       segments: Array<{ coordinates: [number, number][]; distanceM: number; source?: string }>;
       totalDistanceM: number;
@@ -608,13 +617,17 @@ export class MapService {
       }
     };
 
-    const tryOsrmMulti = async (): Promise<{
+    const tryOsrmMulti = async (
+      osrmProfile: 'driving' | 'foot' = 'driving',
+      baseUrl = 'https://router.project-osrm.org',
+    ): Promise<{
       segments: Array<{ coordinates: [number, number][]; distanceM: number; source?: string }>;
       totalDistanceM: number;
     } | null> => {
       try {
+        const pathProfile = osrmProfile === 'foot' ? 'foot' : 'driving';
         const url =
-          `https://router.project-osrm.org/route/v1/driving/${coordStr}` +
+          `${baseUrl}/route/v1/${pathProfile}/${coordStr}` +
           `?overview=full&geometries=geojson&steps=true`; // FIX
 
         const res = await fetch(url, {
@@ -660,10 +673,14 @@ export class MapService {
     };
 
     return osrmLimiter.run(async () => {
+      // JLM Phase 2: foot/cable → Valhalla pedestrian + FOSSGIS foot (never car OSRM)
       const attempts =
         profile === 'foot' || profile === 'walking'
-          ? [tryValhallaMulti, tryOsrmMulti]
-          : [tryOsrmMulti, tryValhallaMulti];
+          ? [
+              tryValhallaMulti,
+              () => tryOsrmMulti('foot', 'https://routing.openstreetmap.de/routed-foot'),
+            ]
+          : [() => tryOsrmMulti('driving'), tryValhallaMulti];
 
       for (const attempt of attempts) {
         const result = await attempt();
