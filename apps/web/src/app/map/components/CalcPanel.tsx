@@ -70,6 +70,8 @@ export type CalcPanelProps = {
     drawnPolygon?: [number, number][] | null,
   ) => Promise<void>;
   handleStartCalc: () => void;
+  remapBackbone: () => void;
+  remapTarget: () => void;
   setActivePanel?: Dispatch<
     SetStateAction<'layers' | 'calc' | 'legend' | 'design' | null>
   >;
@@ -118,6 +120,8 @@ export function CalcPanel(props: CalcPanelProps) {
     clearTopology,
     renderTopology,
     handleStartCalc,
+    remapBackbone,
+    remapTarget,
     setActivePanel,
   } = props;
 
@@ -622,26 +626,47 @@ export function CalcPanel(props: CalcPanelProps) {
                         {backbonePoint[0].toFixed(4)}
                       </div>
                     )}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        // GIS Issue 6: Batalkan TIDAK menghapus desain yang sudah
-                        // dirender — hanya membatalkan pemilihan titik kalkulasi.
-                        clearCalcGraphics();
-                        setCalcMode('idle');
-                      }}
-                      style={{
-                        padding: '7px 16px',
-                        borderRadius: 8,
-                        border: '1px solid #E5E7EB',
-                        background: 'none',
-                        cursor: 'pointer',
-                        fontSize: 12,
-                        color: '#6B7280',
-                      }}
-                    >
-                      ✕ Batalkan
-                    </button>
+                    <div style={{ display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          // JLM Phase 2 Issue 3: Batalkan only retries the current step
+                          if (calcMode === 'target') {
+                            remapTarget();
+                          } else {
+                            remapBackbone();
+                          }
+                        }}
+                        style={{
+                          padding: '7px 16px',
+                          borderRadius: 8,
+                          border: '1px solid #E5E7EB',
+                          background: 'none',
+                          cursor: 'pointer',
+                          fontSize: 12,
+                          color: '#6B7280',
+                        }}
+                      >
+                        ✕ Batalkan {calcMode === 'target' ? 'Target' : 'Backbone'}
+                      </button>
+                      {calcMode === 'target' && backbonePoint && (
+                        <button
+                          type="button"
+                          onClick={() => remapBackbone()}
+                          style={{
+                            padding: '7px 16px',
+                            borderRadius: 8,
+                            border: '1px solid #BFDBFE',
+                            background: '#EFF6FF',
+                            cursor: 'pointer',
+                            fontSize: 12,
+                            color: '#1D4ED8',
+                          }}
+                        >
+                          📡 Ubah Backbone
+                        </button>
+                      )}
+                    </div>
                   </div>
                 )}
 
@@ -658,6 +683,42 @@ export function CalcPanel(props: CalcPanelProps) {
                       }}
                     >
                       ✅ Backbone + Target sudah dipilih
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+                      <button
+                        type="button"
+                        onClick={() => remapBackbone()}
+                        style={{
+                          flex: 1,
+                          padding: '8px',
+                          borderRadius: 8,
+                          border: '1px solid #BFDBFE',
+                          background: '#EFF6FF',
+                          cursor: 'pointer',
+                          fontSize: 11,
+                          fontWeight: 600,
+                          color: '#1D4ED8',
+                        }}
+                      >
+                        📡 Ubah Backbone
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => remapTarget()}
+                        style={{
+                          flex: 1,
+                          padding: '8px',
+                          borderRadius: 8,
+                          border: '1px solid #FECACA',
+                          background: '#FEF2F2',
+                          cursor: 'pointer',
+                          fontSize: 11,
+                          fontWeight: 600,
+                          color: '#B91C1C',
+                        }}
+                      >
+                        🎯 Ubah Target
+                      </button>
                     </div>
                     <button
                       type="button"
@@ -2250,7 +2311,43 @@ export function CalcPanel(props: CalcPanelProps) {
                       </div>
                     </div>
 
-                    {/* FIX: Reset */}
+                    {/* FIX: Reset + remap without wiping polygon */}
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <button
+                        type="button"
+                        onClick={() => remapBackbone()}
+                        style={{
+                          flex: 1,
+                          padding: '9px',
+                          borderRadius: 8,
+                          border: '1px solid #BFDBFE',
+                          background: '#EFF6FF',
+                          cursor: 'pointer',
+                          fontSize: 11,
+                          fontWeight: 600,
+                          color: '#1D4ED8',
+                        }}
+                      >
+                        📡 Ubah Backbone
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => remapTarget()}
+                        style={{
+                          flex: 1,
+                          padding: '9px',
+                          borderRadius: 8,
+                          border: '1px solid #FECACA',
+                          background: '#FEF2F2',
+                          cursor: 'pointer',
+                          fontSize: 11,
+                          fontWeight: 600,
+                          color: '#B91C1C',
+                        }}
+                      >
+                        🎯 Ubah Target
+                      </button>
+                    </div>
                     <button
                       type="button"
                       onClick={() => {
@@ -2273,7 +2370,7 @@ export function CalcPanel(props: CalcPanelProps) {
                         color: '#6B7280',
                       }}
                     >
-                      🔄 Hitung Ulang
+                      🔄 Hitung Ulang (dari awal)
                     </button>
                   </div>
                 )}

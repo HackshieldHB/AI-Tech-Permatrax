@@ -4,11 +4,12 @@ import '@mapbox/mapbox-gl-draw/dist/mapbox-gl-draw.css';
 import { useEffect, useRef } from 'react';
 import { useDesignStore } from '../../../store/useDesignStore';
 import * as turf from '@turf/turf';
+import { toast } from 'sonner';
 
 export function useSketchMode(map: maplibregl.Map | null) {
   const drawRef = useRef<MapboxDraw | null>(null);
   const popupRef = useRef<maplibregl.Popup | null>(null);
-  const { sketchMode, sketchTopology, setSketchTopology, sketchOpacity, nodes } = useDesignStore();
+  const { sketchMode, sketchTopology, setSketchTopology, sketchOpacity, nodes, sketchTrashTick } = useDesignStore();
 
   const updateMeasurements = (fc: any) => {
     if (!map || !fc.features.length) {
@@ -197,6 +198,27 @@ export function useSketchMode(map: maplibregl.Map | null) {
 
     return undefined;
   }, [sketchMode, map]);
+
+  // JLM Phase 2 Issue 2: Hapus toolbar → trash selected sketch feature(s)
+  useEffect(() => {
+    if (!sketchMode || !drawRef.current || sketchTrashTick === 0) return;
+    try {
+      const selected = drawRef.current.getSelectedIds?.() ?? [];
+      if (!selected.length) {
+        // Select mode so user can click a feature, then Hapus again
+        drawRef.current.changeMode('simple_select');
+        toast.info('Pilih objek sketch dulu, lalu klik Hapus lagi');
+        return;
+      }
+      drawRef.current.trash();
+      const fc = drawRef.current.getAll();
+      setSketchTopology(fc);
+      updateMeasurements(fc);
+      toast.success('Objek sketch dihapus');
+    } catch {
+      /* draw control may be mid-teardown */
+    }
+  }, [sketchTrashTick, sketchMode, setSketchTopology]);
 
   // Update opacity dynamically
   useEffect(() => {

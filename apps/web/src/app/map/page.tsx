@@ -127,6 +127,8 @@ function GisMapPage() {
     runCalculation,
     handleStartCalc,
     clearCalcGraphics,
+    remapBackbone,
+    remapTarget,
   } = useCalculation({
     mapRef,
     clearTopology,
@@ -360,6 +362,8 @@ function GisMapPage() {
             clearTopology,
             renderTopology,
             handleStartCalc,
+            remapBackbone,
+            remapTarget,
             setActivePanel,
           },
           design: {

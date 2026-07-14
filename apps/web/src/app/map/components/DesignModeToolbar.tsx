@@ -70,7 +70,10 @@ const undoBtnStyle = (disabled: boolean): React.CSSProperties => ({
 });
 
 export function DesignModeToolbar() {
-  const { editMode, activeTool, setActiveTool, sketchMode, setSketchMode, sketchOpacity, setSketchOpacity } = useDesignStore();
+  const {
+    editMode, activeTool, setActiveTool, sketchMode, setSketchMode,
+    sketchOpacity, setSketchOpacity, requestSketchTrash,
+  } = useDesignStore();
   const appliedLen = useCommandStore((s) => s.applied.length);
   const undoneLen = useCommandStore((s) => s.undone.length);
   const isSaving = useCommandStore((s) => s.isSaving);
@@ -210,7 +213,7 @@ export function DesignModeToolbar() {
         {sketchMode ? '✏️ Sketch' : '📝 Sketch'}
       </button>
 
-      {/* GIS Issue 8: cara hapus objek sketch dibuat eksplisit */}
+      {/* GIS Issue 8 / JLM Phase 2 Issue 2: cara hapus objek sketch dibuat eksplisit */}
       {sketchMode && (
         <span
           style={{
@@ -223,7 +226,7 @@ export function DesignModeToolbar() {
             whiteSpace: 'nowrap',
           }}
         >
-          💡 Hapus: klik objek → 🗑 (kanan atas) / tombol Delete
+          💡 Pilih objek → klik Hapus (atau 🗑 di kanan atas)
         </span>
       )}
 
@@ -247,9 +250,19 @@ export function DesignModeToolbar() {
         </div>
       )}
 
-      {/* ── Delete ── */}
-      <button onClick={() => setActiveTool('delete')} style={btn(activeTool === 'delete', true)}>
-        Hapus
+      {/* ── Delete: sketch trash vs node/edge delete ── */}
+      <button
+        onClick={() => {
+          if (sketchMode) {
+            requestSketchTrash();
+          } else {
+            setActiveTool('delete');
+          }
+        }}
+        style={btn(sketchMode ? false : activeTool === 'delete', true)}
+        title={sketchMode ? 'Hapus objek sketch yang dipilih' : 'Hapus node/jalur (klik objek)'}
+      >
+        {sketchMode ? 'Hapus Sketch' : 'Hapus'}
       </button>
 
       <style dangerouslySetInnerHTML={{ __html: `
