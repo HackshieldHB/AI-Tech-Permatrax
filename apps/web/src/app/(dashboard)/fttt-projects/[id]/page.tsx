@@ -3227,6 +3227,8 @@ export default function FtttProjectDetailPage() {
   const currentProgress = project.phaseProgresses.find((p) => p.phase === project.currentPhase);
   const isPm  = project.pmId === user?.id || user?.role === 'PM_FTTT';
   const userRole = user?.role ?? '';
+  // v2: Surveyor FTTT only sees Validation & Survey activities (parallel survey OK)
+  const isSurveyorFttt = userRole === 'SURVEYOR_FTTT';
 
   return (
     <div style={{ padding: 24, maxWidth: 800, margin: '0 auto' }}>
@@ -3276,12 +3278,10 @@ export default function FtttProjectDetailPage() {
               )}
             </p>
           </div>
-          {/* Hide "Selesaikan Fase" in specific role-gated scenarios */}
-          {!isCompletedOrCancelled && readiness && (() => {
+          {/* Hide "Selesaikan Fase" in specific role-gated scenarios; Surveyor never advances phases */}
+          {!isCompletedOrCancelled && !isSurveyorFttt && readiness && (() => {
             // C5: Implementation — Admin only
             if (project.currentPhase === 'IMPLEMENTATION' && userRole !== 'ADMIN' && userRole !== 'GENERAL_MANAGER') return false;
-            // C6-PST2: Survey — Surveyor uses "Submit ke PM" button instead (in SurveySection)
-            if (project.currentPhase === 'SURVEY' && userRole === 'SURVEYOR_FTTT') return false;
             // C6-TI2: Documentation & Reconciliation — PM FTTT + Admin only
             if ((project.currentPhase === 'DOCUMENTATION' || project.currentPhase === 'RECONCILIATION') &&
                 userRole === 'SURVEYOR_FTTT') return false;
@@ -3304,21 +3304,21 @@ export default function FtttProjectDetailPage() {
             </button>
           )}
           {/* Role-gated info messages */}
-          {!isCompletedOrCancelled && project.currentPhase === 'IMPLEMENTATION' &&
+          {!isCompletedOrCancelled && !isSurveyorFttt && project.currentPhase === 'IMPLEMENTATION' &&
             userRole !== 'ADMIN' && userRole !== 'GENERAL_MANAGER' && (
             <div style={{ padding: '8px 14px', borderRadius: 8, background: '#F6F8FA', border: '1px solid #D0D7DE', fontSize: 12, color: '#57606a' }}>
               🔒 Penyelesaian fase Implementation hanya dapat dilakukan oleh Admin
             </div>
           )}
-          {!isCompletedOrCancelled && project.currentPhase === 'SURVEY' && userRole === 'SURVEYOR_FTTT' && (
-            <div style={{ padding: '8px 14px', borderRadius: 8, background: '#F6F8FA', border: '1px solid #D0D7DE', fontSize: 12, color: '#57606a' }}>
-              📤 Gunakan tombol "Submit ke PM" pada bagian Upload di bawah setelah semua dokumen diunggah
+          {!isCompletedOrCancelled && isSurveyorFttt && (
+            <div style={{ padding: '8px 14px', borderRadius: 8, background: '#F0F8FF', border: '1px solid #0969DA', fontSize: 12, color: '#0969DA' }}>
+              👷 Ruang lingkup Anda: Validation &amp; Survey (termasuk survey bertahap paralel). Aktivitas fase lain disembunyikan.
             </div>
           )}
         </div>
 
-        {/* Blocked reasons */}
-        {readiness && !readiness.ready && readiness.blockedReasons.length > 0 && (
+        {/* Blocked reasons — not relevant for Surveyor (they don't advance phases) */}
+        {!isSurveyorFttt && readiness && !readiness.ready && readiness.blockedReasons.length > 0 && (
           <div style={{ marginTop: 12, padding: 10, background: '#FFF8C5', borderRadius: 8, border: '1px solid #d4a017' }}>
             <p style={{ margin: 0, fontSize: 12, fontWeight: 600, color: '#9a6700' }}>Fase belum bisa diselesaikan:</p>
             <ul style={{ margin: '4px 0 0', paddingLeft: 16 }}>
@@ -3333,13 +3333,17 @@ export default function FtttProjectDetailPage() {
       {/* Live progress bar */}
       <LiveProgressBar project={project} />
 
-      {/* Phase timeline */}
+      {/* Phase timeline — Surveyor sees compact survey-focused status only */}
       <div style={{ background: '#fff', border: '1px solid #D0D7DE', borderRadius: 12, padding: 20, marginBottom: 16 }}>
-        <p style={{ margin: '0 0 12px', fontWeight: 600, fontSize: 14 }}>Timeline Fase</p>
-        {PHASE_ORDER.map((phase) => {
+        <p style={{ margin: '0 0 12px', fontWeight: 600, fontSize: 14 }}>
+          {isSurveyorFttt ? 'Status Validation & Survey' : 'Timeline Fase'}
+        </p>
+        {(isSurveyorFttt ? PHASE_ORDER.filter((p) => p === 'SURVEY') : PHASE_ORDER).map((phase) => {
           const prog = project.phaseProgresses.find((p) => p.phase === phase);
           if (!prog) return null;
           const isCurrentPhase = phase === project.currentPhase;
+          const sites = project.surveySites ?? [];
+          const sitesDone = sites.filter((s) => s.status === 'DONE').length;
           return (
             <div key={phase} style={{
               display: 'flex', gap: 12, padding: '10px 0',
@@ -3349,28 +3353,41 @@ export default function FtttProjectDetailPage() {
               <div style={{ marginTop: 2 }}><PhaseIcon status={prog.status} /></div>
               <div style={{ flex: 1 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span style={{ fontSize: 13, fontWeight: isCurrentPhase ? 700 : 500 }}>
+                  <span style={{ fontSize: 13, fontWeight: isCurrentPhase || isSurveyorFttt ? 700 : 500 }}>
                     {FTTT_PHASE_LABELS[phase]}
                     {prog.status === 'SKIPPED' && <span style={{ fontSize: 11, marginLeft: 6, color: '#8c959f' }}>— Dilewati</span>}
-                    {isCurrentPhase && <span style={{ fontSize: 11, marginLeft: 6, color: '#0969DA', fontWeight: 600 }}>← Fase aktif</span>}
+                    {isCurrentPhase && !isSurveyorFttt && <span style={{ fontSize: 11, marginLeft: 6, color: '#0969DA', fontWeight: 600 }}>← Fase aktif</span>}
                   </span>
                   {prog.completedAt && <span style={{ fontSize: 11, color: '#57606a' }}>{fmt(prog.completedAt)}</span>}
                 </div>
-                {prog.notes && <p style={{ margin: '3px 0 0', fontSize: 12, color: '#57606a' }}>{prog.notes}</p>}
+                {isSurveyorFttt && sites.length > 0 && (
+                  <p style={{ margin: '3px 0 0', fontSize: 12, color: '#57606a' }}>
+                    Progress site: {sitesDone}/{sites.length}
+                    {sitesDone === sites.length ? ' · Completed' : ' · Berjalan paralel dengan fase project'}
+                  </p>
+                )}
+                {prog.notes && !isSurveyorFttt && <p style={{ margin: '3px 0 0', fontSize: 12, color: '#57606a' }}>{prog.notes}</p>}
               </div>
             </div>
           );
         })}
+        {isSurveyorFttt && (
+          <p style={{ margin: '8px 0 0', fontSize: 11, color: '#8c959f' }}>
+            Fase aktif project: {FTTT_PHASE_LABELS[project.currentPhase]} — survey dapat dilanjutkan meski project sudah di fase lain.
+          </p>
+        )}
       </div>
 
       {/* Current phase actions */}
       {!isCompletedOrCancelled && (
         <div style={{ background: '#fff', border: '1px solid #D0D7DE', borderRadius: 12, padding: 20 }}>
           <p style={{ margin: '0 0 16px', fontWeight: 600, fontSize: 14 }}>
-            Aktivitas Fase: {FTTT_PHASE_LABELS[project.currentPhase]}
+            {isSurveyorFttt
+              ? 'Aktivitas Validation & Survey'
+              : `Aktivitas Fase: ${FTTT_PHASE_LABELS[project.currentPhase]}`}
           </p>
 
-          {/* Survey — active SURVEY phase, or continue unfinished sites in parallel */}
+          {/* Survey — for Surveyor always (parallel); for others only on SURVEY / unfinished sites */}
           {(() => {
             const onSurvey = project.currentPhase === 'SURVEY';
             const continuePartial =
@@ -3379,7 +3396,12 @@ export default function FtttProjectDetailPage() {
               project.currentPhase !== 'INITIATION' &&
               (project.surveySites?.length ?? 0) > 0 &&
               (project.surveySites ?? []).some((s) => s.status !== 'DONE');
-            if (!onSurvey && !continuePartial) return null;
+            // Surveyor always works on survey once project left INITIATION
+            const showForSurveyor =
+              isSurveyorFttt &&
+              project.status === 'ACTIVE' &&
+              project.currentPhase !== 'INITIATION';
+            if (!showForSurveyor && !onSurvey && !continuePartial) return null;
             return (
               <SurveySection
                 project={project}
@@ -3389,59 +3411,62 @@ export default function FtttProjectDetailPage() {
             );
           })()}
 
-          {/* Preparation — DRM for PST */}
-          {project.currentPhase === 'PREPARATION' && project.ftttCompany === 'PST' && (
-            <DrmSection project={project} onRefresh={load} />
-          )}
+          {/* Non-survey lifecycle activities — hidden from Surveyor FTTT (visibility v2) */}
+          {!isSurveyorFttt && (
+            <>
+              {/* Preparation — DRM for PST */}
+              {project.currentPhase === 'PREPARATION' && project.ftttCompany === 'PST' && (
+                <DrmSection project={project} onRefresh={load} />
+              )}
 
-          {/* Preparation — Jaminan for Telkom Infra */}
-          {project.currentPhase === 'PREPARATION' && project.ftttCompany === 'TELKOM_INFRA' && (
-            <JaminanSection project={project} onRefresh={load} />
-          )}
+              {/* Preparation — Jaminan for Telkom Infra */}
+              {project.currentPhase === 'PREPARATION' && project.ftttCompany === 'TELKOM_INFRA' && (
+                <JaminanSection project={project} onRefresh={load} />
+              )}
 
-          {/* Preparation — iFORTE: Supporting Document (Opsional) */}
-          {project.currentPhase === 'PREPARATION' && project.ftttCompany === 'IFORTE' && (
-            <IforteSupportingDocSection project={project} onRefresh={load} userRole={user?.role ?? ''} />
-          )}
+              {/* Preparation — iFORTE: Supporting Document (Opsional) */}
+              {project.currentPhase === 'PREPARATION' && project.ftttCompany === 'IFORTE' && (
+                <IforteSupportingDocSection project={project} onRefresh={load} userRole={user?.role ?? ''} />
+              )}
 
-          {/* C6-PST5: Procurement phase — PM uploads PO (PST only) */}
-          {project.currentPhase === 'PROCUREMENT' && (
-            <ProcurementSection project={project} onRefresh={load} userRole={userRole} />
-          )}
+              {/* C6-PST5: Procurement phase — PM uploads PO (PST only) */}
+              {project.currentPhase === 'PROCUREMENT' && (
+                <ProcurementSection project={project} onRefresh={load} userRole={userRole} />
+              )}
 
-          {/* Documentation — all companies (C6-TI2: PM FTTT owns) */}
-          {project.currentPhase === 'DOCUMENTATION' && (
-            <DocumentationSection project={project} onRefresh={load} userRole={userRole} />
-          )}
+              {/* Documentation — all companies (C6-TI2: PM FTTT owns) */}
+              {project.currentPhase === 'DOCUMENTATION' && (
+                <DocumentationSection project={project} onRefresh={load} userRole={userRole} />
+              )}
 
-          {/* Reconciliation & Billing — all companies (C6-TI2: PM FTTT owns) */}
-          {project.currentPhase === 'RECONCILIATION' && (
-            <ReconciliationSection project={project} onRefresh={load} userRole={userRole} />
-          )}
+              {/* Reconciliation & Billing — all companies (C6-TI2: PM FTTT owns) */}
+              {project.currentPhase === 'RECONCILIATION' && (
+                <ReconciliationSection project={project} onRefresh={load} userRole={userRole} />
+              )}
 
+              {/* Implementation phase */}
+              {project.currentPhase === 'IMPLEMENTATION' && (
+                <ImplementationSection project={project} onRefresh={load} userRole={userRole} />
+              )}
 
-          {/* Implementation phase */}
-          {project.currentPhase === 'IMPLEMENTATION' && (
-            <ImplementationSection project={project} onRefresh={load} userRole={userRole} />
-          )}
+              {/* CLOSING phase — BAST II, evidence, notes (C6-TI3: Admin-only + maintenance gate) */}
+              {project.currentPhase === 'CLOSING' && (
+                <ClosingSection project={project} onRefresh={load} userRole={userRole} />
+              )}
 
-          {/* CLOSING phase — BAST II, evidence, notes (C6-TI3: Admin-only + maintenance gate) */}
-          {project.currentPhase === 'CLOSING' && (
-            <ClosingSection project={project} onRefresh={load} userRole={userRole} />
-          )}
+              {!['SURVEY', 'PREPARATION', 'PROCUREMENT', 'DOCUMENTATION', 'RECONCILIATION', 'IMPLEMENTATION', 'CLOSING'].includes(project.currentPhase) && (
+                <p style={{ fontSize: 13, color: '#57606a' }}>
+                  Koordinasikan kegiatan di fase ini. Klik tombol &quot;Selesaikan Fase&quot; di atas setelah semua aktivitas selesai.
+                </p>
+              )}
 
-          {!['SURVEY', 'PREPARATION', 'PROCUREMENT', 'DOCUMENTATION', 'RECONCILIATION', 'IMPLEMENTATION', 'CLOSING'].includes(project.currentPhase) && (
-            <p style={{ fontSize: 13, color: '#57606a' }}>
-              Koordinasikan kegiatan di fase ini. Klik tombol "Selesaikan Fase" di atas setelah semua aktivitas selesai.
-            </p>
-          )}
-
-
-          {/* DRM history always visible for PST */}
-          {project.ftttCompany === 'PST' && project.drmDocuments.length > 0 && project.currentPhase !== 'PREPARATION' && (
-            <div style={{ marginTop: 16, borderTop: '1px solid #EAEEF2', paddingTop: 12 }}>
-              <DrmSection project={project} onRefresh={load} />
-            </div>
+              {/* DRM history always visible for PST */}
+              {project.ftttCompany === 'PST' && project.drmDocuments.length > 0 && project.currentPhase !== 'PREPARATION' && (
+                <div style={{ marginTop: 16, borderTop: '1px solid #EAEEF2', paddingTop: 12 }}>
+                  <DrmSection project={project} onRefresh={load} />
+                </div>
+              )}
+            </>
           )}
         </div>
       )}
