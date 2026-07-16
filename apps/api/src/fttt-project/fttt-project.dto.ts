@@ -95,8 +95,25 @@ export const UploadSurveyDto = z.object({
   fileType:  z.enum(['photo', 'supporting_file', 'survey_evidence', 'operational_notes']),
   caption:   z.string().max(2000).optional(),
   textOnly:  z.boolean().optional(),  // true for operational_notes
+  siteId: z.preprocess(
+    (v) => (v === '' || v === null || v === undefined ? undefined : v),
+    z.string().cuid().optional(),
+  ),
 });
 export type UploadSurveyDtoType = z.infer<typeof UploadSurveyDto>;
+
+export const UpsertSurveySiteDto = z.object({
+  name:  z.string().min(1).max(200),
+  code:  z.string().max(50).optional(),
+  notes: z.string().max(1000).optional(),
+});
+export type UpsertSurveySiteDtoType = z.infer<typeof UpsertSurveySiteDto>;
+
+export const MarkSurveySiteDto = z.object({
+  status: z.enum(['PENDING', 'DONE']),
+  notes:  z.string().max(1000).optional(),
+});
+export type MarkSurveySiteDtoType = z.infer<typeof MarkSurveySiteDto>;
 
 export const UploadDrmDocDto = z.object({
   docType: z.enum(['BOQ_INITIAL', 'TOS_INITIAL', 'DRM_RESULT', 'ACTUAL']),
