@@ -1118,6 +1118,7 @@ export interface FtttProject {
   cleanList:      { id: string; rwCode: string; kelurahan: string } | null;
   phaseProgresses: FtttPhaseProgress[];
   surveyUploads:      FtttSurveyUpload[];
+  surveySites?:       FtttSurveySite[];
   drmDocuments:       FtttDrmDoc[];
   sanggahs:           FtttSanggah[];
   jaminans:           FtttJaminan[];
@@ -1128,12 +1129,26 @@ export interface FtttProject {
   spans:              FtttSpan[];
 }
 
+export interface FtttSurveySite {
+  id:          string;
+  name:        string;
+  code:        string | null;
+  status:      'PENDING' | 'DONE' | string;
+  notes:       string | null;
+  sortOrder:   number;
+  completedAt: string | null;
+  createdAt:   string;
+  _count?:     { uploads: number };
+}
+
 export interface FtttSurveyUpload {
   id:           string;
   fileUrl:      string;
   fileType:     string;
   caption:      string | null;
   createdAt:    string;
+  siteId?:      string | null;
+  site?:        { id: string; name: string; code: string | null } | null;
   uploadedBy:   { id: string; name: string };
 }
 

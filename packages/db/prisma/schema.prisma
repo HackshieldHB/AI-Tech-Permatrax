@@ -3041,6 +3041,7 @@ model FtttProject {
 
   phaseProgresses FtttPhaseProgress[]
   surveyUploads      FtttSurveyUpload[]
+  surveySites        FtttSurveySite[]
   drmDocuments       FtttDrmDocument[]
   sanggahs           FtttSanggah[]
   jaminans           FtttJaminan[]
@@ -3130,10 +3131,31 @@ model FtttPhaseProgress {
   @@unique([projectId, phase])
 }
 
+model FtttSurveySite {
+  id          String      @id @default(cuid())
+  projectId   String
+  project     FtttProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name        String
+  code        String?
+  // PENDING | DONE
+  status      String      @default("PENDING")
+  notes       String?
+  sortOrder   Int         @default(0)
+  completedAt DateTime?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  uploads     FtttSurveyUpload[]
+
+  @@index([projectId])
+  @@index([projectId, status])
+}
+
 model FtttSurveyUpload {
   id           String      @id @default(cuid())
   projectId    String
   project      FtttProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  siteId       String?
+  site         FtttSurveySite? @relation(fields: [siteId], references: [id], onDelete: SetNull)
   uploadedById String
   uploadedBy   User        @relation("FtttSurveyUploader", fields: [uploadedById], references: [id])
   fileUrl      String
@@ -3142,6 +3164,7 @@ model FtttSurveyUpload {
   createdAt    DateTime    @default(now())
 
   @@index([projectId])
+  @@index([siteId])
 }
 
 model FtttDrmDocument {

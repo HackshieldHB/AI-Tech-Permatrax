@@ -120,14 +120,21 @@ export function FtttFinanceMonitor({ financeProjectId, tab, reloadKey = 0 }: { f
 
   const handleDisburse = async (txId: string) => {
     if (!disburseDate) { toast.error('Isi Tanggal Dana Keluar'); return; }
-    const today = new Date().toISOString().slice(0, 10);
-    if (disburseDate > today) { toast.error('Tanggal Dana Keluar tidak boleh melebihi hari ini'); return; }
+    const today = new Date();
+    const max = new Date(today); max.setDate(max.getDate() + 14);
+    const todayStr = today.toISOString().slice(0, 10);
+    const maxStr = max.toISOString().slice(0, 10);
+    if (disburseDate > maxStr) { toast.error('Tanggal Dana Keluar maksimal 14 hari dari hari ini'); return; }
     setDisbursing(true);
     try {
       await apiPut(`/fttt-projects/transactions/${txId}/disburse`, {
         disbursedAt: new Date(disburseDate + 'T12:00:00').toISOString(),
       });
-      toast.success('Tanggal Dana Keluar tersimpan — budget diperbarui');
+      toast.success(
+        disburseDate > todayStr
+          ? 'Dana keluar dijadwalkan — budget berkurang pada tanggal tersebut'
+          : 'Tanggal Dana Keluar tersimpan — budget diperbarui',
+      );
       setDisburseId(null); setDisburseDate('');
       setLocalReload((k) => k + 1);
     } catch (e) {
@@ -210,13 +217,15 @@ export function FtttFinanceMonitor({ financeProjectId, tab, reloadKey = 0 }: { f
             ) : txns.map((t) => {
               const total = num(t.total);
               const bobot = rab > 0 ? (total / rab) * 100 : 0;
-              const realized = !!t.disbursedAt;
+              const hasDate = !!t.disbursedAt;
+              const realized = hasDate && new Date(t.disbursedAt!).getTime() <= Date.now();
+              const scheduled = hasDate && !realized;
               return (
                 <tr key={t.id} className="border-b border-slate-50">
                   <td className="px-3 py-2 text-xs text-slate-500 whitespace-nowrap">{new Date(t.createdAt).toLocaleString('id-ID', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</td>
                   <td className="px-3 py-2">
-                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${realized ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
-                      {realized ? 'Terealisasi' : 'Menunggu'}
+                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${realized ? 'bg-emerald-100 text-emerald-700' : scheduled ? 'bg-sky-100 text-sky-700' : 'bg-amber-100 text-amber-700'}`}>
+                      {realized ? 'Terealisasi' : scheduled ? 'Terjadwal' : 'Menunggu'}
                     </span>
                   </td>
                   <td className="px-3 py-2">{CAT_LABEL[t.category]}</td>
@@ -228,17 +237,21 @@ export function FtttFinanceMonitor({ financeProjectId, tab, reloadKey = 0 }: { f
                   <td className="px-3 py-2 text-xs text-slate-500">{t.remarks}</td>
                   <td className="px-3 py-2 text-xs text-slate-500">{t.createdBy?.name ?? '—'}</td>
                   <td className="px-3 py-2 text-xs">
-                    {realized ? (
-                      <span className="text-emerald-700 whitespace-nowrap">
+                    {hasDate ? (
+                      <span className={`whitespace-nowrap ${realized ? 'text-emerald-700' : 'text-sky-700'}`}>
                         {new Date(t.disbursedAt!).toLocaleDateString('id-ID')}
+                        {scheduled ? ' (jadwal)' : ''}
                       </span>
                     ) : disburseId === t.id ? (
                       <div className="flex items-center gap-1">
-                        <input type="date" value={disburseDate} max={new Date().toISOString().slice(0, 10)}
+                        <input type="date" value={disburseDate}
+                          min={new Date().toISOString().slice(0, 10)}
+                          max={(() => { const d = new Date(); d.setDate(d.getDate() + 14); return d.toISOString().slice(0, 10); })()}
                           onChange={(e) => {
                             const v = e.target.value;
-                            const today = new Date().toISOString().slice(0, 10);
-                            if (v && v > today) { toast.error('Tanggal Dana Keluar tidak boleh melebihi hari ini'); return; }
+                            const max = new Date(); max.setDate(max.getDate() + 14);
+                            const maxStr = max.toISOString().slice(0, 10);
+                            if (v && v > maxStr) { toast.error('Tanggal Dana Keluar maksimal 14 hari dari hari ini'); return; }
                             setDisburseDate(v);
                           }}
                           className="text-xs border rounded px-1 py-0.5" />
