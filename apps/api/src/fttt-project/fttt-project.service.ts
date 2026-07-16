@@ -289,8 +289,13 @@ export class FtttProjectService {
     }
 
     if (phase === FtttPhase.SURVEY) {
-      if (project.surveyUploads.length === 0) {
-        reasons.push('Minimal satu bukti survei wajib diunggah');
+      // Partial survey: unlock Preparation with ≥1 evidence OR ≥1 site done —
+      // remaining sites can continue after phase advance.
+      const siteDone = await this.prisma.ftttSurveySite.count({
+        where: { projectId: project.id, status: 'DONE' },
+      });
+      if (project.surveyUploads.length === 0 && siteDone === 0) {
+        reasons.push('Minimal satu bukti survei atau satu site tersurvey wajib sebelum lanjut Preparation');
       }
     }
 
@@ -780,7 +785,7 @@ export class FtttProjectService {
     return updated;
   }
 
-  // ─── Upload survey evidence (iForte / PST only) ───────────────────────────
+  // ─── Upload survey evidence (partial survey: allowed during SURVEY and after) ───
   async uploadSurveyEvidence(
     id: string,
     file: Express.Multer.File | undefined,
@@ -800,14 +805,120 @@ export class FtttProjectService {
     if (isTextOnly && !dto.caption?.trim()) {
       throw new BadRequestException('Isi catatan lapangan tidak boleh kosong');
     }
-    await this.prisma.ftttProject.findUniqueOrThrow({ where: { id } });
+    const project = await this.prisma.ftttProject.findUniqueOrThrow({ where: { id } });
+    if (project.status !== 'ACTIVE') {
+      throw new BadRequestException('Project tidak aktif — survey tidak dapat diunggah');
+    }
+    // Allow continuing survey after leaving SURVEY (parallel with Preparation+)
+    if (project.currentPhase === FtttPhase.INITIATION) {
+      throw new BadRequestException('Selesaikan Project Initiation terlebih dahulu');
+    }
+    if (dto.siteId) {
+      const site = await this.prisma.ftttSurveySite.findFirst({ where: { id: dto.siteId, projectId: id } });
+      if (!site) throw new BadRequestException('Site survey tidak ditemukan pada project ini');
+    }
     let fileUrl = '';
     if (file) {
       fileUrl = await this.storage.uploadMulterFile(file, 'fttt-survey', id);
     }
     return this.prisma.ftttSurveyUpload.create({
-      data: { projectId: id, uploadedById: userId, fileUrl, fileType: dto.fileType, caption: dto.caption ?? null },
-      include: { uploadedBy: { select: { id: true, name: true } } },
+      data: {
+        projectId: id,
+        uploadedById: userId,
+        fileUrl,
+        fileType: dto.fileType,
+        caption: dto.caption ?? null,
+        siteId: dto.siteId ?? null,
+      },
+      include: { uploadedBy: { select: { id: true, name: true } }, site: true },
+    });
+  }
+
+  // ─── Partial survey: site CRUD ───────────────────────────────────────────
+  async listSurveySites(projectId: string) {
+    await this.prisma.ftttProject.findUniqueOrThrow({ where: { id: projectId } });
+    const sites = await this.prisma.ftttSurveySite.findMany({
+      where: { projectId },
+      orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+      include: { _count: { select: { uploads: true } } },
+    });
+    const done = sites.filter((s) => s.status === 'DONE').length;
+    return { sites, done, total: sites.length, complete: sites.length > 0 && done === sites.length };
+  }
+
+  async addSurveySite(projectId: string, dto: { name: string; code?: string; notes?: string }, userRole: Role) {
+    const allowed: Role[] = [Role.SURVEYOR_FTTT, Role.PM_FTTT, Role.ADMIN, Role.GENERAL_MANAGER];
+    if (!allowed.includes(userRole)) {
+      throw new ForbiddenException('Tidak berwenang menambah site survey');
+    }
+    await this.prisma.ftttProject.findUniqueOrThrow({ where: { id: projectId } });
+    const maxOrder = await this.prisma.ftttSurveySite.aggregate({
+      where: { projectId },
+      _max: { sortOrder: true },
+    });
+    return this.prisma.ftttSurveySite.create({
+      data: {
+        projectId,
+        name: dto.name.trim(),
+        code: dto.code?.trim() || null,
+        notes: dto.notes?.trim() || null,
+        sortOrder: (maxOrder._max.sortOrder ?? 0) + 1,
+      },
+    });
+  }
+
+  async markSurveySite(
+    projectId: string,
+    siteId: string,
+    dto: { status: 'PENDING' | 'DONE'; notes?: string },
+    userRole: Role,
+  ) {
+    const allowed: Role[] = [Role.SURVEYOR_FTTT, Role.PM_FTTT, Role.ADMIN, Role.GENERAL_MANAGER];
+    if (!allowed.includes(userRole)) {
+      throw new ForbiddenException('Tidak berwenang mengubah status site survey');
+    }
+    const site = await this.prisma.ftttSurveySite.findFirst({ where: { id: siteId, projectId } });
+    if (!site) throw new NotFoundException('Site survey tidak ditemukan');
+    const updated = await this.prisma.ftttSurveySite.update({
+      where: { id: siteId },
+      data: {
+        status: dto.status,
+        notes: dto.notes !== undefined ? dto.notes : site.notes,
+        completedAt: dto.status === 'DONE' ? new Date() : null,
+      },
+    });
+    await this.maybeMarkSurveyAllComplete(projectId);
+    return updated;
+  }
+
+  async deleteSurveySite(projectId: string, siteId: string, userRole: Role) {
+    const allowed: Role[] = [Role.SURVEYOR_FTTT, Role.PM_FTTT, Role.ADMIN, Role.GENERAL_MANAGER];
+    if (!allowed.includes(userRole)) {
+      throw new ForbiddenException('Tidak berwenang menghapus site survey');
+    }
+    const site = await this.prisma.ftttSurveySite.findFirst({ where: { id: siteId, projectId } });
+    if (!site) throw new NotFoundException('Site survey tidak ditemukan');
+    await this.prisma.ftttSurveySite.delete({ where: { id: siteId } });
+    await this.maybeMarkSurveyAllComplete(projectId);
+    return { success: true };
+  }
+
+  private async maybeMarkSurveyAllComplete(projectId: string) {
+    const sites = await this.prisma.ftttSurveySite.findMany({ where: { projectId }, select: { status: true } });
+    if (sites.length === 0) return;
+    const allDone = sites.every((s) => s.status === 'DONE');
+    if (!allDone) return;
+    const prog = await this.prisma.ftttPhaseProgress.findUnique({
+      where: { projectId_phase: { projectId, phase: FtttPhase.SURVEY } },
+    });
+    if (!prog) return;
+    // Preserve PENDING_PM_REVIEW / REJECTED while still on review; otherwise mark complete
+    if (prog.notes === 'PENDING_PM_REVIEW' || (typeof prog.notes === 'string' && prog.notes.startsWith('REJECTED:'))) {
+      return;
+    }
+    await this.prisma.ftttPhaseProgress.update({
+      where: { projectId_phase: { projectId, phase: FtttPhase.SURVEY } },
+      data: { notes: 'SURVEY_ALL_COMPLETE' },
     });
   }
 
@@ -1274,7 +1385,8 @@ export class FtttProjectService {
       pm:             { select: { id: true, name: true, email: true } },
       cleanList:      { select: { id: true, rwCode: true, kelurahan: true } },
       phaseProgresses: { orderBy: { phase: 'asc' as const } },
-      surveyUploads:  { include: { uploadedBy: { select: { id: true, name: true } } }, orderBy: { createdAt: 'desc' as const } },
+      surveyUploads:  { include: { uploadedBy: { select: { id: true, name: true } }, site: true }, orderBy: { createdAt: 'desc' as const } },
+      surveySites:    { include: { _count: { select: { uploads: true } } }, orderBy: { sortOrder: 'asc' as const } },
       drmDocuments:   { include: { uploadedBy: { select: { id: true, name: true } } }, orderBy: { version: 'asc' as const } },
       sanggahs:       { include: { submittedBy: { select: { id: true, name: true } } }, orderBy: { attemptNumber: 'asc' as const } },
       jaminans:           { include: { uploadedBy: { select: { id: true, name: true } } }, orderBy: { createdAt: 'asc' as const } },
@@ -1363,12 +1475,14 @@ export class FtttProjectService {
     if (Number.isNaN(d.getTime())) {
       throw new BadRequestException('Tanggal Dana Keluar tidak valid');
     }
-    // Max today (local calendar day) — cannot pick a future date
-    const todayEnd = new Date();
-    todayEnd.setHours(23, 59, 59, 999);
-    if (d.getTime() > todayEnd.getTime()) {
-      throw new BadRequestException('Tanggal Dana Keluar tidak boleh melebihi hari ini');
+    // Max today+14 days — Finance may schedule Dana Keluar up to 2 weeks ahead
+    const maxDate = new Date();
+    maxDate.setDate(maxDate.getDate() + 14);
+    maxDate.setHours(23, 59, 59, 999);
+    if (d.getTime() > maxDate.getTime()) {
+      throw new BadRequestException('Tanggal Dana Keluar maksimal 14 hari dari hari ini');
     }
+    // Also reject dates before a reasonable past floor? Keep allowing past dates within reason — only future capped.
     return this.prisma.ftttTransaction.update({
       where: { id: txId },
       data: { disbursedAt: d, disbursedById: userId },
@@ -1411,8 +1525,12 @@ export class FtttProjectService {
     };
     const totalBudget = num(fp?.totalBudget) || (budgets.PERIZINAN + budgets.MATERIAL + budgets.JASA + budgets.LAIN_LAIN);
 
-    // Only disbursed transactions count toward spent / Actual (Stage 2)
-    const realized = project.transactions.filter((t) => t.disbursedAt != null);
+    // Only disbursed transactions whose Dana Keluar date has arrived count as spent / Actual.
+    // Future-scheduled disbursements (up to +14d) are stored but do not reduce budget yet.
+    const nowMs = Date.now();
+    const realized = project.transactions.filter(
+      (t) => t.disbursedAt != null && new Date(t.disbursedAt).getTime() <= nowMs,
+    );
     const spent = { PERIZINAN: 0, MATERIAL: 0, JASA: 0, LAIN_LAIN: 0 } as Record<string, number>;
     for (const t of realized) spent[t.category] += num(t.total);
     const totalSpent = spent.PERIZINAN + spent.MATERIAL + spent.JASA + spent.LAIN_LAIN;

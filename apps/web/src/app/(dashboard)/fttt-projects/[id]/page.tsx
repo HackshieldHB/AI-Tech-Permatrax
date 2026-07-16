@@ -15,6 +15,7 @@ import {
   FtttClosingLog,
   FtttSpan,
   FtttSpanLogCategory,
+  FtttSurveySite,
   FTTT_COMPANY_LABELS,
   FTTT_PHASE_LABELS,
   FTTT_PROJECT_STATUS_LABELS,
@@ -128,13 +129,17 @@ const FILE_ACCEPT: Record<string, string> = {
   operational_notes: '',   // text-only — no file
 };
 
-function SurveySection({ project, onRefresh }: { project: FtttProject; onRefresh: () => void }) {
+function SurveySection({ project, onRefresh, continueMode = false }: { project: FtttProject; onRefresh: () => void; continueMode?: boolean }) {
   const { user } = useAuthStore();
   const [uploading, setUploading]     = useState(false);
   const [submitting, setSubmitting]   = useState(false);
   const [deletingId, setDeletingId]   = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState('');
   const [showRejectForm, setShowRejectForm] = useState(false);
+  const [newSiteName, setNewSiteName] = useState('');
+  const [newSiteCode, setNewSiteCode] = useState('');
+  const [selectedSiteId, setSelectedSiteId] = useState('');
+  const [siteBusy, setSiteBusy] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   // C7.1: default to supporting_file (Foto removed)
   const [fileType, setFileType] = useState<'supporting_file' | 'survey_evidence' | 'operational_notes'>('supporting_file');
@@ -146,12 +151,17 @@ function SurveySection({ project, onRefresh }: { project: FtttProject; onRefresh
   // C7.1: PM is reviewer/approver only — no upload capability
   const isPM       = role === 'PM_FTTT' || role === 'ADMIN' || role === 'GENERAL_MANAGER';
   const canDelete  = ['SURVEYOR_FTTT', 'ADMIN', 'GENERAL_MANAGER'].includes(role);
+  const canManageSites = ['SURVEYOR_FTTT', 'PM_FTTT', 'ADMIN', 'GENERAL_MANAGER'].includes(role);
 
   const surveyProg      = project.phaseProgresses.find((p) => p.phase === 'SURVEY');
   const surveyNotes     = surveyProg?.notes ?? null;
   const isPendingReview = surveyNotes === 'PENDING_PM_REVIEW';
   const isRejected      = typeof surveyNotes === 'string' && surveyNotes.startsWith('REJECTED:');
   const rejectionReason = isRejected ? surveyNotes.replace('REJECTED:', '') : '';
+  const sites = project.surveySites ?? [];
+  const sitesDone = sites.filter((s) => s.status === 'DONE').length;
+  const sitesTotal = sites.length;
+  const surveyComplete = sitesTotal > 0 && sitesDone === sitesTotal;
 
   // C7.1: Upload file (for supporting_file and survey_evidence)
   const handleUploadFile = async (file: File) => {
@@ -159,6 +169,7 @@ function SurveySection({ project, onRefresh }: { project: FtttProject; onRefresh
     fd.append('file', file);
     fd.append('fileType', fileType);
     if (caption) fd.append('caption', caption);
+    if (selectedSiteId) fd.append('siteId', selectedSiteId);
     setUploading(true);
     try {
       const res = await apiFetch(`/fttt-projects/${project.id}/survey-uploads`, { method: 'POST', body: fd }, user?.id);
@@ -182,7 +193,7 @@ function SurveySection({ project, onRefresh }: { project: FtttProject; onRefresh
       const fd = new FormData();
       fd.append('fileType', 'operational_notes');
       fd.append('caption', noteText.trim());
-      // No file appended — backend handles text-only for operational_notes
+      if (selectedSiteId) fd.append('siteId', selectedSiteId);
       const res = await apiFetch(`/fttt-projects/${project.id}/survey-uploads`, { method: 'POST', body: fd }, user?.id);
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal menyimpan catatan');
       toast.success('Catatan lapangan berhasil disimpan');
@@ -193,6 +204,36 @@ function SurveySection({ project, onRefresh }: { project: FtttProject; onRefresh
     } finally {
       setUploading(false);
     }
+  };
+
+  const handleAddSite = async () => {
+    if (!newSiteName.trim()) { toast.error('Nama site wajib diisi'); return; }
+    setSiteBusy(true);
+    try {
+      const res = await apiFetch(`/fttt-projects/${project.id}/survey-sites`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newSiteName.trim(), code: newSiteCode.trim() || undefined }),
+      }, user?.id);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
+      toast.success('Site ditambahkan');
+      setNewSiteName(''); setNewSiteCode('');
+      onRefresh();
+    } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
+    finally { setSiteBusy(false); }
+  };
+
+  const handleMarkSite = async (siteId: string, status: 'PENDING' | 'DONE') => {
+    setSiteBusy(true);
+    try {
+      const res = await apiFetch(`/fttt-projects/${project.id}/survey-sites/${siteId}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status }),
+      }, user?.id);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
+      toast.success(status === 'DONE' ? 'Site ditandai selesai survey' : 'Status site dikembalikan');
+      onRefresh();
+    } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
+    finally { setSiteBusy(false); }
   };
 
   const handleDelete = async (uploadId: string, label: string) => {
@@ -253,11 +294,69 @@ function SurveySection({ project, onRefresh }: { project: FtttProject; onRefresh
 
   return (
     <div>
+      {/* Partial survey progress */}
+      <div style={{ background: '#F0F8FF', border: '1px solid #0969DA', borderRadius: 10, padding: 14, marginBottom: 14 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+          <p style={{ margin: 0, fontWeight: 700, fontSize: 13, color: '#0969DA' }}>
+            Survey Progress{continueMode ? ' (berlanjut paralel)' : ''}
+          </p>
+          <span style={{ fontSize: 12, fontWeight: 700, color: surveyComplete ? '#1a7f37' : '#0969DA' }}>
+            {sitesTotal === 0 ? 'Belum ada site' : `${sitesDone} / ${sitesTotal} site`}
+            {surveyComplete ? ' · Completed' : ''}
+          </span>
+        </div>
+        <div style={{ height: 8, background: '#D0D7DE', borderRadius: 999, overflow: 'hidden', marginBottom: 10 }}>
+          <div style={{
+            height: '100%', width: `${sitesTotal ? Math.round((sitesDone / sitesTotal) * 100) : 0}%`,
+            background: surveyComplete ? '#1a7f37' : '#0969DA', transition: 'width .2s',
+          }} />
+        </div>
+        <p style={{ margin: '0 0 10px', fontSize: 11, color: '#57606a' }}>
+          Survey dapat dilakukan bertahap per site. Preparation dapat dilanjutkan tanpa menunggu seluruh site selesai.
+        </p>
+        {canManageSites && (
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
+            <input value={newSiteName} onChange={(e) => setNewSiteName(e.target.value)} placeholder="Nama site (wajib)"
+              style={{ flex: 1, minWidth: 140, padding: '6px 8px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12 }} />
+            <input value={newSiteCode} onChange={(e) => setNewSiteCode(e.target.value)} placeholder="Kode (opsional)"
+              style={{ width: 110, padding: '6px 8px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12 }} />
+            <button type="button" disabled={siteBusy} onClick={() => void handleAddSite()}
+              style={{ padding: '6px 12px', borderRadius: 6, border: 'none', background: '#0969DA', color: '#fff', fontWeight: 700, fontSize: 12, cursor: 'pointer' }}>
+              + Tambah Survey Site
+            </button>
+          </div>
+        )}
+        {sites.length > 0 && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {sites.map((s: FtttSurveySite) => (
+              <div key={s.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, background: '#fff', border: '1px solid #D0D7DE', borderRadius: 8, padding: '8px 10px' }}>
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 600 }}>
+                    {s.code ? `${s.code} · ` : ''}{s.name}
+                    <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: s.status === 'DONE' ? '#1a7f37' : '#9a6700', background: s.status === 'DONE' ? '#DAFBE1' : '#FFF8C5', padding: '1px 6px', borderRadius: 999 }}>
+                      {s.status === 'DONE' ? 'Selesai' : 'Belum'}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 10, color: '#8c959f' }}>{s._count?.uploads ?? 0} evidence</div>
+                </div>
+                {canManageSites && (
+                  <button type="button" disabled={siteBusy}
+                    onClick={() => void handleMarkSite(s.id, s.status === 'DONE' ? 'PENDING' : 'DONE')}
+                    style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid #D0D7DE', background: '#fff', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+                    {s.status === 'DONE' ? 'Batalkan' : 'Tandai Selesai'}
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
       {/* Survey state banners */}
       {isPendingReview && (
         <div style={{ background: '#FFF8C5', border: '1px solid #d4a017', borderRadius: 8, padding: 12, marginBottom: 12 }}>
           <p style={{ margin: '0 0 4px', fontWeight: 700, fontSize: 12, color: '#9a6700' }}>⏳ Menunggu Review PM FTTT</p>
-          <p style={{ margin: 0, fontSize: 11, color: '#9a6700' }}>Surveyor telah mengirim hasil survey. PM FTTT dapat mereview dan menyetujui atau menolak di bawah.</p>
+          <p style={{ margin: 0, fontSize: 11, color: '#9a6700' }}>Surveyor telah mengirim hasil survey. PM FTTT dapat mereview dan menyetujui atau menolak di bawah. Site yang belum selesai tetap dapat dilanjutkan setelah Preparation.</p>
         </div>
       )}
       {isRejected && (
@@ -269,9 +368,9 @@ function SurveySection({ project, onRefresh }: { project: FtttProject; onRefresh
       )}
 
       {/* C7.1: PM info banner — read-only, reviewer only */}
-      {isPM && !isPendingReview && !isRejected && (
+      {isPM && !isPendingReview && !isRejected && project.currentPhase === 'SURVEY' && (
         <div style={{ background: '#F0F8FF', border: '1px solid #0969DA', borderRadius: 8, padding: 10, marginBottom: 12, fontSize: 12, color: '#0969DA' }}>
-          ℹ️ Pada fase Validation & Survey, PM berperan sebagai <strong>reviewer</strong>. Upload dokumen hanya dapat dilakukan oleh Surveyor FTTT. Setelah Surveyor menyelesaikan dan mengirim hasil survey, Anda dapat mereview dan menyetujui atau menolaknya di sini.
+          ℹ️ Pada fase Validation & Survey, PM berperan sebagai <strong>reviewer</strong>. Upload dokumen hanya dapat dilakukan oleh Surveyor FTTT. Survey bertahap diperbolehkan — Preparation dapat dilanjutkan tanpa menunggu seluruh site selesai.
         </div>
       )}
 
@@ -309,8 +408,8 @@ function SurveySection({ project, onRefresh }: { project: FtttProject; onRefresh
         </div>
       )}
 
-      {/* C7.1: Upload form — Surveyor only, not when pending review */}
-      {isSurveyor && !isPendingReview && (
+      {/* C7.1: Upload form — Surveyor only; allow continue after phase advance */}
+      {isSurveyor && (!isPendingReview || continueMode) && (
         <div style={{ border: '1px solid #D0D7DE', borderRadius: 8, padding: 12, marginBottom: 14 }}>
           <p style={{ margin: '0 0 8px', fontSize: 12, fontWeight: 600 }}>Tambah Aktivitas Survey</p>
 
@@ -322,6 +421,15 @@ function SurveySection({ project, onRefresh }: { project: FtttProject; onRefresh
               <option value="survey_evidence">🔍 Bukti Survei</option>
               <option value="operational_notes">📝 Catatan Lapangan</option>
             </select>
+            {sites.length > 0 && (
+              <select value={selectedSiteId} onChange={(e) => setSelectedSiteId(e.target.value)}
+                style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12 }}>
+                <option value="">— Site (opsional) —</option>
+                {sites.map((s) => (
+                  <option key={s.id} value={s.id}>{s.code ? `${s.code} · ` : ''}{s.name}</option>
+                ))}
+              </select>
+            )}
 
             {/* File format hint */}
             <span style={{ fontSize: 11, color: '#8c959f', alignSelf: 'center' }}>
@@ -404,11 +512,11 @@ function SurveySection({ project, onRefresh }: { project: FtttProject; onRefresh
         </div>
       ))}
 
-      {/* Surveyor submit-to-PM button */}
-      {isSurveyor && !isPendingReview && project.surveyUploads.length > 0 && (
+      {/* Surveyor submit-to-PM button — only while still on SURVEY phase */}
+      {isSurveyor && !continueMode && !isPendingReview && project.surveyUploads.length > 0 && (
         <div style={{ marginTop: 12, padding: 10, background: '#DAFBE1', borderRadius: 8, border: '1px solid #2DA44E' }}>
           <p style={{ margin: '0 0 6px', fontSize: 12, fontWeight: 600, color: '#1a7f37' }}>
-            ✅ Upload selesai? Kirim ke PM untuk direview.
+            ✅ Siap lanjut Preparation? Kirim ke PM untuk direview (site yang belum selesai bisa dilanjutkan nanti).
           </p>
           <button type="button" onClick={() => void handleSubmitForReview()} disabled={submitting}
             style={{ padding: '7px 16px', borderRadius: 6, border: 'none', background: '#1a7f37', color: '#fff', fontWeight: 700, cursor: 'pointer', fontSize: 12 }}>
@@ -1612,8 +1720,11 @@ function TransactionLogSection({ project, onRefresh, userRole }: { project: Fttt
 
   const handleDisburse = async (id: string) => {
     if (!disburseDate) { toast.error('Isi Tanggal Dana Keluar'); return; }
-    const today = new Date().toISOString().slice(0, 10);
-    if (disburseDate > today) { toast.error('Tanggal Dana Keluar tidak boleh melebihi hari ini'); return; }
+    const today = new Date();
+    const max = new Date(today); max.setDate(max.getDate() + 14);
+    const todayStr = today.toISOString().slice(0, 10);
+    const maxStr = max.toISOString().slice(0, 10);
+    if (disburseDate > maxStr) { toast.error('Tanggal Dana Keluar maksimal 14 hari dari hari ini'); return; }
     setDisbursing(true);
     try {
       const res = await apiFetch(`/fttt-projects/transactions/${id}/disburse`, {
@@ -1621,7 +1732,11 @@ function TransactionLogSection({ project, onRefresh, userRole }: { project: Fttt
         body: JSON.stringify({ disbursedAt: new Date(disburseDate + 'T12:00:00').toISOString() }),
       }, user?.id);
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
-      toast.success('Tanggal Dana Keluar tersimpan — budget diperbarui');
+      toast.success(
+        disburseDate > todayStr
+          ? 'Dana keluar dijadwalkan — budget berkurang pada tanggal tersebut'
+          : 'Tanggal Dana Keluar tersimpan — budget diperbarui',
+      );
       setDisburseId(null); setDisburseDate('');
       onRefresh(); void loadScurve();
     } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
@@ -1701,13 +1816,16 @@ function TransactionLogSection({ project, onRefresh, userRole }: { project: Fttt
             ) : catTxns.map((t) => {
               const total = Number(t.total);
               const bobot = rab > 0 ? (total / rab) * 100 : 0;
-              const realized = !!t.disbursedAt;
+              const nowMs = Date.now();
+              const hasDate = !!t.disbursedAt;
+              const realized = hasDate && new Date(t.disbursedAt!).getTime() <= nowMs;
+              const scheduled = hasDate && !realized;
               return (
                 <div key={t.id} style={{ padding: '8px 12px', borderBottom: '1px solid #F0F3F6', fontSize: 12 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
                     <span style={{ fontWeight: 600 }}>{t.aktivitas}
-                      <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: realized ? '#1a7f37' : '#9a6700', background: realized ? '#DAFBE1' : '#FFF8C5', padding: '1px 6px', borderRadius: 999 }}>
-                        {realized ? 'Terealisasi' : 'Menunggu Dana Keluar'}
+                      <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: realized ? '#1a7f37' : scheduled ? '#0969DA' : '#9a6700', background: realized ? '#DAFBE1' : scheduled ? '#DDF4FF' : '#FFF8C5', padding: '1px 6px', borderRadius: 999 }}>
+                        {realized ? 'Terealisasi' : scheduled ? 'Terjadwal' : 'Menunggu Dana Keluar'}
                       </span>
                     </span>
                     <span style={{ fontWeight: 700 }}>{fmtIDR(total)}</span>
@@ -1716,20 +1834,23 @@ function TransactionLogSection({ project, onRefresh, userRole }: { project: Fttt
                     {Number(t.qty)} {t.uom ?? ''} × {fmtIDR(Number(t.price))} · Bobot {bobot.toFixed(2)}%
                   </div>
                   <div style={{ fontSize: 10, color: '#8c959f', marginTop: 2 }}>📝 {t.remarks} · 🕒 {fmtDT(t.createdAt)} · {t.createdBy?.name}</div>
-                  {realized && (
-                    <div style={{ fontSize: 10, color: '#1a7f37', marginTop: 2 }}>
-                      💵 Dana keluar: {fmtDT(t.disbursedAt!)}{t.disbursedBy?.name ? ` · ${t.disbursedBy.name}` : ''}
+                  {hasDate && (
+                    <div style={{ fontSize: 10, color: realized ? '#1a7f37' : '#0969DA', marginTop: 2 }}>
+                      💵 Dana keluar: {fmtDT(t.disbursedAt!)}{t.disbursedBy?.name ? ` · ${t.disbursedBy.name}` : ''}{scheduled ? ' (menunggu tanggal)' : ''}
                     </div>
                   )}
-                  {!realized && isFinance && (
+                  {!hasDate && isFinance && (
                     <div style={{ marginTop: 6, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
                       {disburseId === t.id ? (
                         <>
-                          <input type="date" value={disburseDate} max={new Date().toISOString().slice(0, 10)}
+                          <input type="date" value={disburseDate}
+                            min={new Date().toISOString().slice(0, 10)}
+                            max={(() => { const d = new Date(); d.setDate(d.getDate() + 14); return d.toISOString().slice(0, 10); })()}
                             onChange={(e) => {
                               const v = e.target.value;
-                              const today = new Date().toISOString().slice(0, 10);
-                              if (v && v > today) { toast.error('Tanggal Dana Keluar tidak boleh melebihi hari ini'); return; }
+                              const max = new Date(); max.setDate(max.getDate() + 14);
+                              const maxStr = max.toISOString().slice(0, 10);
+                              if (v && v > maxStr) { toast.error('Tanggal Dana Keluar maksimal 14 hari dari hari ini'); return; }
                               setDisburseDate(v);
                             }}
                             style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 11 }} />
@@ -3249,10 +3370,24 @@ export default function FtttProjectDetailPage() {
             Aktivitas Fase: {FTTT_PHASE_LABELS[project.currentPhase]}
           </p>
 
-          {/* Survey — all companies including Telkom Infra (C7-TI4: TI now includes Survey phase) */}
-          {project.currentPhase === 'SURVEY' && (
-            <SurveySection project={project} onRefresh={load} />
-          )}
+          {/* Survey — active SURVEY phase, or continue unfinished sites in parallel */}
+          {(() => {
+            const onSurvey = project.currentPhase === 'SURVEY';
+            const continuePartial =
+              project.status === 'ACTIVE' &&
+              !onSurvey &&
+              project.currentPhase !== 'INITIATION' &&
+              (project.surveySites?.length ?? 0) > 0 &&
+              (project.surveySites ?? []).some((s) => s.status !== 'DONE');
+            if (!onSurvey && !continuePartial) return null;
+            return (
+              <SurveySection
+                project={project}
+                onRefresh={load}
+                continueMode={!onSurvey}
+              />
+            );
+          })()}
 
           {/* Preparation — DRM for PST */}
           {project.currentPhase === 'PREPARATION' && project.ftttCompany === 'PST' && (

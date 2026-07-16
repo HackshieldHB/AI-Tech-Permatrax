@@ -40,6 +40,8 @@ import {
   UploadDocumentDto,
   UploadDrmDocDto,
   UploadSurveyDto,
+  UpsertSurveySiteDto,
+  MarkSurveySiteDto,
 } from './fttt-project.dto';
 import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe';
 import { Role } from '@prisma/client'; // kept for approveDocument role check
@@ -236,6 +238,43 @@ export class FtttProjectController {
     @CurrentUser() user: AuthUser,
   ) {
     return this.service.uploadSurveyEvidence(id, file, dto, user.userId, user.role);
+  }
+
+  // GET /fttt-projects/:id/survey-sites
+  @Get(':id/survey-sites')
+  listSurveySites(@Param('id') id: string) {
+    return this.service.listSurveySites(id);
+  }
+
+  // POST /fttt-projects/:id/survey-sites
+  @Post(':id/survey-sites')
+  addSurveySite(
+    @Param('id') id: string,
+    @Body(new ZodValidationPipe(UpsertSurveySiteDto)) dto: any,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.service.addSurveySite(id, dto, user.role);
+  }
+
+  // PUT /fttt-projects/:id/survey-sites/:siteId
+  @Put(':id/survey-sites/:siteId')
+  markSurveySite(
+    @Param('id') id: string,
+    @Param('siteId') siteId: string,
+    @Body(new ZodValidationPipe(MarkSurveySiteDto)) dto: any,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.service.markSurveySite(id, siteId, dto, user.role);
+  }
+
+  // DELETE /fttt-projects/:id/survey-sites/:siteId
+  @Delete(':id/survey-sites/:siteId')
+  deleteSurveySite(
+    @Param('id') id: string,
+    @Param('siteId') siteId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.service.deleteSurveySite(id, siteId, user.role);
   }
 
   // POST /fttt-projects/:id/drm-documents
