@@ -8,6 +8,7 @@ import {
   BarChart3, Bell, BellRing, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Database,
   FileText, FolderOpen, GitBranch, Globe, HelpCircle, Inbox, LogOut, Menu, Package, PiggyBank, Settings, Wrench, X, // FIX: PackagePlus removed — no Request Stok nav
   ShoppingCart, Truck, UserCircle2, Wallet, Building, PackageX, Store, Receipt, // Phase 3 nav
+  ListChecks, // NEW: Integra V1 — Daily Activity nav icon
 } from 'lucide-react';
 import { io, Socket } from 'socket.io-client';
 import { Plus_Jakarta_Sans } from 'next/font/google';
@@ -118,6 +119,14 @@ const NAV_ITEMS: NavItem[] = [
     icon: Database,
     section: 'OPERASIONAL',
     roles: ['PM_FTTT', 'SURVEYOR_FTTT', 'ADMIN', 'GENERAL_MANAGER', 'ADMIN_STOCK', 'FINANCE'],
+  },
+  {
+    href: '/daily-activity',
+    label: 'Daily Activity',
+    icon: ListChecks,
+    section: 'OPERASIONAL',
+    // NEW: mirrors backend DAILY_ACTIVITY_VIEW permission
+    roles: ['GENERAL_MANAGER', 'FINANCE', 'PM_FTTT', 'PM_SENIOR', 'ADMIN', 'SURVEYOR_FTTT'],
   },
   { href: '/ba-open', label: 'BA Open', icon: FileText, featureKey: 'BA_OPEN', section: 'OPERASIONAL' },
   { href: '/cash-operation', label: 'Cash Operation', icon: Wallet, featureKey: 'CASH_OPERATION', section: 'OPERASIONAL', badge: 'cashOp' },
@@ -233,6 +242,7 @@ const BREADCRUMB_MAP: Record<string, string[]> = {
   '/clean-list': ['Clean List'],
   '/fttt-projects': ['FTTT Projects'],
   '/fttt-projects/new': ['FTTT Projects', 'Baru'],
+  '/daily-activity': ['Daily Activity'],
   '/ba-open': ['BA Open'],
   '/cash-operation': ['Cash Operation'],
   '/cash-operation/new': ['Cash Operation', 'Buat Request'],

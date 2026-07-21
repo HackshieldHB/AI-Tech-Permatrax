@@ -17,6 +17,7 @@ import { BudgetLedgerService } from '../budget-ledger/budget-ledger.service';
 import { paginate, PaginatedResponse } from '../common/dto/pagination.dto';
 import {
   CreateFinanceProjectInput,
+  CreateFinanceSiteInput,
   FinanceProjectFilterInput,
   LedgerFilterInput,
   UpdateBudgetInput,
@@ -36,6 +37,9 @@ export type FinanceProjectListItem = FinanceProject & {
   totalRemaining: number;
   perizinanSpent: number;
   lainLainSpent: number;
+  childCount?: number;
+  /** When Segment aggregates include Sites, totalBudget may be a number sum */
+  aggregatedTotalBudget?: number;
 };
 
 // Realisasi per kategori dari FtttTransaction, keyed by financeProjectId
@@ -64,10 +68,55 @@ export class FinanceProjectService {
   ) {}
 
   async create(dto: CreateFinanceProjectInput, actorId: string): Promise<FinanceProject> {
-    const tb = new Prisma.Decimal(dto.totalBudget);
-    const mb =
-      dto.materialBudget != null ? new Prisma.Decimal(dto.materialBudget) : undefined;
-    const jb = dto.jasaBudget != null ? new Prisma.Decimal(dto.jasaBudget) : undefined;
+    const projectType = dto.projectType ?? 'FTTH';
+    let hierarchyLevel = dto.hierarchyLevel;
+    if (!hierarchyLevel) {
+      if (dto.parentId) hierarchyLevel = 'SITE';
+      else if (projectType === 'FTTT') hierarchyLevel = 'SEGMENT';
+      else hierarchyLevel = 'STANDALONE';
+    }
+
+    let parentId: string | null = dto.parentId ?? null;
+    if (hierarchyLevel === 'SITE') {
+      if (!parentId) throw new BadRequestException('Site wajib memiliki parentId Segment');
+      const parent = await this.prisma.financeProject.findUnique({ where: { id: parentId } });
+      if (!parent || parent.hierarchyLevel !== 'SEGMENT') {
+        throw new BadRequestException('parentId harus merujuk ke Finance Segment');
+      }
+      if (parent.projectType !== 'FTTT') {
+        throw new BadRequestException('Site hanya dapat dibuat di bawah Segment FTTT');
+      }
+    } else {
+      parentId = null;
+    }
+
+    // Segment: Lain-Lain only; Site: Perizinan+Material+Jasa; STANDALONE/FTTH: existing
+    let tb: Prisma.Decimal;
+    let mb: Prisma.Decimal | undefined;
+    let jb: Prisma.Decimal | undefined;
+    let perizinan: Prisma.Decimal | null = null;
+    let lainLain: Prisma.Decimal | null = null;
+
+    if (hierarchyLevel === 'SEGMENT') {
+      lainLain = new Prisma.Decimal(dto.budgetLainLain ?? dto.totalBudget ?? 0);
+      tb = lainLain;
+      mb = undefined;
+      jb = undefined;
+      perizinan = null;
+    } else if (hierarchyLevel === 'SITE') {
+      perizinan = new Prisma.Decimal(dto.budgetPerizinan ?? 0);
+      mb = new Prisma.Decimal(dto.materialBudget ?? 0);
+      jb = new Prisma.Decimal(dto.jasaBudget ?? 0);
+      tb = perizinan.plus(mb).plus(jb);
+      lainLain = new Prisma.Decimal(0);
+    } else {
+      tb = new Prisma.Decimal(dto.totalBudget);
+      mb = dto.materialBudget != null ? new Prisma.Decimal(dto.materialBudget) : undefined;
+      jb = dto.jasaBudget != null ? new Prisma.Decimal(dto.jasaBudget) : undefined;
+      perizinan = dto.budgetPerizinan != null ? new Prisma.Decimal(dto.budgetPerizinan) : null;
+      lainLain = dto.budgetLainLain != null ? new Prisma.Decimal(dto.budgetLainLain) : null;
+    }
+
     const endDate = dto.endDate != null ? new Date(dto.endDate) : null;
 
     let lastError: unknown;
@@ -80,7 +129,8 @@ export class FinanceProjectService {
             this.assertManualProjectCode(code);
           } else {
             const y = new Date().getFullYear();
-            code = await this.nextAutoFinCode(tx, y);
+            const prefix = hierarchyLevel === 'SEGMENT' ? 'SEG' : hierarchyLevel === 'SITE' ? 'SITE' : 'FIN';
+            code = await this.nextAutoCode(tx, y, prefix);
           }
 
           const project = await tx.financeProject.create({
@@ -88,12 +138,14 @@ export class FinanceProjectService {
               code,
               name: dto.name.trim(),
               description: dto.description?.trim() ?? null,
-              projectType: dto.projectType ?? 'FTTH',
+              projectType: hierarchyLevel === 'STANDALONE' ? projectType : 'FTTT',
+              hierarchyLevel,
+              parentId,
               totalBudget: tb,
               materialBudget: mb ?? null,
               jasaBudget: jb ?? null,
-              budgetPerizinan: dto.budgetPerizinan != null ? new Prisma.Decimal(dto.budgetPerizinan) : null,
-              budgetLainLain: dto.budgetLainLain != null ? new Prisma.Decimal(dto.budgetLainLain) : null,
+              budgetPerizinan: perizinan,
+              budgetLainLain: lainLain,
               endDate,
               createdById: actorId,
               updatedById: actorId,
@@ -104,6 +156,9 @@ export class FinanceProjectService {
             totalBudget: tb.toString(),
             materialBudget: mb?.toString() ?? null,
             jasaBudget: jb?.toString() ?? null,
+            hierarchyLevel,
+            budgetPerizinan: perizinan?.toString() ?? null,
+            budgetLainLain: lainLain?.toString() ?? null,
           };
 
           await tx.budgetLedger.create({
@@ -113,7 +168,11 @@ export class FinanceProjectService {
               amount: tb,
               sourceType: 'MANUAL_ADJUSTMENT',
               sourceId: project.id,
-              notes: 'Inisialisasi budget',
+              notes: hierarchyLevel === 'SEGMENT'
+                ? 'Inisialisasi budget Segment (Lain-Lain)'
+                : hierarchyLevel === 'SITE'
+                  ? 'Inisialisasi budget Site'
+                  : 'Inisialisasi budget',
               metadata,
               createdById: actorId,
             },
@@ -139,6 +198,43 @@ export class FinanceProjectService {
       );
     }
     throw new ConflictException('Gagal membuat proyek dengan kode otomatis setelah beberapa percobaan');
+  }
+
+  /** Integra V1: create Site under an existing Segment */
+  async createSite(segmentId: string, dto: CreateFinanceSiteInput, actorId: string): Promise<FinanceProject> {
+    const total =
+      (dto.budgetPerizinan ?? 0) + (dto.materialBudget ?? 0) + (dto.jasaBudget ?? 0);
+    return this.create(
+      {
+        code: dto.code,
+        name: dto.name,
+        description: dto.description,
+        projectType: 'FTTT',
+        hierarchyLevel: 'SITE',
+        parentId: segmentId,
+        totalBudget: total,
+        budgetPerizinan: dto.budgetPerizinan ?? 0,
+        materialBudget: dto.materialBudget ?? 0,
+        jasaBudget: dto.jasaBudget ?? 0,
+        budgetLainLain: 0,
+        endDate: dto.endDate,
+      },
+      actorId,
+    );
+  }
+
+  async listSites(segmentId: string): Promise<FinanceProjectListItem[]> {
+    const parent = await this.prisma.financeProject.findUnique({ where: { id: segmentId } });
+    if (!parent) throw new NotFoundException('Finance project tidak ditemukan');
+    if (parent.hierarchyLevel !== 'SEGMENT') {
+      throw new BadRequestException('Hanya Segment yang memiliki daftar Site');
+    }
+    const rows = await this.prisma.financeProject.findMany({
+      where: { parentId: segmentId },
+      orderBy: { createdAt: 'asc' },
+    });
+    const ftttSpent = await this.getFtttSpentMap(rows.map((r) => r.id));
+    return rows.map((p) => this.hydrateListItem(p, ftttSpent));
   }
 
   async update(id: string, dto: UpdateFinanceProjectInput, actorId: string): Promise<FinanceProject> {
@@ -275,9 +371,15 @@ export class FinanceProjectService {
   }
 
   async findAll(filter: FinanceProjectFilterInput): Promise<PaginatedResponse<FinanceProjectListItem>> {
+    const rootsOnly = filter.rootsOnly !== false && !filter.parentId && !filter.hierarchyLevel;
     const where: Prisma.FinanceProjectWhereInput = {
       ...(filter.includeArchived ? {} : { status: { not: FinanceProjectStatus.ARCHIVED } }),
       ...(filter.status ? { status: filter.status } : {}),
+      ...(filter.parentId ? { parentId: filter.parentId } : {}),
+      ...(filter.hierarchyLevel ? { hierarchyLevel: filter.hierarchyLevel } : {}),
+      ...(rootsOnly
+        ? { hierarchyLevel: { in: ['SEGMENT', 'STANDALONE'] }, parentId: null }
+        : {}),
       ...(filter.search
         ? {
             OR: [
@@ -300,19 +402,85 @@ export class FinanceProjectService {
         skip: (filter.page - 1) * filter.limit,
         take: filter.limit,
         orderBy,
+        include: {
+          children: { select: { id: true }, take: 200 },
+          _count: { select: { children: true } },
+        },
       }),
     ]);
 
-    // JLM: sinkronkan summary Dashboard dengan realisasi Transaction Log (FTTT)
-    const ftttSpent = await this.getFtttSpentMap(
-      rows.filter((r) => r.projectType === 'FTTT').map((r) => r.id),
+    const ids = rows.map((r) => r.id);
+    const childIds = rows.flatMap((r) =>
+      'children' in r ? ((r.children as { id: string }[]) ?? []).map((c) => c.id) : [],
     );
-    const data = rows.map((p) => this.hydrateListItem(p, ftttSpent));
+    const ftttSpent = await this.getFtttSpentMap([...ids, ...childIds]);
+
+    const childBudgetRows =
+      childIds.length > 0
+        ? await this.prisma.financeProject.findMany({
+            where: { id: { in: childIds } },
+            select: {
+              id: true, parentId: true, totalBudget: true,
+              budgetPerizinan: true, materialBudget: true, jasaBudget: true,
+            },
+          })
+        : [];
+    const childBudgetByParent = new Map<string, number>();
+    // Integra V2: Segment cards show BUDGET summaries (not spent) per category,
+    // aggregated from their Sites
+    const childPerizinanByParent = new Map<string, number>();
+    const childMaterialByParent = new Map<string, number>();
+    const childJasaByParent = new Map<string, number>();
+    for (const c of childBudgetRows) {
+      if (!c.parentId) continue;
+      childBudgetByParent.set(c.parentId, (childBudgetByParent.get(c.parentId) ?? 0) + Number(c.totalBudget));
+      childPerizinanByParent.set(c.parentId, (childPerizinanByParent.get(c.parentId) ?? 0) + Number(c.budgetPerizinan ?? 0));
+      childMaterialByParent.set(c.parentId, (childMaterialByParent.get(c.parentId) ?? 0) + Number(c.materialBudget ?? 0));
+      childJasaByParent.set(c.parentId, (childJasaByParent.get(c.parentId) ?? 0) + Number(c.jasaBudget ?? 0));
+    }
+
+    const data: FinanceProjectListItem[] = rows.map((p) => {
+      const item = this.hydrateListItem(p, ftttSpent);
+      const childCount = (p as { _count?: { children: number } })._count?.children ?? 0;
+      if (p.hierarchyLevel !== 'SEGMENT') {
+        return { ...item, childCount };
+      }
+      const children = (p as { children?: { id: string }[] }).children ?? [];
+      let childSpent = 0;
+      for (const c of children) {
+        const s = ftttSpent.get(c.id);
+        if (s) childSpent += s.perizinan + s.material + s.jasa;
+      }
+      const lain = ftttSpent.get(p.id)?.lainLain ?? item.lainLainSpent ?? 0;
+      const totalSpent = lain + childSpent;
+      const sitesBudget = childBudgetByParent.get(p.id) ?? 0;
+      const totalBudgetNum = Number(p.totalBudget) + sitesBudget;
+      return {
+        ...item,
+        childCount,
+        totalBudget: new Prisma.Decimal(totalBudgetNum),
+        totalSpent,
+        totalRemaining: totalBudgetNum - totalSpent,
+        lainLainSpent: lain,
+        aggregatedTotalBudget: totalBudgetNum,
+        // Segment budget category summary — sum of Sites' budgets (Lain-lain stays the Segment's own)
+        budgetPerizinan: new Prisma.Decimal(childPerizinanByParent.get(p.id) ?? 0),
+        materialBudget: new Prisma.Decimal(childMaterialByParent.get(p.id) ?? 0),
+        jasaBudget: new Prisma.Decimal(childJasaByParent.get(p.id) ?? 0),
+      };
+    });
+
     return paginate(data, total, filter.page, filter.limit);
   }
 
-  async findOne(id: string): Promise<FinanceProjectDetail> {
-    const p = await this.prisma.financeProject.findUnique({ where: { id } });
+  async findOne(id: string): Promise<FinanceProjectDetail & { sites?: FinanceProjectListItem[]; parent?: { id: string; code: string; name: string } | null; childCount?: number }> {
+    const p = await this.prisma.financeProject.findUnique({
+      where: { id },
+      include: {
+        parent: { select: { id: true, code: true, name: true, hierarchyLevel: true } },
+        _count: { select: { children: true } },
+      },
+    });
     if (!p) throw new NotFoundException('Finance project tidak ditemukan');
 
     const [pendingTransferCount, recentLedgerEntries, groupRows, lastActivity] = await Promise.all([
@@ -356,12 +524,33 @@ export class FinanceProjectService {
     };
 
     const ftttSpent = await this.getFtttSpentMap(p.projectType === 'FTTT' ? [p.id] : []);
-    return {
+    const base = {
       ...this.hydrateListItem(p, ftttSpent),
       pendingTransferCount,
       recentLedgerEntries,
       activityStats,
+      parent: p.parent ?? null,
+      childCount: p._count.children,
     };
+
+    if (p.hierarchyLevel === 'SEGMENT') {
+      const sites = await this.listSites(id);
+      const sitesBudget = sites.reduce((s, x) => s + Number(x.totalBudget), 0);
+      const sitesSpent = sites.reduce((s, x) => s + (x.totalSpent ?? 0), 0);
+      const lain = base.lainLainSpent ?? 0;
+      const totalBudgetNum = Number(p.totalBudget) + sitesBudget;
+      const totalSpent = lain + sitesSpent;
+      return {
+        ...base,
+        totalBudget: new Prisma.Decimal(totalBudgetNum),
+        totalSpent,
+        totalRemaining: totalBudgetNum - totalSpent,
+        aggregatedTotalBudget: totalBudgetNum,
+        sites,
+      };
+    }
+
+    return base;
   }
 
   async getLedgerEntries(
@@ -551,7 +740,10 @@ export class FinanceProjectService {
     if (financeProjectIds.length === 0) return map;
     const rows = await this.prisma.ftttTransaction.groupBy({
       by: ['financeProjectId', 'category'],
-      where: { financeProjectId: { in: financeProjectIds } },
+      where: {
+        financeProjectId: { in: financeProjectIds },
+        disbursedAt: { not: null },
+      },
       _sum: { total: true },
     });
     for (const r of rows) {
@@ -622,7 +814,11 @@ export class FinanceProjectService {
   }
 
   private async nextAutoFinCode(tx: Prisma.TransactionClient, year: number): Promise<string> {
-    const prefix = `FIN-${year}-`;
+    return this.nextAutoCode(tx, year, 'FIN');
+  }
+
+  private async nextAutoCode(tx: Prisma.TransactionClient, year: number, prefixKind: string): Promise<string> {
+    const prefix = `${prefixKind}-${year}-`;
     const rows = await tx.financeProject.findMany({
       where: { code: { startsWith: prefix } },
       select: { code: true },
@@ -639,5 +835,105 @@ export class FinanceProjectService {
       throw new BadRequestException('Urutan kode otomatis untuk tahun ini sudah mencapai batas 999');
     }
     return `${prefix}${String(seq).padStart(3, '0')}`;
+  }
+
+  /** Integra V1: Excel template for Set Plan Awal */
+  async buildPlanTemplateBuffer(): Promise<Buffer> {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const ExcelJS = require('exceljs') as typeof import('exceljs');
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Set Plan Awal');
+    ws.columns = [
+      { header: 'Target Tanggal', key: 'targetDate', width: 18 },
+      { header: 'Planned Budget', key: 'plannedBudget', width: 18 },
+      { header: 'Progress (%)', key: 'progress', width: 14 },
+    ];
+    ws.getRow(1).font = { bold: true };
+    ws.addRow({ targetDate: 'dd/mm/yyyy', plannedBudget: '50000000', progress: 10 });
+    ws.addRow({ targetDate: 'dd/mm/yyyy', plannedBudget: '100000000', progress: 25 });
+    ws.addRow({ targetDate: 'dd/mm/yyyy', plannedBudget: '150000000', progress: 45 });
+    const buf = await wb.xlsx.writeBuffer();
+    return Buffer.from(buf);
+  }
+
+  async importPlanFromExcel(id: string, file: Express.Multer.File): Promise<{ milestones: unknown; hasBaseline: boolean; hasRevision: boolean }> {
+    await this.ensureProjectExists(id);
+    if (!file?.buffer?.length) {
+      throw new BadRequestException('File Excel wajib diunggah');
+    }
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const ExcelJS = require('exceljs') as typeof import('exceljs');
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(file.buffer as unknown as ArrayBuffer);
+    const ws = wb.worksheets[0];
+    if (!ws) {
+      throw new BadRequestException(
+        'Upload gagal. Format file tidak sesuai dengan template Set Plan Awal. Silakan gunakan template yang telah disediakan.',
+      );
+    }
+    const header = (ws.getRow(1).values as unknown[])
+      .slice(1)
+      .map((v) => String(v ?? '').trim().toLowerCase());
+    const expected = ['target tanggal', 'planned budget', 'progress (%)'];
+    if (header.length < 3 || expected.some((h, i) => header[i] !== h)) {
+      throw new BadRequestException(
+        'Upload gagal. Format file tidak sesuai dengan template Set Plan Awal. Silakan gunakan template yang telah disediakan.',
+      );
+    }
+
+    const milestones: Array<{ targetDate: string; plannedBudget: number; plannedProgressPct: number }> = [];
+    ws.eachRow((row, rowNumber) => {
+      if (rowNumber === 1) return;
+      const dateRaw = row.getCell(1).value;
+      const budgetRaw = row.getCell(2).value;
+      const progressRaw = row.getCell(3).value;
+      if (dateRaw == null && budgetRaw == null && progressRaw == null) return;
+      const dateStr = this.parseExcelDate(dateRaw);
+      if (!dateStr) {
+        throw new BadRequestException(
+          'Upload gagal. Format file tidak sesuai dengan template Set Plan Awal. Silakan gunakan template yang telah disediakan.',
+        );
+      }
+      const budget = Number(String(budgetRaw ?? '').toString().replace(/\./g, '').replace(/,/g, ''));
+      const progress = Number(progressRaw);
+      if (!Number.isFinite(budget) || budget < 0 || !Number.isFinite(progress) || progress < 0 || progress > 100) {
+        throw new BadRequestException(
+          'Upload gagal. Format file tidak sesuai dengan template Set Plan Awal. Silakan gunakan template yang telah disediakan.',
+        );
+      }
+      // skip placeholder example rows
+      if (String(dateRaw).toLowerCase().includes('dd/mm')) return;
+      milestones.push({ targetDate: dateStr, plannedBudget: budget, plannedProgressPct: progress });
+    });
+
+    if (milestones.length === 0) {
+      throw new BadRequestException(
+        'Upload gagal. Format file tidak sesuai dengan template Set Plan Awal. Silakan gunakan template yang telah disediakan.',
+      );
+    }
+
+    return this.setTimeline(id, { milestones });
+  }
+
+  private parseExcelDate(raw: unknown): string | null {
+    if (raw instanceof Date && !Number.isNaN(raw.getTime())) {
+      return raw.toISOString();
+    }
+    if (typeof raw === 'number') {
+      // Excel serial date
+      const epoch = new Date(Date.UTC(1899, 11, 30));
+      const d = new Date(epoch.getTime() + raw * 86400000);
+      return d.toISOString();
+    }
+    const s = String(raw ?? '').trim();
+    if (!s || s.toLowerCase().includes('dd/mm')) return null;
+    // dd/mm/yyyy
+    const m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(s);
+    if (m) {
+      const d = new Date(Date.UTC(Number(m[3]), Number(m[2]) - 1, Number(m[1])));
+      return Number.isNaN(d.getTime()) ? null : d.toISOString();
+    }
+    const d2 = new Date(s);
+    return Number.isNaN(d2.getTime()) ? null : d2.toISOString();
   }
 }

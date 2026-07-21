@@ -12,6 +12,9 @@ export const CreateFinanceProjectDto = z
     jasaBudget: z.coerce.number().nonnegative().optional(),
     // JLM: project type + FTTT-only budget categories (Perizinan + Lain-Lain)
     projectType: z.enum(['FTTH', 'FTTT']).optional().default('FTTH'),
+    // Integra V1: SEGMENT (FTTT parent) | SITE (under parentId) | STANDALONE (FTTH/default)
+    hierarchyLevel: z.enum(['SEGMENT', 'SITE', 'STANDALONE']).optional(),
+    parentId: z.string().cuid().optional(),
     budgetPerizinan: z.coerce.number().nonnegative().optional(),
     budgetLainLain: z.coerce.number().nonnegative().optional(),
     endDate: z.string().datetime().optional(),
@@ -24,9 +27,29 @@ export const CreateFinanceProjectDto = z
       return true;
     },
     { message: 'Material + Jasa budget tidak boleh melebihi Total Budget' },
+  )
+  .refine(
+    (data) => {
+      if (data.hierarchyLevel === 'SITE' || data.parentId) {
+        return !!data.parentId;
+      }
+      return true;
+    },
+    { message: 'Site wajib memiliki parentId Segment' },
   );
 
 export type CreateFinanceProjectInput = z.infer<typeof CreateFinanceProjectDto>;
+
+export const CreateFinanceSiteDto = z.object({
+  code: z.string().min(3).max(20).regex(/^[A-Za-z0-9-]+$/).optional(),
+  name: z.string().min(3).max(100),
+  description: z.string().optional(),
+  budgetPerizinan: z.coerce.number().nonnegative().optional().default(0),
+  materialBudget: z.coerce.number().nonnegative().optional().default(0),
+  jasaBudget: z.coerce.number().nonnegative().optional().default(0),
+  endDate: z.string().datetime().optional(),
+});
+export type CreateFinanceSiteInput = z.infer<typeof CreateFinanceSiteDto>;
 
 export const UpdateFinanceProjectDto = z.object({
   name: z.string().min(3).max(100).optional(),
@@ -72,6 +95,10 @@ export const FinanceProjectFilterDto = PaginationQuerySchema.merge(
     status: z.enum(['ACTIVE', 'CLOSED', 'ARCHIVED']).optional().transform(v => v as FinanceProjectStatus | undefined),
     includeArchived: z.coerce.boolean().optional(),
     sortBy: z.enum(['createdAt', 'updatedAt', 'name', 'code']).optional(),
+    // Integra V1: tree list defaults to roots (SEGMENT + STANDALONE); pass parentId for Sites under Segment
+    hierarchyLevel: z.enum(['SEGMENT', 'SITE', 'STANDALONE']).optional(),
+    parentId: z.string().cuid().optional(),
+    rootsOnly: z.coerce.boolean().optional(),
   }),
 );
 

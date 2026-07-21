@@ -355,6 +355,11 @@ model User {
   ftttMaintConfirmations FtttProject[]            @relation("FtttMaintConfirmer")
   ftttTransactions       FtttTransaction[]        @relation("FtttTransactionCreator")
   ftttTransactionsDisbursed FtttTransaction[]     @relation("FtttTransactionDisburser")
+  ftttTransactionsReviewed  FtttTransaction[]     @relation("FtttTransactionReviewer")
+  dailyActivitiesAsActor    DailyActivity[]       @relation("DailyActivityActor")
+  dailyActivitiesUpdated    DailyActivity[]       @relation("DailyActivityUpdater")
+  dailyActivityEvidencesUploaded DailyActivityEvidence[] @relation("DailyActivityEvidenceUploader")
+  dailyActivityHistoryActions    DailyActivityHistory[]  @relation("DailyActivityHistoryActor")
 }
 
 // Phase 4 — GM-controlled feature visibility per role
@@ -2787,6 +2792,13 @@ enum FinanceProjectType {
   FTTT
 }
 
+// Integra V1: Segment (parent) → Site (child); STANDALONE = FTTH / GENERAL / INVENTORY
+enum FinanceHierarchyLevel {
+  SEGMENT
+  SITE
+  STANDALONE
+}
+
 model FinanceProject {
   id          String  @id @default(cuid())
   code        String  @unique
@@ -2796,10 +2808,17 @@ model FinanceProject {
   // JLM: project type — FTTH keeps existing 2-category budget; FTTT uses 4 categories
   projectType FinanceProjectType @default(FTTH)
 
+  // Integra V1: Segment / Site hierarchy
+  hierarchyLevel FinanceHierarchyLevel @default(STANDALONE)
+  parentId       String?
+  parent         FinanceProject?  @relation("FinanceProjectHierarchy", fields: [parentId], references: [id], onDelete: Restrict)
+  children       FinanceProject[] @relation("FinanceProjectHierarchy")
+
   totalBudget    Decimal  @db.Decimal(18, 2)
   materialBudget Decimal? @db.Decimal(18, 2)
   jasaBudget     Decimal? @db.Decimal(18, 2)
   // JLM: FTTT-only budget categories (Perizinan + Lain-Lain); Material/Jasa reuse the fields above
+  // Segment owns budgetLainLain; Site owns budgetPerizinan / material / jasa
   budgetPerizinan Decimal? @db.Decimal(18, 2)
   budgetLainLain  Decimal? @db.Decimal(18, 2)
 
@@ -2833,11 +2852,14 @@ model FinanceProject {
   ftttTransactions        FtttTransaction[]
   // JLM: FTTT S-Curve baseline milestones (Finance-owned)
   ftttMilestones          FtttMilestone[]
+  dailyActivities         DailyActivity[]
 
   @@index([status])
   @@index([isDefaultUncategorized])
   @@index([code])
   @@index([projectType])
+  @@index([hierarchyLevel])
+  @@index([parentId])
 }
 
 model FinanceProjectPlanning {
@@ -2934,6 +2956,7 @@ enum FtttCompany {
 
 enum FtttPhase {
   INITIATION
+  SITE_INITIATION // Integra V1: Bulky Project → add Sites (parallel with Survey+)
   SURVEY
   PREPARATION
   PROCUREMENT    // PST: PO upload by PM between Preparation and Implementation
@@ -2941,6 +2964,30 @@ enum FtttPhase {
   DOCUMENTATION
   RECONCILIATION
   CLOSING
+}
+
+// Integra V1: Bulky (parent) → Site (child operational unit)
+enum FtttHierarchyLevel {
+  BULKY
+  SITE
+}
+
+enum FtttRequestStatus {
+  PENDING_REVIEW
+  ACCEPTED
+  DECLINED
+}
+
+enum FtttRequestPriority {
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum DailyActivityWorkStatus {
+  ON_PROGRESS
+  ON_HOLD
+  DONE
 }
 
 enum FtttProjectStatus {
@@ -3017,9 +3064,15 @@ model FtttProject {
   pmId           String
   projectName    String?
   notes          String?
-  // JLM: link to a Finance Project (Project Type = FTTT) — single source of truth for budget
+  // Integra V1: Bulky parent / Site child
+  hierarchyLevel FtttHierarchyLevel @default(SITE)
+  parentId       String?
+  parent         FtttProject?  @relation("FtttProjectHierarchy", fields: [parentId], references: [id], onDelete: Restrict)
+  children       FtttProject[] @relation("FtttProjectHierarchy")
+  // JLM: link to a Finance Project (Project Type = FTTT) — Site links to Finance Site; Bulky may link to Finance Segment
   financeProjectId String?
   // JLM: PST Implementation type (Galian → span-based; KU → existing). Null for TI/iFORTE.
+  // Integra V1: work-method first for all lifecycles on Site level
   implementationType FtttImplementationType?
   // JLM: Project Closing maintenance confirmation + reminder (TI + PST)
   maintenanceEndDate        DateTime?
@@ -3050,12 +3103,15 @@ model FtttProject {
   reconDocs          FtttReconDoc[]
   closingLogs        FtttClosingLog[]
   spans              FtttSpan[]
+  dailyActivities    DailyActivity[]
 
   @@index([ftttCompany])
   @@index([currentPhase])
   @@index([pmId])
   @@index([status])
   @@index([financeProjectId])
+  @@index([hierarchyLevel])
+  @@index([parentId])
 }
 
 // JLM: Implementation Transaction Log — daily expenditure entries by PM FTTT.
@@ -3097,6 +3153,15 @@ model FtttTransaction {
   remarks          String
   createdById      String
   createdAt        DateTime         @default(now()) // immutable, real-time
+  // Integra V1: Financial Request workflow
+  expectedNeedDate DateTime?
+  reason           String?
+  priority         FtttRequestPriority?
+  requestStatus    FtttRequestStatus @default(PENDING_REVIEW)
+  scheduledReleaseAt DateTime?
+  declinedReason   String?
+  reviewedById     String?
+  reviewedAt       DateTime?
   // Stage 2 — Finance confirms dana keluar; only then counts toward budget/S-curve Actual
   disbursedAt      DateTime?
   disbursedById    String?
@@ -3105,11 +3170,14 @@ model FtttTransaction {
   financeProject FinanceProject? @relation(fields: [financeProjectId], references: [id])
   createdBy      User            @relation("FtttTransactionCreator", fields: [createdById], references: [id])
   disbursedBy    User?           @relation("FtttTransactionDisburser", fields: [disbursedById], references: [id])
+  reviewedBy     User?           @relation("FtttTransactionReviewer", fields: [reviewedById], references: [id])
 
   @@index([ftttProjectId])
   @@index([financeProjectId])
   @@index([category])
   @@index([disbursedAt])
+  @@index([requestStatus])
+  @@index([expectedNeedDate])
 }
 
 model FtttPhaseProgress {
@@ -3161,10 +3229,77 @@ model FtttSurveyUpload {
   fileUrl      String
   fileType     String      // photo | supporting_file | survey_evidence | operational_notes
   caption      String?
+  // Integra V1: display original client filename (storage path may use UUID)
+  originalFileName String?
   createdAt    DateTime    @default(now())
 
   @@index([projectId])
   @@index([siteId])
+}
+
+// Integra V1: Daily Activity — auto activity log + user status/reminder
+model DailyActivity {
+  id              String                 @id @default(cuid())
+  timestamp       DateTime               @default(now())
+  actorId         String
+  actor           User                   @relation("DailyActivityActor", fields: [actorId], references: [id])
+  financeProjectId String?
+  financeProject  FinanceProject?        @relation(fields: [financeProjectId], references: [id], onDelete: SetNull)
+  ftttProjectId   String?
+  ftttProject     FtttProject?           @relation(fields: [ftttProjectId], references: [id], onDelete: SetNull)
+  siteName        String?
+  scopeOfWork     String
+  workStatus      DailyActivityWorkStatus @default(ON_PROGRESS)
+  evidenceUrl     String?
+  targetDoneAt    DateTime?
+  remarks         String?
+  lastReminderAt  DateTime?
+  updatedById     String?
+  updatedBy       User?                  @relation("DailyActivityUpdater", fields: [updatedById], references: [id])
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @updatedAt
+
+  evidences       DailyActivityEvidence[]
+  history         DailyActivityHistory[]
+
+  @@index([timestamp])
+  @@index([actorId])
+  @@index([financeProjectId])
+  @@index([ftttProjectId])
+  @@index([workStatus])
+  @@index([targetDoneAt])
+}
+
+// Integra Enhancement V2 — multi-file evidence for Daily Activity ("Bukti Pekerjaan")
+model DailyActivityEvidence {
+  id               String        @id @default(cuid())
+  activityId       String
+  activity         DailyActivity @relation(fields: [activityId], references: [id], onDelete: Cascade)
+  fileUrl          String
+  originalFileName String?
+  mimeType         String?
+  fileSize         Int?
+  uploadedById     String
+  uploadedBy       User          @relation("DailyActivityEvidenceUploader", fields: [uploadedById], references: [id])
+  createdAt        DateTime      @default(now())
+
+  @@index([activityId])
+}
+
+// Integra Enhancement V2 — chronological "Riwayat Update" history for Daily Activity
+model DailyActivityHistory {
+  id            String                  @id @default(cuid())
+  activityId    String
+  activity      DailyActivity           @relation(fields: [activityId], references: [id], onDelete: Cascade)
+  workStatus    DailyActivityWorkStatus
+  remarks       String?
+  targetDoneAt  DateTime?
+  changedById   String
+  changedBy     User                    @relation("DailyActivityHistoryActor", fields: [changedById], references: [id])
+  createdAt     DateTime                @default(now())
+
+  @@index([activityId])
+  @@index([createdAt])
 }
 
 model FtttDrmDocument {
@@ -3301,6 +3436,9 @@ enum FtttSpanLogCategory {
   JEMBATAN
   JOIN_TERMINASI
   MARKING_POS
+  // Integra V2: Kabel Udara (KU) activities
+  PENARIKAN_KABEL
+  PENANAMAN_TIANG
 }
 
 model FtttSpan {
@@ -3308,6 +3446,8 @@ model FtttSpan {
   projectId   String
   project     FtttProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
   spanNumber  String
+  // Integra V2: panjang folder (meter) diisi sekali saat buat Span/KU — bukan per aktivitas
+  lengthMeters Decimal?   @db.Decimal(12, 2)
   createdById String
   createdBy   User        @relation("FtttSpanCreator", fields: [createdById], references: [id])
   createdAt   DateTime    @default(now())

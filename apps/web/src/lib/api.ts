@@ -125,6 +125,12 @@ export async function apiDelete<T>(path: string): Promise<T> {
   return handle<T>(res);
 }
 
+/** POST multipart/form-data (file uploads) — Content-Type boundary set by the browser. */
+export async function apiPostForm<T>(path: string, formData: FormData): Promise<T> {
+  const res = await apiFetch(path, { method: 'POST', body: formData }, getUserId());
+  return handle<T>(res);
+}
+
 /** Upload foto profil (multipart) — POST /auth/avatar */
 export async function uploadAvatarFile(file: File): Promise<{ success: boolean; data: Record<string, unknown> }> {
   const storeModule = await import('../store/authStore');

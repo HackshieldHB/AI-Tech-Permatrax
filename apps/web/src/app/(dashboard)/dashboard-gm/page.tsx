@@ -5,6 +5,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuthStore } from '../../../store/authStore';
 import { apiGet } from '../../../lib/api';
+import { formatRupiah, formatPercentage } from '../../../lib/format';
 
 // FIX Fix 2A: phase label lookup — mirrors backend PHASE_LABELS so UI never shows underscored enums
 const PHASE_LABELS: Record<string, string> = {
@@ -60,6 +61,28 @@ function timeAgo(dateStr?: string | Date | null): string {
   return d.toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' });
 }
 
+type ProjectKind = 'ALL' | 'FTTH' | 'FTTT';
+
+// NEW: Integra V1 — project/budget summary widgets returned alongside the permit pipeline stats
+type ProjectSummary = { total: number; onGoing: number; completed: number; pending: number; overdue: number };
+type BudgetSummary = { totalBudget: number; spent: number; remaining: number; utilizationPct: number };
+type ProjectListItem = {
+  id: string;
+  name: string;
+  kind: 'FTTH' | 'FTTT';
+  status: string;
+  progressPct: number;
+  budgetRemaining: number | null;
+};
+type AttentionProjectItem = {
+  id: string;
+  name: string;
+  kind: 'FTTH' | 'FTTT';
+  status: string;
+  reasons: string[];
+};
+type StatusDistributionItem = { status: string; count: number };
+
 // FIX Fix 2A: dashboard response shape returned by GET /dashboard/gm
 type GmStats = {
   summary: {
@@ -91,6 +114,27 @@ type GmStats = {
     description: string;
     actor: string;
   }>;
+  // NEW: Integra V1 — project & budget monitoring widgets (filterable via projectKind)
+  projectKind: ProjectKind;
+  projectSummary: ProjectSummary;
+  budgetSummary: BudgetSummary;
+  onProgressProjects: ProjectListItem[];
+  attentionProjects: AttentionProjectItem[];
+  statusDistribution: StatusDistributionItem[];
+};
+
+const ATTENTION_REASON_LABELS: Record<string, string> = {
+  overdue: 'Terlambat',
+  budget_util_high: 'Budget > 90%',
+  no_recent_activity: 'Tidak ada aktivitas',
+};
+
+const PROJECT_STATUS_LABELS: Record<string, string> = {
+  IN_PROGRESS: 'Berjalan',
+  ACTIVE: 'Berjalan',
+  ON_HOLD: 'Ditunda',
+  COMPLETED: 'Selesai',
+  CANCELLED: 'Dibatalkan',
 };
 
 export default function GmDashboard() {
@@ -98,10 +142,11 @@ export default function GmDashboard() {
   const router = useRouter();
   const [stats, setStats] = useState<GmStats | null>(null); // FIX Fix 2A: single source of truth for the whole dashboard
   const [loading, setLoading] = useState(true);
+  const [projectKind, setProjectKind] = useState<ProjectKind>('ALL'); // NEW: Integra V1 — Semua / FTTH / FTTT filter
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (kind: ProjectKind) => {
     try {
-      const data = await apiGet<GmStats>('/dashboard/gm'); // FIX Fix 2A: hit the new lean GM endpoint
+      const data = await apiGet<GmStats>('/dashboard/gm', { projectKind: kind }); // FIX Fix 2A: hit the new lean GM endpoint
       setStats(data);
     } catch (err) {
       console.error('Dashboard load error:', err); // FIX Fix 2A: non-blocking log so UI still renders fallback
@@ -111,10 +156,10 @@ export default function GmDashboard() {
   }, []);
 
   useEffect(() => {
-    void load();
-    const interval = setInterval(() => { void load(); }, 120000); // FIX Fix 2A: auto-refresh every 2 minutes
+    void load(projectKind);
+    const interval = setInterval(() => { void load(projectKind); }, 120000); // FIX Fix 2A: auto-refresh every 2 minutes
     return () => clearInterval(interval);
-  }, [load]);
+  }, [load, projectKind]);
 
   if (loading) {
     return (
@@ -138,6 +183,16 @@ export default function GmDashboard() {
   const byPhase  = pipeline.byPhase ?? [];
   const byFiber  = pipeline.byFiberType ?? [];
   const maxPhaseCount = Math.max(...byPhase.map((p) => p.count), 1); // FIX Fix 2A: normalize bar widths against the busiest phase
+
+  // NEW: Integra V1 — project/budget monitoring widgets, with safe fallbacks while loading
+  const projectSummary: ProjectSummary =
+    stats?.projectSummary ?? { total: 0, onGoing: 0, completed: 0, pending: 0, overdue: 0 };
+  const budgetSummary: BudgetSummary =
+    stats?.budgetSummary ?? { totalBudget: 0, spent: 0, remaining: 0, utilizationPct: 0 };
+  const onProgressProjects = stats?.onProgressProjects ?? [];
+  const attentionProjects  = stats?.attentionProjects ?? [];
+  const statusDistribution = stats?.statusDistribution ?? [];
+  const maxStatusCount = Math.max(...statusDistribution.map((d) => d.count), 1);
 
   const today = new Date().toLocaleDateString('id-ID', {
     weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
@@ -166,18 +221,43 @@ export default function GmDashboard() {
             {today} · General Manager Dashboard
           </p>
         </div>
-        <button
-          onClick={() => void load()} // FIX Fix 2A: manual refresh — no full page reload
-          style={{
-            display: 'flex', alignItems: 'center', gap: 6,
-            padding: '8px 16px', borderRadius: 8,
-            border: '0.5px solid var(--color-border-tertiary)',
-            background: 'none', cursor: 'pointer',
-            fontSize: 13, color: 'var(--color-text-secondary)',
-          }}
-        >
-          🔄 Refresh
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          {/* NEW: Integra V1 — Semua / FTTH / FTTT project-kind filter */}
+          <div
+            style={{
+              display: 'flex', gap: 2, padding: 3, borderRadius: 10,
+              background: 'var(--color-background-secondary)',
+            }}
+          >
+            {(['ALL', 'FTTH', 'FTTT'] as ProjectKind[]).map((k) => (
+              <button
+                key={k}
+                onClick={() => setProjectKind(k)}
+                style={{
+                  padding: '6px 14px', borderRadius: 8, border: 'none', cursor: 'pointer',
+                  fontSize: 12, fontWeight: 700,
+                  background: projectKind === k ? 'var(--color-background-primary)' : 'none',
+                  color: projectKind === k ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
+                  boxShadow: projectKind === k ? '0 1px 2px rgba(0,0,0,0.08)' : 'none',
+                }}
+              >
+                {k === 'ALL' ? 'Semua' : k}
+              </button>
+            ))}
+          </div>
+          <button
+            onClick={() => void load(projectKind)} // FIX Fix 2A: manual refresh — no full page reload
+            style={{
+              display: 'flex', alignItems: 'center', gap: 6,
+              padding: '8px 16px', borderRadius: 8,
+              border: '0.5px solid var(--color-border-tertiary)',
+              background: 'none', cursor: 'pointer',
+              fontSize: 13, color: 'var(--color-text-secondary)',
+            }}
+          >
+            🔄 Refresh
+          </button>
+        </div>
       </div>
 
       {/* ── KPI CARDS ────────────────────────────────────────────────── */}
@@ -267,6 +347,92 @@ export default function GmDashboard() {
             </div>
           </div>
         ))}
+      </div>
+
+      {/* ── NEW: Integra V1 — PROJECT & BUDGET SUMMARY ──────────────────── */}
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
+          gap: 16, marginBottom: 28,
+        }}
+      >
+        {/* Project Summary */}
+        <div
+          style={{
+            background: 'var(--color-background-primary)',
+            border: '0.5px solid var(--color-border-tertiary)',
+            borderRadius: 14, padding: 20,
+          }}
+        >
+          <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--color-text-primary)', marginBottom: 14 }}>
+            Ringkasan Proyek {projectKind !== 'ALL' ? `(${projectKind})` : ''}
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
+            {[
+              { label: 'Total', value: projectSummary.total, color: '#3B82F6' },
+              { label: 'Berjalan', value: projectSummary.onGoing, color: '#F59E0B' },
+              { label: 'Selesai', value: projectSummary.completed, color: '#22C55E' },
+              { label: 'Ditunda', value: projectSummary.pending, color: '#6B7280' },
+              { label: 'Terlambat', value: projectSummary.overdue, color: '#EF4444' },
+            ].map((item) => (
+              <div key={item.label} style={{ textAlign: 'center', padding: '8px 4px' }}>
+                <div style={{ fontSize: 22, fontWeight: 800, color: item.color }}>{item.value}</div>
+                <div style={{ fontSize: 11, color: 'var(--color-text-secondary)', marginTop: 2 }}>{item.label}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Budget Summary */}
+        <div
+          style={{
+            background: 'var(--color-background-primary)',
+            border: '0.5px solid var(--color-border-tertiary)',
+            borderRadius: 14, padding: 20,
+          }}
+        >
+          <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--color-text-primary)', marginBottom: 14 }}>
+            Ringkasan Budget {projectKind !== 'ALL' ? `(${projectKind})` : ''}
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+            <span style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>
+              Terpakai {formatRupiah(budgetSummary.spent)} dari {formatRupiah(budgetSummary.totalBudget)}
+            </span>
+            <span
+              style={{
+                fontSize: 12, fontWeight: 700,
+                color: budgetSummary.utilizationPct > 90 ? '#EF4444' : '#22C55E',
+              }}
+            >
+              {formatPercentage(budgetSummary.utilizationPct / 100, 1)}
+            </span>
+          </div>
+          <div style={{ height: 8, borderRadius: 4, background: 'var(--color-background-secondary)', overflow: 'hidden' }}>
+            <div
+              style={{
+                height: '100%',
+                width: `${Math.min(100, budgetSummary.utilizationPct)}%`,
+                background: budgetSummary.utilizationPct > 90 ? '#EF4444' : budgetSummary.utilizationPct > 70 ? '#F59E0B' : '#22C55E',
+                borderRadius: 4, transition: 'width 600ms ease',
+              }}
+            />
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10, marginTop: 16 }}>
+            <div>
+              <div style={{ fontSize: 11, color: 'var(--color-text-secondary)' }}>Total Budget</div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--color-text-primary)' }}>
+                {formatRupiah(budgetSummary.totalBudget)}
+              </div>
+            </div>
+            <div>
+              <div style={{ fontSize: 11, color: 'var(--color-text-secondary)' }}>Sisa Budget</div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: budgetSummary.remaining < 0 ? '#EF4444' : '#22C55E' }}>
+                {formatRupiah(budgetSummary.remaining)}
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* ── TWO-COLUMN CONTENT ───────────────────────────────────────── */}
@@ -461,6 +627,124 @@ export default function GmDashboard() {
               ))}
             </div>
           </div>
+
+          {/* NEW: Integra V1 — On Progress Projects */}
+          <div
+            style={{
+              background: 'var(--color-background-primary)',
+              border: '0.5px solid var(--color-border-tertiary)',
+              borderRadius: 14, overflow: 'hidden',
+            }}
+          >
+            <div
+              style={{
+                padding: '16px 20px',
+                borderBottom: '0.5px solid var(--color-border-tertiary)',
+                fontSize: 15, fontWeight: 600, color: 'var(--color-text-primary)',
+              }}
+            >
+              Proyek Sedang Berjalan
+            </div>
+            <div>
+              {onProgressProjects.length === 0 ? (
+                <div style={{ padding: 24, textAlign: 'center', color: 'var(--color-text-secondary)', fontSize: 13 }}>
+                  Tidak ada proyek berjalan
+                </div>
+              ) : onProgressProjects.map((p, i) => (
+                <div
+                  key={p.id}
+                  style={{
+                    display: 'flex', gap: 14, alignItems: 'center',
+                    padding: '12px 20px',
+                    borderBottom: i < onProgressProjects.length - 1 ? '0.5px solid var(--color-border-tertiary)' : 'none',
+                  }}
+                >
+                  <span
+                    style={{
+                      flexShrink: 0, padding: '1px 7px', borderRadius: 10, fontSize: 10, fontWeight: 700,
+                      background: p.kind === 'FTTH' ? '#00D4B420' : '#8B5CF620',
+                      color: p.kind === 'FTTH' ? '#00D4B4' : '#8B5CF6',
+                    }}
+                  >
+                    {p.kind}
+                  </span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--color-text-primary)' }}>{p.name}</div>
+                    <div style={{ height: 5, borderRadius: 3, background: 'var(--color-background-secondary)', marginTop: 5, overflow: 'hidden' }}>
+                      <div style={{ height: '100%', width: `${p.progressPct}%`, background: '#3B82F6', borderRadius: 3 }} />
+                    </div>
+                  </div>
+                  <div style={{ flexShrink: 0, textAlign: 'right' }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-text-primary)' }}>{p.progressPct}%</div>
+                    {p.budgetRemaining != null && (
+                      <div style={{ fontSize: 10, color: 'var(--color-text-secondary)' }}>
+                        Sisa {formatRupiah(p.budgetRemaining)}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* NEW: Integra V1 — Attention Projects (budget/overdue/no activity) */}
+          <div
+            style={{
+              background: 'var(--color-background-primary)',
+              border: '0.5px solid #EF444430',
+              borderRadius: 14, overflow: 'hidden',
+            }}
+          >
+            <div
+              style={{
+                padding: '16px 20px',
+                borderBottom: '0.5px solid var(--color-border-tertiary)',
+                fontSize: 15, fontWeight: 600, color: 'var(--color-text-primary)',
+              }}
+            >
+              ⚠️ Perlu Perhatian
+            </div>
+            <div>
+              {attentionProjects.length === 0 ? (
+                <div style={{ padding: 24, textAlign: 'center', color: 'var(--color-text-secondary)', fontSize: 13 }}>
+                  Tidak ada proyek yang perlu perhatian khusus
+                </div>
+              ) : attentionProjects.map((p, i) => (
+                <div
+                  key={p.id}
+                  style={{
+                    display: 'flex', gap: 14, alignItems: 'center',
+                    padding: '12px 20px',
+                    borderBottom: i < attentionProjects.length - 1 ? '0.5px solid var(--color-border-tertiary)' : 'none',
+                  }}
+                >
+                  <span
+                    style={{
+                      flexShrink: 0, padding: '1px 7px', borderRadius: 10, fontSize: 10, fontWeight: 700,
+                      background: p.kind === 'FTTH' ? '#00D4B420' : '#8B5CF620',
+                      color: p.kind === 'FTTH' ? '#00D4B4' : '#8B5CF6',
+                    }}
+                  >
+                    {p.kind}
+                  </span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--color-text-primary)' }}>{p.name}</div>
+                    <div style={{ fontSize: 11, color: 'var(--color-text-secondary)', marginTop: 2 }}>
+                      {p.reasons.map((r) => ATTENTION_REASON_LABELS[r] || r).join(' · ')}
+                    </div>
+                  </div>
+                  <span
+                    style={{
+                      flexShrink: 0, padding: '2px 8px', borderRadius: 10, fontSize: 10, fontWeight: 700,
+                      background: '#EF444415', color: '#EF4444',
+                    }}
+                  >
+                    {PROJECT_STATUS_LABELS[p.status] || p.status}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
 
         {/* ── RIGHT COLUMN ────────────────────────────────────────── */}
@@ -527,6 +811,47 @@ export default function GmDashboard() {
                             background: color, borderRadius: 3,
                           }}
                         />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* NEW: Integra V1 — Status Distribution */}
+          <div
+            style={{
+              background: 'var(--color-background-primary)',
+              border: '0.5px solid var(--color-border-tertiary)',
+              borderRadius: 14, padding: 20,
+            }}
+          >
+            <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--color-text-primary)', marginBottom: 16 }}>
+              Distribusi Status Proyek
+            </div>
+            {statusDistribution.every((d) => d.count === 0) ? (
+              <div style={{ fontSize: 13, color: 'var(--color-text-secondary)', textAlign: 'center', padding: '12px 0' }}>
+                Tidak ada data
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {statusDistribution.map((d) => {
+                  const pct = Math.round((d.count / maxStatusCount) * 100);
+                  const color =
+                    d.status === 'COMPLETED' ? '#22C55E' :
+                    d.status === 'ON_HOLD' ? '#F59E0B' :
+                    d.status === 'CANCELLED' ? '#EF4444' : '#3B82F6';
+                  return (
+                    <div key={d.status}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 5 }}>
+                        <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--color-text-primary)' }}>
+                          {PROJECT_STATUS_LABELS[d.status] || d.status}
+                        </span>
+                        <span style={{ fontSize: 13, fontWeight: 700, color }}>{d.count}</span>
+                      </div>
+                      <div style={{ height: 6, borderRadius: 3, background: 'var(--color-background-secondary)', overflow: 'hidden' }}>
+                        <div style={{ height: '100%', width: `${pct}%`, background: color, borderRadius: 3 }} />
                       </div>
                     </div>
                   );

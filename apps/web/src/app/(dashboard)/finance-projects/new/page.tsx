@@ -23,29 +23,28 @@ export default function NewFinanceProjectPage() {
   const [endDate, setEndDate] = useState('');
   const [submitting, setSubmitting] = useState(false);
   // JLM: project type + FTTT budget categories
+  // Integra V1: FTTT creates a Segment (Lain-Lain/Overhead only) — Sites are added later from the Segment detail page
   const [projectType, setProjectType] = useState<'FTTH' | 'FTTT'>('FTTH');
-  const [perizinanStr, setPerizinanStr] = useState('');
   const [lainLainStr, setLainLainStr] = useState('');
 
   const isFttt = projectType === 'FTTT';
-  const perizinanN = perizinanStr.trim() ? Number(digitsOnly(perizinanStr)) : undefined;
   const lainLainN = lainLainStr.trim() ? Number(digitsOnly(lainLainStr)) : undefined;
   const matN = matStr.trim() ? Number(digitsOnly(matStr)) : undefined;
   const jasN = jasStr.trim() ? Number(digitsOnly(jasStr)) : undefined;
-  // FTTT total is the auto-sum of the 4 categories; FTTH uses the manual total field
+  // FTTT Segment total = Budget Lain-Lain only; FTTH uses the manual total field
   const totalN = isFttt
-    ? (perizinanN ?? 0) + (matN ?? 0) + (jasN ?? 0) + (lainLainN ?? 0)
+    ? (lainLainN ?? 0)
     : (Number(digitsOnly(totalBudgetStr)) || 0);
 
   const validate = (): string | null => {
     if (!name.trim() || name.length > 100) return 'Nama wajib diisi (maks 100 karakter)';
     if (name.trim().length < 3) return 'Nama minimal 3 karakter';
-    if (totalN <= 0) return 'Total budget harus lebih dari 0';
+    if (totalN <= 0) return isFttt ? 'Budget Lain-Lain harus lebih dari 0' : 'Total budget harus lebih dari 0';
     const c = code.trim();
     if (c && (!/^[A-Za-z0-9-]+$/.test(c) || c.length < 3 || c.length > 20)) {
       return 'Kode harus 3–20 karakter, huruf/angka/tanda hubung';
     }
-    if (matN != null && jasN != null && matN + jasN > totalN) {
+    if (!isFttt && matN != null && jasN != null && matN + jasN > totalN) {
       return 'Material + Jasa tidak boleh melebihi Total Budget';
     }
     return null;
@@ -63,18 +62,18 @@ export default function NewFinanceProjectPage() {
         name: name.trim(),
         projectType,
         totalBudget: totalN,
+        ...(isFttt ? { hierarchyLevel: 'SEGMENT' } : {}),
         ...(code.trim() ? { code: code.trim().toUpperCase() } : {}),
         ...(description.trim() ? { description: description.trim() } : {}),
-        ...(matN != null ? { materialBudget: matN } : {}),
-        ...(jasN != null ? { jasaBudget: jasN } : {}),
-        ...(isFttt && perizinanN != null ? { budgetPerizinan: perizinanN } : {}),
-        ...(isFttt && lainLainN != null ? { budgetLainLain: lainLainN } : {}),
+        ...(!isFttt && matN != null ? { materialBudget: matN } : {}),
+        ...(!isFttt && jasN != null ? { jasaBudget: jasN } : {}),
+        ...(isFttt ? { budgetLainLain: lainLainN ?? 0 } : {}),
         ...(endDate
           ? { endDate: new Date(endDate + 'T12:00:00').toISOString() }
           : {}),
       };
       const created = await apiPost<{ id: string }>('/finance-projects', body);
-      toast.success('Proyek dibuat');
+      toast.success(isFttt ? 'Segment dibuat' : 'Proyek dibuat');
       router.push(`/finance-projects/${created.id}`);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Gagal membuat proyek');
@@ -89,7 +88,7 @@ export default function NewFinanceProjectPage() {
         <ArrowLeft className="w-4 h-4" />
         Kembali
       </Link>
-      <h1 className="text-2xl font-black text-slate-900">Proyek Baru</h1>
+      <h1 className="text-2xl font-black text-slate-900">{isFttt ? 'Segment Baru' : 'Proyek Baru'}</h1>
       <section className="space-y-4 bg-white rounded-2xl border border-slate-100 shadow-sm p-6">
         <div>
           <label className="text-xs font-bold text-slate-500 uppercase">Kode (opsional)</label>
@@ -112,7 +111,9 @@ export default function NewFinanceProjectPage() {
             <option value="FTTT">FTTT</option>
           </select>
           <p className="text-[11px] text-slate-500 mt-1">
-            {isFttt ? 'FTTT: budget 4 kategori (Perizinan / Material / Jasa / Lain-Lain), Total otomatis.' : 'FTTH: alur existing (Material / Jasa).'}
+            {isFttt
+              ? 'FTTT: dibuat sebagai Segment dengan Budget Lain-Lain (Overhead). Site (Perizinan/Material/Jasa) ditambahkan kemudian dari halaman Detail Segment.'
+              : 'FTTH: alur existing (Material / Jasa).'}
           </p>
         </div>
         <div>
@@ -134,34 +135,14 @@ export default function NewFinanceProjectPage() {
         </div>
         {isFttt ? (
           <>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div>
-                <label className="text-xs font-bold text-slate-500 uppercase">Budget Perizinan</label>
-                <input className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
-                  value={perizinanStr} onChange={(e) => setPerizinanStr(digitsOnly(e.target.value))} placeholder="0" />
-                {perizinanStr ? <p className="text-xs mt-1">{formatRupiah(perizinanN ?? 0)}</p> : null}
-              </div>
-              <div>
-                <label className="text-xs font-bold text-slate-500 uppercase">Budget Material</label>
-                <input className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
-                  value={matStr} onChange={(e) => setMatStr(digitsOnly(e.target.value))} placeholder="0" />
-                {matStr ? <p className="text-xs mt-1">{formatRupiah(matN ?? 0)}</p> : null}
-              </div>
-              <div>
-                <label className="text-xs font-bold text-slate-500 uppercase">Budget Jasa</label>
-                <input className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
-                  value={jasStr} onChange={(e) => setJasStr(digitsOnly(e.target.value))} placeholder="0" />
-                {jasStr ? <p className="text-xs mt-1">{formatRupiah(jasN ?? 0)}</p> : null}
-              </div>
-              <div>
-                <label className="text-xs font-bold text-slate-500 uppercase">Budget Lain-Lain</label>
-                <input className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
-                  value={lainLainStr} onChange={(e) => setLainLainStr(digitsOnly(e.target.value))} placeholder="0" />
-                {lainLainStr ? <p className="text-xs mt-1">{formatRupiah(lainLainN ?? 0)}</p> : null}
-              </div>
+            <div>
+              <label className="text-xs font-bold text-slate-500 uppercase">Budget Lain-Lain (Overhead) *</label>
+              <input className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
+                value={lainLainStr} onChange={(e) => setLainLainStr(digitsOnly(e.target.value))} placeholder="0" />
+              {lainLainStr ? <p className="text-xs mt-1">{formatRupiah(lainLainN ?? 0)}</p> : null}
             </div>
             <div className="rounded-xl bg-slate-50 border border-slate-100 px-3 py-2">
-              <span className="text-xs font-bold text-slate-500 uppercase">Total Budget (otomatis)</span>
+              <span className="text-xs font-bold text-slate-500 uppercase">Total Budget Segment (otomatis)</span>
               <p className="text-lg font-black text-slate-900">{formatRupiah(totalN)}</p>
             </div>
           </>
