@@ -11,6 +11,8 @@ type PoHistoryItem = {
   id: string;
   previousAmount: string | number | null;
   proposedAmount: string | number;
+  previousPoNumber?: string | null;
+  proposedPoNumber?: string | null;
   docUrl: string | null;
   reason: string | null;
   status: 'NONE' | 'PENDING' | 'APPROVED' | 'REJECTED';
@@ -31,16 +33,18 @@ type Props = {
 export function FinancialPerformance({ detail, canEdit, isGm, onRefresh }: Props) {
   const [history, setHistory] = useState<PoHistoryItem[]>([]);
   const [modalOpen, setModalOpen] = useState(false);
+  const [poNumber, setPoNumber] = useState('');
   const [amount, setAmount] = useState('');
   const [reason, setReason] = useState('');
   const [file, setFile] = useState<File | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [reviewingId, setReviewingId] = useState<string | null>(null);
+  const [rejectModalId, setRejectModalId] = useState<string | null>(null);
+  const [rejectReason, setRejectReason] = useState('');
 
   const po = detail.poCustomerAmount != null ? detail.poCustomerAmount : num(detail.poCustomer);
   const rab = detail.totalRab != null ? detail.totalRab : num(detail.totalBudget);
   const actual = detail.actualCost != null ? detail.actualCost : (detail.totalSpent != null ? num(detail.totalSpent) : 0);
-  const estMargin = detail.estimatedMargin != null ? detail.estimatedMargin : (po != null && !Number.isNaN(po) ? po - rab : null);
   const profit = detail.actualProfit != null ? detail.actualProfit : (po != null && !Number.isNaN(po) ? po - actual : null);
   const isSegment = detail.hierarchyLevel === 'SEGMENT';
   const pending = detail.poApprovalStatus === 'PENDING';
@@ -59,6 +63,7 @@ export function FinancialPerformance({ detail, canEdit, isGm, onRefresh }: Props
   }, [canEdit, isGm, loadHistory]);
 
   const openModal = () => {
+    setPoNumber(detail.poCustomerNumber ?? '');
     setAmount(po != null && !Number.isNaN(po) ? String(Math.round(po)) : '');
     setReason('');
     setFile(null);
@@ -66,18 +71,17 @@ export function FinancialPerformance({ detail, canEdit, isGm, onRefresh }: Props
   };
 
   const submitPo = async () => {
+    if (!poNumber.trim()) { toast.error('Nomor PO Customer wajib diisi'); return; }
     const n = Number(String(amount).replace(/\./g, '').replace(/,/g, '.'));
     if (!n || n <= 0) { toast.error('Nominal PO Customer wajib diisi'); return; }
-    if (!detail.poCustomer && !detail.poCustomerDocUrl && !file) {
-      toast.error('Dokumen PO wajib diunggah untuk pengajuan pertama');
-      return;
-    }
+    if (!file) { toast.error('Dokumen PO Customer wajib diunggah'); return; }
     setSubmitting(true);
     try {
       const fd = new FormData();
       fd.append('amount', String(n));
+      fd.append('poNumber', poNumber.trim());
       if (reason.trim()) fd.append('reason', reason.trim());
-      if (file) fd.append('file', file);
+      fd.append('file', file);
       await apiPostForm(`/finance-projects/${detail.id}/po-customer`, fd);
       toast.success('Pengajuan PO Customer dikirim ke GM');
       setModalOpen(false);
@@ -90,11 +94,32 @@ export function FinancialPerformance({ detail, canEdit, isGm, onRefresh }: Props
     }
   };
 
-  const review = async (requestId: string, decision: 'APPROVE' | 'REJECT') => {
+  const reviewApprove = async (requestId: string) => {
     setReviewingId(requestId);
     try {
-      await apiPost(`/finance-projects/${detail.id}/po-customer/${requestId}/review`, { decision });
-      toast.success(decision === 'APPROVE' ? 'PO Customer disetujui' : 'PO Customer ditolak');
+      await apiPost(`/finance-projects/${detail.id}/po-customer/${requestId}/review`, { decision: 'APPROVE' });
+      toast.success('PO Customer disetujui');
+      onRefresh();
+      void loadHistory();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Gagal memproses');
+    } finally {
+      setReviewingId(null);
+    }
+  };
+
+  const submitReject = async () => {
+    if (!rejectModalId) return;
+    if (!rejectReason.trim()) { toast.error('Alasan penolakan wajib diisi'); return; }
+    setReviewingId(rejectModalId);
+    try {
+      await apiPost(`/finance-projects/${detail.id}/po-customer/${rejectModalId}/review`, {
+        decision: 'REJECT',
+        reviewNote: rejectReason.trim(),
+      });
+      toast.success('PO Customer ditolak');
+      setRejectModalId(null);
+      setRejectReason('');
       onRefresh();
       void loadHistory();
     } catch (e) {
@@ -105,7 +130,11 @@ export function FinancialPerformance({ detail, canEdit, isGm, onRefresh }: Props
   };
 
   const profitColor = profit == null ? '#57606a' : profit >= 0 ? '#1a7f37' : '#cf222e';
-  const profitLabel = profit == null ? '—' : `${profit >= 0 ? '🟢 Profit' : '🔴 Loss'} ${formatRupiah(Math.abs(profit))}`;
+  // Integra V4: status label separate from estimasi amount
+  const statusLabel = profit == null ? '—' : profit >= 0 ? '🟢 Profit' : '🔴 Loss';
+  const estimasiLabel = profit == null
+    ? null
+    : `${profit >= 0 ? 'Estimasi Profit' : 'Estimasi Loss'}: ${formatRupiah(Math.abs(profit))}`;
 
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-5 space-y-4">
@@ -135,6 +164,9 @@ export function FinancialPerformance({ detail, canEdit, isGm, onRefresh }: Props
           <div className="font-bold text-slate-900 mt-0.5">
             {po != null && !Number.isNaN(po) ? formatRupiah(po) : '—'}
           </div>
+          {detail.poCustomerNumber ? (
+            <div className="text-[11px] text-slate-600 mt-0.5 font-medium">{detail.poCustomerNumber}</div>
+          ) : null}
           {detail.poCustomerDocUrl ? (
             <a href={fixFileUrl(detail.poCustomerDocUrl)} target="_blank" rel="noreferrer" className="text-[11px] text-blue-600">
               Lihat dokumen ↗
@@ -155,10 +187,10 @@ export function FinancialPerformance({ detail, canEdit, isGm, onRefresh }: Props
           <div className="text-[11px] text-slate-500 font-semibold uppercase">
             {isSegment ? 'Profit Segment' : 'Actual P/L'}
           </div>
-          <div className="font-bold mt-0.5" style={{ color: profitColor }}>{profitLabel}</div>
-          {estMargin != null ? (
-            <div className="text-[11px] text-slate-500 mt-1">
-              Estimasi Margin: {formatRupiah(estMargin)}
+          <div className="font-bold mt-0.5" style={{ color: profitColor }}>{statusLabel}</div>
+          {estimasiLabel ? (
+            <div className="text-[11px] mt-1 font-semibold" style={{ color: profitColor }}>
+              {estimasiLabel}
             </div>
           ) : null}
         </div>
@@ -169,21 +201,25 @@ export function FinancialPerformance({ detail, canEdit, isGm, onRefresh }: Props
           <div className="text-xs font-bold text-slate-600 mb-2">Riwayat PO Customer</div>
           <div className="border border-slate-100 rounded-xl overflow-hidden divide-y divide-slate-100">
             {history.slice(0, 8).map((h) => (
-              <div key={h.id} className="px-3 py-2 text-xs flex flex-wrap gap-2 justify-between items-center">
+              <div key={h.id} className="px-3 py-2 text-xs flex flex-wrap gap-2 justify-between items-start">
                 <div>
+                  {h.proposedPoNumber ? <div className="font-semibold text-slate-800">{h.proposedPoNumber}</div> : null}
                   <span className="font-semibold">{formatRupiah(Number(h.proposedAmount))}</span>
                   {h.previousAmount != null ? (
                     <span className="text-slate-400"> ← {formatRupiah(Number(h.previousAmount))}</span>
                   ) : null}
                   <span className="ml-2 text-slate-500">{h.status}</span>
                   {h.submittedBy?.name ? <span className="text-slate-400"> · {h.submittedBy.name}</span> : null}
+                  {h.status === 'REJECTED' && h.reviewNote ? (
+                    <div className="text-red-700 mt-1">Alasan reject: {h.reviewNote}</div>
+                  ) : null}
                 </div>
                 {isGm && h.status === 'PENDING' ? (
                   <div className="flex gap-2">
                     <button
                       type="button"
                       disabled={reviewingId === h.id}
-                      onClick={() => void review(h.id, 'APPROVE')}
+                      onClick={() => void reviewApprove(h.id)}
                       className="px-2 py-1 rounded bg-emerald-600 text-white font-bold"
                     >
                       Approve
@@ -191,7 +227,7 @@ export function FinancialPerformance({ detail, canEdit, isGm, onRefresh }: Props
                     <button
                       type="button"
                       disabled={reviewingId === h.id}
-                      onClick={() => void review(h.id, 'REJECT')}
+                      onClick={() => { setRejectModalId(h.id); setRejectReason(''); }}
                       className="px-2 py-1 rounded bg-red-600 text-white font-bold"
                     >
                       Reject
@@ -212,7 +248,16 @@ export function FinancialPerformance({ detail, canEdit, isGm, onRefresh }: Props
               Perubahan tidak langsung tersimpan. Ajukan ke GM untuk approval.
             </p>
             <label className="block text-xs font-semibold text-slate-600">
-              Nominal PO Customer
+              Nomor PO Customer <span className="text-red-600">*</span>
+              <input
+                value={poNumber}
+                onChange={(e) => setPoNumber(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                placeholder="Contoh: PO/BIZ/2026/00125"
+              />
+            </label>
+            <label className="block text-xs font-semibold text-slate-600">
+              Nominal PO Customer <span className="text-red-600">*</span>
               <input
                 value={amount}
                 onChange={(e) => setAmount(e.target.value)}
@@ -230,7 +275,7 @@ export function FinancialPerformance({ detail, canEdit, isGm, onRefresh }: Props
               />
             </label>
             <label className="block text-xs font-semibold text-slate-600">
-              Dokumen PO {detail.poCustomer || detail.poCustomerDocUrl ? '(opsional jika sudah ada)' : '(wajib)'}
+              Dokumen PO <span className="text-red-600">*</span>
               <input
                 type="file"
                 accept=".pdf,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg"
@@ -249,6 +294,35 @@ export function FinancialPerformance({ detail, canEdit, isGm, onRefresh }: Props
                 className="px-3 py-2 text-sm rounded-lg bg-[#00D4B4] text-slate-900 font-bold"
               >
                 {submitting ? 'Mengirim…' : 'Ajukan Approval'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {rejectModalId ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-5 space-y-3">
+            <h4 className="font-bold text-slate-900">Alasan Penolakan PO</h4>
+            <p className="text-xs text-slate-500">Alasan penolakan wajib diisi agar Finance dapat merevisi.</p>
+            <textarea
+              value={rejectReason}
+              onChange={(e) => setRejectReason(e.target.value)}
+              rows={4}
+              placeholder="Tuliskan alasan penolakan…"
+              className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+            />
+            <div className="flex justify-end gap-2 pt-2">
+              <button type="button" onClick={() => setRejectModalId(null)} className="px-3 py-2 text-sm rounded-lg border">
+                Batal
+              </button>
+              <button
+                type="button"
+                disabled={reviewingId === rejectModalId}
+                onClick={() => void submitReject()}
+                className="px-3 py-2 text-sm rounded-lg bg-red-600 text-white font-bold"
+              >
+                {reviewingId === rejectModalId ? 'Memproses…' : 'Reject PO'}
               </button>
             </div>
           </div>

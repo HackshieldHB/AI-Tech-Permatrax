@@ -2252,7 +2252,8 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
   // Integra V1: Metode Implementasi (Galian / KU) generalized for ALL companies —
   // method-first daily logging (was PST-only)
   const implType     = project.implementationType ?? null;
-  const useSpanFlow  = implType === 'GALIAN';
+  // Integra V4: KU must show the same Total Panjang / Progress monitoring as Galian
+  const showLengthProgress = implType === 'GALIAN' || implType === 'KU';
   // Issue 2: TI Implementation — Admin only; PST/iFORTE — Surveyor/PM/Admin
   const canUpload    = isTI ? isAdmin : (isSurveyor || isAdmin || isPmFttt);
   const canMonitoring = isAdmin;
@@ -2422,8 +2423,8 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
         </div>
       )}
 
-      {/* iFORTE GENERAL: Total Panjang Pekerjaan (meter) + Progress (%) */}
-      {useSpanFlow && (
+      {/* Integra V4: Total Panjang + Progress — Galian and KU */}
+      {showLengthProgress && (
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center', border: '1px solid #D0D7DE', borderRadius: 10, padding: '10px 14px', marginBottom: 12, background: '#F6F8FA' }}>
           <div style={{ flex: 1, minWidth: 200 }}>
             <p style={{ margin: 0, fontSize: 11, fontWeight: 700, color: '#57606a', textTransform: 'uppercase' }}>Total Panjang Pekerjaan</p>

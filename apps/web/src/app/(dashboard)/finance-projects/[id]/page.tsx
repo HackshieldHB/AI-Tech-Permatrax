@@ -442,7 +442,7 @@ export default function FinanceProjectDetailPage() {
             </div>
           </div>
           {isSite ? (
-            <div className="grid grid-cols-3 gap-3 mt-3 text-sm">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-3 text-sm">
               <div>
                 <div className="text-xs text-slate-500">Budget Perizinan</div>
                 <div className="font-bold">{formatRupiah(num(detail.budgetPerizinan))}</div>
@@ -454,6 +454,10 @@ export default function FinanceProjectDetailPage() {
               <div>
                 <div className="text-xs text-slate-500">Budget Jasa</div>
                 <div className="font-bold">{formatRupiah(num(detail.jasaBudget))}</div>
+              </div>
+              <div>
+                <div className="text-xs text-slate-500">Lain-Lain (dari Segment)</div>
+                <div className="font-bold">{formatRupiah(num(detail.budgetLainLain))}</div>
               </div>
             </div>
           ) : null}

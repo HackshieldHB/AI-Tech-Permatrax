@@ -89,17 +89,28 @@ export const SetTimelineDto = z.object({
 });
 export type SetTimelineInput = z.infer<typeof SetTimelineDto>;
 
-// Integra V3: Finance submits PO Customer for GM approval
+// Integra V3/V4: Finance submits PO Customer for GM approval
 export const SubmitPoCustomerDto = z.object({
   amount: z.coerce.number().positive(),
+  poNumber: z.string().trim().min(1, 'Nomor PO Customer wajib diisi').max(100),
   reason: z.string().max(500).optional(),
 });
 export type SubmitPoCustomerInput = z.infer<typeof SubmitPoCustomerDto>;
 
-export const ReviewPoCustomerDto = z.object({
-  decision: z.enum(['APPROVE', 'REJECT']),
-  reviewNote: z.string().max(500).optional(),
-});
+export const ReviewPoCustomerDto = z
+  .object({
+    decision: z.enum(['APPROVE', 'REJECT']),
+    reviewNote: z.string().max(500).optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.decision === 'REJECT' && !data.reviewNote?.trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Alasan penolakan wajib diisi',
+        path: ['reviewNote'],
+      });
+    }
+  });
 export type ReviewPoCustomerInput = z.infer<typeof ReviewPoCustomerDto>;
 
 export const FinanceProjectFilterDto = PaginationQuerySchema.merge(

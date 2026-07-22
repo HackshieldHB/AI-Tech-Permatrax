@@ -665,6 +665,7 @@ export interface FinanceProjectListItem {
   // Integra V3: P&L
   poCustomer?: string | number | null;
   poCustomerDocUrl?: string | null;
+  poCustomerNumber?: string | null;
   poApprovalStatus?: 'NONE' | 'PENDING' | 'APPROVED' | 'REJECTED';
   poCustomerAmount?: number | null;
   totalRab?: number;

@@ -2069,7 +2069,14 @@ export class FtttProjectService {
     const project = await this.prisma.ftttProject.findUniqueOrThrow({
       where: { id: projectId },
       include: {
-        financeProject: { select: { id: true, code: true, name: true, totalBudget: true, budgetPerizinan: true, materialBudget: true, jasaBudget: true, budgetLainLain: true, createdAt: true, endDate: true } },
+        financeProject: {
+          select: {
+            id: true, code: true, name: true, totalBudget: true,
+            budgetPerizinan: true, materialBudget: true, jasaBudget: true, budgetLainLain: true,
+            createdAt: true, endDate: true,
+            hierarchyLevel: true, parentId: true,
+          },
+        },
         transactions: { orderBy: { createdAt: 'asc' }, include: { createdBy: { select: { id: true, name: true } }, disbursedBy: { select: { id: true, name: true } } } },
         phaseProgresses: true,
       },
@@ -2083,6 +2090,22 @@ export class FtttProjectService {
       JASA:      num(fp?.jasaBudget),
       LAIN_LAIN: num(fp?.budgetLainLain),
     };
+
+    // Integra V4: Lain-Lain (Overhead) is owned by Segment (Parent) — Sites inherit live budget + pool spent
+    let segmentLainLainId: string | null = null;
+    if (fp?.hierarchyLevel === 'SITE' && fp.parentId) {
+      const parent = await this.prisma.financeProject.findUnique({
+        where: { id: fp.parentId },
+        select: { id: true, budgetLainLain: true },
+      });
+      if (parent) {
+        budgets.LAIN_LAIN = num(parent.budgetLainLain);
+        segmentLainLainId = parent.id;
+      }
+    } else if (fp?.hierarchyLevel === 'SEGMENT') {
+      segmentLainLainId = fp.id;
+    }
+
     const totalBudget = num(fp?.totalBudget) || (budgets.PERIZINAN + budgets.MATERIAL + budgets.JASA + budgets.LAIN_LAIN);
 
     // Only disbursed transactions whose Dana Keluar date has arrived count as spent / Actual.
@@ -2092,7 +2115,21 @@ export class FtttProjectService {
       (t) => t.disbursedAt != null && new Date(t.disbursedAt).getTime() <= nowMs,
     );
     const spent = { PERIZINAN: 0, MATERIAL: 0, JASA: 0, LAIN_LAIN: 0 } as Record<string, number>;
-    for (const t of realized) spent[t.category] += num(t.total);
+    for (const t of realized) {
+      if (t.category === 'LAIN_LAIN' && segmentLainLainId) continue; // filled from segment pool below
+      spent[t.category] += num(t.total);
+    }
+    if (segmentLainLainId) {
+      const lainAgg = await this.prisma.ftttTransaction.aggregate({
+        where: {
+          financeProjectId: segmentLainLainId,
+          category: 'LAIN_LAIN',
+          disbursedAt: { not: null, lte: new Date(nowMs) },
+        },
+        _sum: { total: true },
+      });
+      spent.LAIN_LAIN = num(lainAgg._sum.total);
+    }
     const totalSpent = spent.PERIZINAN + spent.MATERIAL + spent.JASA + spent.LAIN_LAIN;
 
     // Finance-owned milestones: BASELINE (Planning Awal) + CURRENT (Perubahan Planning)

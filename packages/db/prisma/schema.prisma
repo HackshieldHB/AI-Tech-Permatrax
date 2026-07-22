@@ -2839,6 +2839,8 @@ model FinanceProject {
   // Actual Cost = disbursed FtttTransaction totals. Margin/Profit computed in API.
   poCustomer          Decimal?                 @db.Decimal(18, 2)
   poCustomerDocUrl    String?
+  // Integra V4: Nomor PO Customer (identity for audit / matching physical docs)
+  poCustomerNumber    String?
   poApprovalStatus    FinancePoApprovalStatus  @default(NONE)
 
   isOverbudget              Boolean @default(false)
@@ -2887,6 +2889,9 @@ model FinancePoChangeRequest {
   financeProjectId String
   previousAmount   Decimal?                @db.Decimal(18, 2)
   proposedAmount   Decimal                 @db.Decimal(18, 2)
+  // Integra V4
+  previousPoNumber String?
+  proposedPoNumber String?
   docUrl           String?
   reason           String?
   status           FinancePoApprovalStatus @default(PENDING)

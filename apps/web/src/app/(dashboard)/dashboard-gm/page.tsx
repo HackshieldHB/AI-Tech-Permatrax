@@ -191,40 +191,188 @@ export default function GmDashboard() {
     setExporting(true);
     try {
       const doc = new jsPDF({ unit: 'pt', format: 'a4' });
-      const margin = 40;
+      const pageW = doc.internal.pageSize.getWidth();
+      const margin = 36;
+      const contentW = pageW - margin * 2;
       let y = margin;
-      const line = (text: string, size = 11, bold = false) => {
-        doc.setFont('helvetica', bold ? 'bold' : 'normal');
-        doc.setFontSize(size);
-        const lines = doc.splitTextToSize(text, 515);
-        doc.text(lines, margin, y);
-        y += lines.length * (size + 4);
-        if (y > 780) { doc.addPage(); y = margin; }
+
+      const ensureSpace = (need: number) => {
+        if (y + need > 800) {
+          doc.addPage();
+          y = margin;
+        }
       };
-      line('EXECUTIVE DASHBOARD – GENERAL MANAGER', 16, true);
-      line(`Filter: ${projectKind === 'ALL' ? 'Semua' : projectKind} · ${new Date().toLocaleString('id-ID')}`, 10);
-      y += 8;
-      line('1. Executive KPI', 13, true);
-      line(`Total Project: ${projectSummary.total} | Berjalan: ${projectSummary.onGoing} | Selesai: ${projectSummary.completed} | On Hold: ${projectSummary.pending}`);
-      line(`Cash Op Pending: ${s.pendingCashOperations ?? 0} | SLA Terlewat: ${s.slaBreached ?? 0} | User Aktif: ${s.activeUsers ?? 0}`);
-      y += 6;
-      line('2. Financial Summary', 13, true);
-      line(`Total Budget: ${formatRupiah(budgetSummary.totalBudget)} | Terpakai: ${formatRupiah(budgetSummary.spent)} | Sisa: ${formatRupiah(budgetSummary.remaining)}`);
-      line(`Utilisasi: ${budgetSummary.utilizationPct}% | Over Budget: ${stats.overBudgetCount ?? 0} | Profit: ${stats.profitCount ?? 0} | Loss: ${stats.lossCount ?? 0}`);
-      y += 6;
-      line('3. Running Projects', 13, true);
-      onProgressProjects.forEach((p, i) => {
-        line(`${i + 1}. [${p.kind}] ${p.name} — ${p.progressPct}% · ${PROJECT_STATUS_LABELS[p.status] ?? p.status}`);
+
+      const sectionTitle = (title: string) => {
+        ensureSpace(28);
+        doc.setFillColor(15, 27, 45);
+        doc.rect(margin, y, contentW, 22, 'F');
+        doc.setTextColor(255, 255, 255);
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(11);
+        doc.text(title, margin + 10, y + 15);
+        doc.setTextColor(20, 20, 20);
+        y += 30;
+      };
+
+      const drawKpiGrid = (items: { label: string; value: string }[]) => {
+        const cols = 4;
+        const gap = 8;
+        const boxW = (contentW - gap * (cols - 1)) / cols;
+        const boxH = 48;
+        items.forEach((item, idx) => {
+          const row = Math.floor(idx / cols);
+          const col = idx % cols;
+          if (col === 0) ensureSpace(boxH + 10);
+          const x = margin + col * (boxW + gap);
+          const yy = y + row * (boxH + gap);
+          doc.setDrawColor(220, 220, 220);
+          doc.setFillColor(248, 250, 252);
+          doc.roundedRect(x, yy, boxW, boxH, 4, 4, 'FD');
+          doc.setFont('helvetica', 'normal');
+          doc.setFontSize(8);
+          doc.setTextColor(100, 100, 100);
+          doc.text(item.label, x + 8, yy + 14);
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(14);
+          doc.setTextColor(15, 27, 45);
+          doc.text(item.value, x + 8, yy + 34);
+        });
+        const rows = Math.ceil(items.length / cols);
+        y += rows * (boxH + gap) + 6;
+        doc.setTextColor(20, 20, 20);
+      };
+
+      const drawTable = (headers: string[], rows: string[][], colWeights: number[]) => {
+        const sumW = colWeights.reduce((a, b) => a + b, 0);
+        const widths = colWeights.map((w) => (w / sumW) * contentW);
+        const rowH = 18;
+        ensureSpace(rowH * (rows.length + 2));
+        let x = margin;
+        doc.setFillColor(226, 232, 240);
+        doc.rect(margin, y, contentW, rowH, 'F');
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(8);
+        headers.forEach((h, i) => {
+          doc.text(h, x + 4, y + 12);
+          x += widths[i];
+        });
+        y += rowH;
+        doc.setFont('helvetica', 'normal');
+        rows.forEach((row, ri) => {
+          ensureSpace(rowH + 4);
+          if (ri % 2 === 0) {
+            doc.setFillColor(248, 250, 252);
+            doc.rect(margin, y, contentW, rowH, 'F');
+          }
+          let xx = margin;
+          row.forEach((cell, i) => {
+            const clipped = doc.splitTextToSize(String(cell ?? ''), widths[i] - 6)[0] ?? '';
+            doc.text(clipped, xx + 4, y + 12);
+            xx += widths[i];
+          });
+          y += rowH;
+        });
+        y += 8;
+      };
+
+      // Header banner
+      doc.setFillColor(15, 27, 45);
+      doc.rect(0, 0, pageW, 64, 'F');
+      doc.setTextColor(255, 255, 255);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(16);
+      doc.text('EXECUTIVE DASHBOARD – GENERAL MANAGER', margin, 28);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(9);
+      doc.text(
+        `Filter: ${projectKind === 'ALL' ? 'Semua' : projectKind}  ·  Generated: ${new Date().toLocaleString('id-ID')}`,
+        margin,
+        46,
+      );
+      doc.setTextColor(20, 20, 20);
+      y = 78;
+
+      sectionTitle('1. Executive KPI');
+      drawKpiGrid([
+        { label: 'Total Project', value: String(projectSummary.total) },
+        { label: 'Berjalan', value: String(projectSummary.onGoing) },
+        { label: 'Selesai', value: String(projectSummary.completed) },
+        { label: 'On Hold', value: String(s.onHold ?? projectSummary.pending) },
+        { label: 'Menunggu Approval', value: String(s.pendingApprovals ?? s.pendingVisitRequests ?? 0) },
+        { label: 'Cash Operation', value: String(s.pendingCashOperations ?? 0) },
+        { label: 'SLA Terlewat', value: String(s.slaBreached ?? 0) },
+        { label: 'User Aktif', value: String(s.activeUsers ?? 0) },
+      ]);
+
+      sectionTitle('2. Project & Financial Summary');
+      drawTable(
+        ['Metric', 'Value', 'Metric', 'Value'],
+        [
+          ['Total Project', String(projectSummary.total), 'Total Budget', formatRupiah(budgetSummary.totalBudget)],
+          ['On Progress', String(projectSummary.onGoing), 'Budget Terpakai', formatRupiah(budgetSummary.spent)],
+          ['Done', String(projectSummary.completed), 'Sisa Budget', formatRupiah(budgetSummary.remaining)],
+          ['On Hold', String(projectSummary.pending), 'Utilisasi', `${budgetSummary.utilizationPct}%`],
+          ['Total Site', String(stats.totalSites ?? 0), 'Over Budget', String(stats.overBudgetCount ?? 0)],
+          ['Total Segment', String(stats.totalSegments ?? 0), 'Profit / Loss', `${stats.profitCount ?? 0} / ${stats.lossCount ?? 0}`],
+        ],
+        [1.2, 1, 1.2, 1.4],
+      );
+
+      sectionTitle('3. Running Project Summary (max 10)');
+      if (onProgressProjects.length === 0) {
+        doc.setFontSize(9);
+        doc.text('Tidak ada project berjalan.', margin, y + 10);
+        y += 24;
+      } else {
+        drawTable(
+          ['Project', 'Kind', 'Progress', 'Status'],
+          onProgressProjects.map((p) => [
+            p.name,
+            p.kind,
+            `${p.progressPct}%`,
+            PROJECT_STATUS_LABELS[p.status] ?? p.status,
+          ]),
+          [3, 0.8, 0.8, 1.2],
+        );
+      }
+
+      sectionTitle('4. Project Requiring Attention');
+      if (attentionProjects.length === 0) {
+        doc.setFontSize(9);
+        doc.text('Tidak ada project yang membutuhkan perhatian.', margin, y + 10);
+        y += 24;
+      } else {
+        drawTable(
+          ['Project', 'Kind', 'Alasan'],
+          attentionProjects.slice(0, 12).map((p) => [
+            p.name,
+            p.kind,
+            (p.reasons ?? []).map((r) => ATTENTION_REASON_LABELS[r] ?? r).join('; '),
+          ]),
+          [2.2, 0.7, 2.5],
+        );
+      }
+
+      sectionTitle('5. Quick Insight');
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(9);
+      quickInsights.forEach((q) => {
+        ensureSpace(16);
+        const lines = doc.splitTextToSize(`• ${q}`, contentW - 8);
+        doc.text(lines, margin + 4, y + 10);
+        y += lines.length * 12 + 4;
       });
-      y += 6;
-      line('4. Requiring Attention', 13, true);
-      if (attentionProjects.length === 0) line('Tidak ada project yang membutuhkan perhatian.');
-      attentionProjects.forEach((p) => {
-        line(`• [${p.kind}] ${p.name}: ${(p.reasons ?? []).map((r) => ATTENTION_REASON_LABELS[r] ?? r).join(', ')}`);
-      });
-      y += 6;
-      line('5. Quick Insight', 13, true);
-      quickInsights.forEach((q) => line(`• ${q}`));
+
+      // Footer
+      const pages = doc.getNumberOfPages();
+      for (let i = 1; i <= pages; i++) {
+        doc.setPage(i);
+        doc.setFontSize(8);
+        doc.setTextColor(120, 120, 120);
+        doc.text(`PermaTrax Executive Report · Halaman ${i}/${pages}`, margin, 820);
+      }
+
       doc.save(`executive-dashboard-${projectKind.toLowerCase()}-${Date.now()}.pdf`);
     } finally {
       setExporting(false);
