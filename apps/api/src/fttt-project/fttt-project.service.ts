@@ -508,7 +508,55 @@ export class FtttProjectService {
     // JLM: surface a maintenance reminder to Admins when the window is reached
     await this.maybeSendMaintenanceReminder(project);
 
+    // Integra V3: normalize legacy Bulky Parents that advanced past SITE_INITIATION
+    // into operational phases — rewind to monitoring mode so Child Sites stay accessible.
+    if (
+      project.hierarchyLevel === FtttHierarchyLevel.BULKY &&
+      project.currentPhase !== FtttPhase.INITIATION &&
+      project.currentPhase !== FtttPhase.SITE_INITIATION
+    ) {
+      return this.normalizeLegacyBulkyParent(project.id);
+    }
+
     return project;
+  }
+
+  /** Integra V3: rewind Bulky Parent stuck past Site Initiation back to monitoring mode */
+  private async normalizeLegacyBulkyParent(id: string) {
+    const operationalPhases: FtttPhase[] = [
+      FtttPhase.SURVEY,
+      FtttPhase.PREPARATION,
+      FtttPhase.PROCUREMENT,
+      FtttPhase.IMPLEMENTATION,
+      FtttPhase.DOCUMENTATION,
+      FtttPhase.RECONCILIATION,
+      FtttPhase.CLOSING,
+    ];
+    const now = new Date();
+    await this.prisma.$transaction(async (tx) => {
+      await tx.ftttProject.update({
+        where: { id },
+        data: { currentPhase: FtttPhase.SITE_INITIATION, status: FtttProjectStatus.ACTIVE },
+      });
+      await tx.ftttPhaseProgress.upsert({
+        where: { projectId_phase: { projectId: id, phase: FtttPhase.INITIATION } },
+        update: { status: FtttPhaseStatus.COMPLETED, completedAt: now },
+        create: { projectId: id, phase: FtttPhase.INITIATION, status: FtttPhaseStatus.COMPLETED, unlockedAt: now, completedAt: now },
+      });
+      await tx.ftttPhaseProgress.upsert({
+        where: { projectId_phase: { projectId: id, phase: FtttPhase.SITE_INITIATION } },
+        update: { status: FtttPhaseStatus.COMPLETED, completedAt: now },
+        create: { projectId: id, phase: FtttPhase.SITE_INITIATION, status: FtttPhaseStatus.COMPLETED, unlockedAt: now, completedAt: now },
+      });
+      for (const phase of operationalPhases) {
+        await tx.ftttPhaseProgress.upsert({
+          where: { projectId_phase: { projectId: id, phase } },
+          update: { status: FtttPhaseStatus.SKIPPED },
+          create: { projectId: id, phase, status: FtttPhaseStatus.SKIPPED },
+        });
+      }
+    });
+    return this.prisma.ftttProject.findUniqueOrThrow({ where: { id }, include: this.fullInclude() });
   }
 
   // ─── Phase gate check: can the current phase be completed? ───────────────
@@ -534,6 +582,20 @@ export class FtttProjectService {
 
     if (phase === FtttPhase.INITIATION) {
       // trigger doc is always uploaded at creation, so always ready
+    }
+
+    // Integra V3: Bulky Site Initiation requires ≥1 Child Site before completion
+    if (phase === FtttPhase.SITE_INITIATION && project.hierarchyLevel === FtttHierarchyLevel.BULKY) {
+      const siteCount = await this.prisma.ftttProject.count({
+        where: {
+          parentId: project.id,
+          hierarchyLevel: FtttHierarchyLevel.SITE,
+          status: { not: FtttProjectStatus.CANCELLED },
+        },
+      });
+      if (siteCount === 0) {
+        reasons.push('Minimal satu Site harus ditambahkan sebelum menyelesaikan Site Initiation');
+      }
     }
 
     if (phase === FtttPhase.SURVEY) {
@@ -842,7 +904,32 @@ export class FtttProjectService {
     const currentIdx = lifecycle.indexOf(project.currentPhase as FtttPhase);
     if (currentIdx === -1) throw new BadRequestException('Phase tidak valid');
 
-    const nextPhase = lifecycle[currentIdx + 1] ?? null;
+    // Integra V3: Parent (Bulky) stops after Site Initiation — operational lifecycle lives on Sites.
+    // Completing SITE_INITIATION marks Parent initiation done and skips remaining phases.
+    const isBulkyTerminal =
+      project.hierarchyLevel === FtttHierarchyLevel.BULKY &&
+      project.currentPhase === FtttPhase.SITE_INITIATION;
+
+    if (
+      project.hierarchyLevel === FtttHierarchyLevel.BULKY &&
+      project.currentPhase !== FtttPhase.INITIATION &&
+      project.currentPhase !== FtttPhase.SITE_INITIATION
+    ) {
+      throw new BadRequestException(
+        'Parent Project sudah melewati Initiation — lanjutkan lifecycle di masing-masing Child Site',
+      );
+    }
+
+    const nextPhase = isBulkyTerminal ? null : (lifecycle[currentIdx + 1] ?? null);
+    const operationalPhases: FtttPhase[] = [
+      FtttPhase.SURVEY,
+      FtttPhase.PREPARATION,
+      FtttPhase.PROCUREMENT,
+      FtttPhase.IMPLEMENTATION,
+      FtttPhase.DOCUMENTATION,
+      FtttPhase.RECONCILIATION,
+      FtttPhase.CLOSING,
+    ];
 
     await this.prisma.$transaction(async (tx) => {
       // Mark current phase complete
@@ -856,7 +943,18 @@ export class FtttProjectService {
         },
       });
 
-      if (nextPhase) {
+      if (isBulkyTerminal) {
+        // Skip all operational phases on Parent; keep currentPhase = SITE_INITIATION (completed)
+        for (const phase of operationalPhases) {
+          if (!lifecycle.includes(phase)) continue;
+          await tx.ftttPhaseProgress.upsert({
+            where: { projectId_phase: { projectId: id, phase } },
+            update: { status: FtttPhaseStatus.SKIPPED },
+            create: { projectId: id, phase, status: FtttPhaseStatus.SKIPPED },
+          });
+        }
+        // currentPhase stays SITE_INITIATION; project remains ACTIVE for Site monitoring
+      } else if (nextPhase) {
         // C7-PST4: upsert to handle old projects that may not have a phaseProgress row for new phases
         await tx.ftttPhaseProgress.upsert({
           where: { projectId_phase: { projectId: id, phase: nextPhase } },
@@ -909,10 +1007,37 @@ export class FtttProjectService {
     }
 
     // Integra V1: Notify PM when the Bulky Project enters Site Initiation — Sites can now be added
-    if (updated.currentPhase === FtttPhase.SITE_INITIATION && pmId) {
+    if (
+      project.currentPhase === FtttPhase.INITIATION &&
+      updated.currentPhase === FtttPhase.SITE_INITIATION &&
+      pmId
+    ) {
       await this.notifications.createForUser(pmId, {
         title:   'FTTT — Fase Site Initiation Dimulai',
         message: `Project ${pName} telah memasuki fase Site Initiation. Silakan tambahkan Site untuk melanjutkan.`,
+        type:    'FTTT_PHASE_CHANGE',
+        link:    `/fttt-projects/${id}`,
+        entityId: id,
+      });
+    }
+
+    // Integra V3: Parent Initiation complete — Sites continue operational lifecycle
+    if (
+      isBulkyTerminal &&
+      project.hierarchyLevel === FtttHierarchyLevel.BULKY
+    ) {
+      if (pmId) {
+        await this.notifications.createForUser(pmId, {
+          title:   'FTTT — Parent Initiation Selesai',
+          message: `Parent Project ${pName} selesai Site Initiation. Lanjutkan Validation & Survey pada masing-masing Child Site.`,
+          type:    'FTTT_PHASE_CHANGE',
+          link:    `/fttt-projects/${id}`,
+          entityId: id,
+        });
+      }
+      await this.notifications.notifyUsersByRole(Role.SURVEYOR_FTTT, {
+        title:   'FTTT — Child Sites Siap Survey',
+        message: `Sites di bawah ${pName} siap dikerjakan pada fase Validation & Survey.`,
         type:    'FTTT_PHASE_CHANGE',
         link:    `/fttt-projects/${id}`,
         entityId: id,

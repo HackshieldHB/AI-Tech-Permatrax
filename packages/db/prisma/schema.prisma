@@ -324,6 +324,8 @@ model User {
   budgetLedgerEntriesCreated BudgetLedger[]   @relation("BudgetLedgerCreator")
   budgetTransfersSubmitted   BudgetTransfer[] @relation("BudgetTransferSubmittedBy")
   budgetTransfersDecided     BudgetTransfer[] @relation("BudgetTransferDecidedBy")
+  financePoSubmitted         FinancePoChangeRequest[] @relation("FinancePoSubmittedBy")
+  financePoReviewed          FinancePoChangeRequest[] @relation("FinancePoReviewedBy")
 
   // Phase 3: procurement
   suppliersCreated            Supplier[]         @relation("SupplierCreatedBy")
@@ -2799,6 +2801,14 @@ enum FinanceHierarchyLevel {
   STANDALONE
 }
 
+// Integra V3: PO Customer change approval workflow (Finance submits → GM approves)
+enum FinancePoApprovalStatus {
+  NONE
+  PENDING
+  APPROVED
+  REJECTED
+}
+
 model FinanceProject {
   id          String  @id @default(cuid())
   code        String  @unique
@@ -2824,6 +2834,12 @@ model FinanceProject {
 
   materialSpent Decimal @default(0) @db.Decimal(18, 2)
   jasaSpent     Decimal @default(0) @db.Decimal(18, 2)
+
+  // Integra V3: P&L — Revenue (PO Customer). Estimated Cost = totalBudget (RAB).
+  // Actual Cost = disbursed FtttTransaction totals. Margin/Profit computed in API.
+  poCustomer          Decimal?                 @db.Decimal(18, 2)
+  poCustomerDocUrl    String?
+  poApprovalStatus    FinancePoApprovalStatus  @default(NONE)
 
   isOverbudget              Boolean @default(false)
   isDefaultUncategorized    Boolean @default(false)
@@ -2853,6 +2869,8 @@ model FinanceProject {
   // JLM: FTTT S-Curve baseline milestones (Finance-owned)
   ftttMilestones          FtttMilestone[]
   dailyActivities         DailyActivity[]
+  // Integra V3: PO Customer change requests (GM approval)
+  poChangeRequests        FinancePoChangeRequest[]
 
   @@index([status])
   @@index([isDefaultUncategorized])
@@ -2860,6 +2878,32 @@ model FinanceProject {
   @@index([projectType])
   @@index([hierarchyLevel])
   @@index([parentId])
+  @@index([poApprovalStatus])
+}
+
+/// Integra V3: Finance submits PO Customer create/edit → GM Approve/Reject
+model FinancePoChangeRequest {
+  id               String                  @id @default(cuid())
+  financeProjectId String
+  previousAmount   Decimal?                @db.Decimal(18, 2)
+  proposedAmount   Decimal                 @db.Decimal(18, 2)
+  docUrl           String?
+  reason           String?
+  status           FinancePoApprovalStatus @default(PENDING)
+  submittedById    String
+  reviewedById     String?
+  reviewedAt       DateTime?
+  reviewNote       String?
+  createdAt        DateTime                @default(now())
+  updatedAt        DateTime                @updatedAt
+
+  financeProject FinanceProject @relation(fields: [financeProjectId], references: [id], onDelete: Cascade)
+  submittedBy    User           @relation("FinancePoSubmittedBy", fields: [submittedById], references: [id])
+  reviewedBy     User?          @relation("FinancePoReviewedBy", fields: [reviewedById], references: [id])
+
+  @@index([financeProjectId])
+  @@index([status])
+  @@index([submittedById])
 }
 
 model FinanceProjectPlanning {

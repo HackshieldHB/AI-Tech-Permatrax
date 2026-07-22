@@ -292,6 +292,25 @@ export default function FinanceProjectsDashboardPage() {
                       </div>
                     </div>
                     <div className="grid grid-cols-2 gap-2 text-xs">
+                      {/* Integra V3: list P&L snapshot for Finance/GM */}
+                      {manage && (isFttt || isSegment) ? (
+                        <>
+                          <div className="rounded-lg p-2 bg-slate-50 col-span-2">
+                            <div className="text-slate-500">PO Customer · Actual · P/L</div>
+                            <div className="font-bold text-slate-800 flex flex-wrap gap-x-3 gap-y-0.5">
+                              <span>{formatRupiah(num(p.poCustomerAmount ?? p.poCustomer))}</span>
+                              <span className="text-slate-400">·</span>
+                              <span>{formatRupiah(p.actualCost ?? spentOverall(p))}</span>
+                              <span className="text-slate-400">·</span>
+                              <span style={{ color: (p.actualProfit ?? 0) >= 0 ? '#1a7f37' : '#cf222e' }}>
+                                {p.actualProfit == null && p.poCustomerAmount == null && p.poCustomer == null
+                                  ? '—'
+                                  : formatRupiah(p.actualProfit ?? (num(p.poCustomerAmount ?? p.poCustomer) - (p.actualCost ?? spentOverall(p))))}
+                              </span>
+                            </div>
+                          </div>
+                        </>
+                      ) : null}
                       {/* Integra V2: Segment cards show BUDGET summary (sum of Sites) instead of realisasi/spent */}
                       {isFttt ? (
                         <div

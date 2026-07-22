@@ -12,12 +12,14 @@ import {
   CreateFinanceSiteDto,
   FinanceProjectFilterDto,
   LedgerFilterDto,
+  ReviewPoCustomerDto,
   SetTimelineDto,
+  SubmitPoCustomerDto,
   UpdateBudgetDto,
   UpdateFinanceProjectDto,
   UpdatePlanningDto,
 } from './finance-project.dto';
-
+import { Role } from '@prisma/client';
 const upload = { storage: memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } };
 
 @ApiTags('Finance Projects')
@@ -37,6 +39,13 @@ export class FinanceProjectController {
       throw new BadRequestException(parsed.error.issues);
     }
     return this.financeProjectService.findAll(parsed.data);
+  }
+
+  @Get('po-approvals/pending')
+  @Roles(Role.GENERAL_MANAGER, Role.FINANCE)
+  @ApiOperation({ summary: 'Integra V3: daftar pengajuan PO Customer menunggu GM' })
+  async listPendingPoApprovals() {
+    return this.financeProjectService.listPendingPoApprovals();
   }
 
   @Post()
@@ -189,5 +198,53 @@ export class FinanceProjectController {
       this.financeProjectService.getActualByMonth(id),
     ]);
     return { planning, actual };
+  }
+
+  @Get(':id/po-history')
+  @Roles(...PERMISSIONS.FINANCE_PROJECT_MANAGE)
+  @ApiOperation({ summary: 'Integra V3: riwayat pengajuan PO Customer' })
+  async poHistory(@Param('id') id: string) {
+    return this.financeProjectService.listPoChangeRequests(id);
+  }
+
+  @Post(':id/po-customer')
+  @Roles(...PERMISSIONS.FINANCE_PROJECT_MANAGE)
+  @UseInterceptors(FileInterceptor('file', upload))
+  @ApiOperation({ summary: 'Integra V3: ajukan PO Customer (Finance → GM approval)' })
+  async submitPoCustomer(
+    @Param('id') id: string,
+    @Body() body: unknown,
+    @UploadedFile() file: Express.Multer.File | undefined,
+    @Req() req: Express.Request & { user: { userId: string; role: Role } },
+  ) {
+    const parsed = SubmitPoCustomerDto.safeParse(body);
+    if (!parsed.success) throw new BadRequestException(parsed.error.issues);
+    return this.financeProjectService.submitPoCustomer(
+      id,
+      parsed.data,
+      file,
+      req.user.userId,
+      req.user.role,
+    );
+  }
+
+  @Post(':id/po-customer/:requestId/review')
+  @Roles(Role.GENERAL_MANAGER)
+  @ApiOperation({ summary: 'Integra V3: GM Approve/Reject PO Customer' })
+  async reviewPoCustomer(
+    @Param('id') id: string,
+    @Param('requestId') requestId: string,
+    @Body() body: unknown,
+    @Req() req: Express.Request & { user: { userId: string; role: Role } },
+  ) {
+    const parsed = ReviewPoCustomerDto.safeParse(body);
+    if (!parsed.success) throw new BadRequestException(parsed.error.issues);
+    return this.financeProjectService.reviewPoCustomer(
+      id,
+      requestId,
+      parsed.data,
+      req.user.userId,
+      req.user.role,
+    );
   }
 }

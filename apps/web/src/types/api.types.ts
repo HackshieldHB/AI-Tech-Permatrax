@@ -662,6 +662,15 @@ export interface FinanceProjectListItem {
   totalRemaining?: number;
   perizinanSpent?: number;
   lainLainSpent?: number;
+  // Integra V3: P&L
+  poCustomer?: string | number | null;
+  poCustomerDocUrl?: string | null;
+  poApprovalStatus?: 'NONE' | 'PENDING' | 'APPROVED' | 'REJECTED';
+  poCustomerAmount?: number | null;
+  totalRab?: number;
+  actualCost?: number;
+  estimatedMargin?: number | null;
+  actualProfit?: number | null;
 }
 
 export type BudgetLedgerEntryType =

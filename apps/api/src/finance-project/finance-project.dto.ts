@@ -89,6 +89,19 @@ export const SetTimelineDto = z.object({
 });
 export type SetTimelineInput = z.infer<typeof SetTimelineDto>;
 
+// Integra V3: Finance submits PO Customer for GM approval
+export const SubmitPoCustomerDto = z.object({
+  amount: z.coerce.number().positive(),
+  reason: z.string().max(500).optional(),
+});
+export type SubmitPoCustomerInput = z.infer<typeof SubmitPoCustomerDto>;
+
+export const ReviewPoCustomerDto = z.object({
+  decision: z.enum(['APPROVE', 'REJECT']),
+  reviewNote: z.string().max(500).optional(),
+});
+export type ReviewPoCustomerInput = z.infer<typeof ReviewPoCustomerDto>;
+
 export const FinanceProjectFilterDto = PaginationQuerySchema.merge(
   z.object({
     search: z.string().optional(),

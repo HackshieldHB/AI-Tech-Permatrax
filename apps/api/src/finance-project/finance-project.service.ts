@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -8,9 +9,11 @@ import {
   BudgetLedger,
   BudgetLedgerEntryType,
   BudgetTransferStatus,
+  FinancePoApprovalStatus,
   FinanceProject,
   FinanceProjectStatus,
   Prisma,
+  Role,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { BudgetLedgerService } from '../budget-ledger/budget-ledger.service';
@@ -20,13 +23,16 @@ import {
   CreateFinanceSiteInput,
   FinanceProjectFilterInput,
   LedgerFilterInput,
+  ReviewPoCustomerInput,
+  SubmitPoCustomerInput,
   UpdateBudgetInput,
   UpdateFinanceProjectInput,
   UpdatePlanningInput,
   SetTimelineDto,
   SetTimelineInput,
 } from './finance-project.dto';
-
+import { StorageService } from '../storage/storage.service';
+import { NotificationsService } from '../notifications/notifications.service';
 
 export type FinanceProjectListItem = FinanceProject & {
   materialRemaining: number;
@@ -40,6 +46,12 @@ export type FinanceProjectListItem = FinanceProject & {
   childCount?: number;
   /** When Segment aggregates include Sites, totalBudget may be a number sum */
   aggregatedTotalBudget?: number;
+  // Integra V3: P&L fields
+  totalRab?: number;
+  actualCost?: number;
+  estimatedMargin?: number | null;
+  actualProfit?: number | null;
+  poCustomerAmount?: number | null;
 };
 
 // Realisasi per kategori dari FtttTransaction, keyed by financeProjectId
@@ -65,6 +77,8 @@ export class FinanceProjectService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly ledgerService: BudgetLedgerService,
+    private readonly storage: StorageService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   async create(dto: CreateFinanceProjectInput, actorId: string): Promise<FinanceProject> {
@@ -422,6 +436,7 @@ export class FinanceProjectService {
             select: {
               id: true, parentId: true, totalBudget: true,
               budgetPerizinan: true, materialBudget: true, jasaBudget: true,
+              poCustomer: true,
             },
           })
         : [];
@@ -431,12 +446,14 @@ export class FinanceProjectService {
     const childPerizinanByParent = new Map<string, number>();
     const childMaterialByParent = new Map<string, number>();
     const childJasaByParent = new Map<string, number>();
+    const childPoByParent = new Map<string, number>();
     for (const c of childBudgetRows) {
       if (!c.parentId) continue;
       childBudgetByParent.set(c.parentId, (childBudgetByParent.get(c.parentId) ?? 0) + Number(c.totalBudget));
       childPerizinanByParent.set(c.parentId, (childPerizinanByParent.get(c.parentId) ?? 0) + Number(c.budgetPerizinan ?? 0));
       childMaterialByParent.set(c.parentId, (childMaterialByParent.get(c.parentId) ?? 0) + Number(c.materialBudget ?? 0));
       childJasaByParent.set(c.parentId, (childJasaByParent.get(c.parentId) ?? 0) + Number(c.jasaBudget ?? 0));
+      childPoByParent.set(c.parentId, (childPoByParent.get(c.parentId) ?? 0) + Number(c.poCustomer ?? 0));
     }
 
     const data: FinanceProjectListItem[] = rows.map((p) => {
@@ -455,6 +472,7 @@ export class FinanceProjectService {
       const totalSpent = lain + childSpent;
       const sitesBudget = childBudgetByParent.get(p.id) ?? 0;
       const totalBudgetNum = Number(p.totalBudget) + sitesBudget;
+      const poSum = childPoByParent.get(p.id) ?? 0;
       return {
         ...item,
         childCount,
@@ -467,6 +485,13 @@ export class FinanceProjectService {
         budgetPerizinan: new Prisma.Decimal(childPerizinanByParent.get(p.id) ?? 0),
         materialBudget: new Prisma.Decimal(childMaterialByParent.get(p.id) ?? 0),
         jasaBudget: new Prisma.Decimal(childJasaByParent.get(p.id) ?? 0),
+        // Integra V3: Segment P&L rollup from Sites
+        poCustomer: poSum > 0 ? new Prisma.Decimal(poSum) : p.poCustomer,
+        poCustomerAmount: poSum > 0 ? poSum : (p.poCustomer != null ? Number(p.poCustomer) : null),
+        totalRab: totalBudgetNum,
+        actualCost: totalSpent,
+        estimatedMargin: poSum > 0 ? poSum - totalBudgetNum : null,
+        actualProfit: poSum > 0 ? poSum - totalSpent : null,
       };
     });
 
@@ -762,6 +787,8 @@ export class FinanceProjectService {
   private hydrateListItem(p: FinanceProject, ftttSpent?: FtttSpentMap): FinanceProjectListItem {
     const materialRemaining = this.ledgerService.getMaterialRemaining(p).toNumber();
     const jasaRemaining = this.ledgerService.getJasaRemaining(p).toNumber();
+    const po = p.poCustomer != null ? Number(p.poCustomer) : null;
+    const totalRab = Number(p.totalBudget);
 
     if ((p as { projectType?: string }).projectType === 'FTTT' && ftttSpent) {
       const s = ftttSpent.get(p.id) ?? { perizinan: 0, material: 0, jasa: 0, lainLain: 0 };
@@ -778,6 +805,11 @@ export class FinanceProjectService {
         totalRemaining: totalBudget - totalSpent,
         materialRemaining: Number(p.materialBudget ?? 0) - s.material,
         jasaRemaining: Number(p.jasaBudget ?? 0) - s.jasa,
+        poCustomerAmount: po,
+        totalRab,
+        actualCost: totalSpent,
+        estimatedMargin: po != null ? po - totalRab : null,
+        actualProfit: po != null ? po - totalSpent : null,
       };
     }
 
@@ -790,7 +822,155 @@ export class FinanceProjectService {
       totalRemaining: materialRemaining + jasaRemaining,
       perizinanSpent: 0,
       lainLainSpent: 0,
+      poCustomerAmount: po,
+      totalRab,
+      actualCost: totalSpent,
+      estimatedMargin: po != null ? po - totalRab : null,
+      actualProfit: po != null ? po - totalSpent : null,
     };
+  }
+
+  // ─── Integra V3: PO Customer + GM approval ─────────────────────────────────
+
+  async submitPoCustomer(
+    id: string,
+    dto: SubmitPoCustomerInput,
+    file: Express.Multer.File | undefined,
+    actorId: string,
+    actorRole: Role,
+  ) {
+    if (actorRole !== Role.FINANCE && actorRole !== Role.GENERAL_MANAGER) {
+      throw new ForbiddenException('Hanya Finance yang dapat mengajukan PO Customer');
+    }
+    const project = await this.prisma.financeProject.findUnique({ where: { id } });
+    if (!project) throw new NotFoundException('Finance project tidak ditemukan');
+    if (project.hierarchyLevel === 'SEGMENT') {
+      throw new BadRequestException('PO Customer diinput pada level Site, bukan Segment');
+    }
+    if (project.poApprovalStatus === FinancePoApprovalStatus.PENDING) {
+      throw new BadRequestException('Masih ada pengajuan PO yang menunggu approval GM');
+    }
+
+    let docUrl: string | null = null;
+    if (file) {
+      const saved = await this.storage.uploadMulterFile(file, 'finance-po', id);
+      docUrl = saved;
+    } else if (!project.poCustomer && !project.poCustomerDocUrl) {
+      throw new BadRequestException('Dokumen PO Customer wajib diunggah untuk pengajuan pertama');
+    }
+
+    const previousAmount = project.poCustomer != null ? Number(project.poCustomer) : null;
+    const req = await this.prisma.$transaction(async (tx) => {
+      const change = await tx.financePoChangeRequest.create({
+        data: {
+          financeProjectId: id,
+          previousAmount: previousAmount != null ? previousAmount : null,
+          proposedAmount: dto.amount,
+          docUrl: docUrl ?? project.poCustomerDocUrl,
+          reason: dto.reason ?? null,
+          status: FinancePoApprovalStatus.PENDING,
+          submittedById: actorId,
+        },
+      });
+      await tx.financeProject.update({
+        where: { id },
+        data: {
+          poApprovalStatus: FinancePoApprovalStatus.PENDING,
+          updatedById: actorId,
+          ...(docUrl ? { poCustomerDocUrl: docUrl } : {}),
+        },
+      });
+      return change;
+    });
+
+    await this.notifications.notifyUsersByRole(Role.GENERAL_MANAGER, {
+      title: 'Finance — Pengajuan PO Customer',
+      message: `${project.code} · ${project.name}: PO ${previousAmount != null ? 'edit' : 'baru'} Rp ${Math.round(dto.amount).toLocaleString('id-ID')} menunggu approval.`,
+      type: 'FINANCE_PO_APPROVAL',
+      link: `/finance-projects/${id}`,
+      entityId: req.id,
+    });
+
+    return this.findOne(id);
+  }
+
+  async reviewPoCustomer(
+    id: string,
+    requestId: string,
+    dto: ReviewPoCustomerInput,
+    actorId: string,
+    actorRole: Role,
+  ) {
+    if (actorRole !== Role.GENERAL_MANAGER) {
+      throw new ForbiddenException('Hanya General Manager yang dapat Approve/Reject PO Customer');
+    }
+    const change = await this.prisma.financePoChangeRequest.findFirst({
+      where: { id: requestId, financeProjectId: id },
+      include: { financeProject: true },
+    });
+    if (!change) throw new NotFoundException('Pengajuan PO tidak ditemukan');
+    if (change.status !== FinancePoApprovalStatus.PENDING) {
+      throw new BadRequestException('Pengajuan PO sudah diproses');
+    }
+
+    const approved = dto.decision === 'APPROVE';
+    await this.prisma.$transaction(async (tx) => {
+      await tx.financePoChangeRequest.update({
+        where: { id: requestId },
+        data: {
+          status: approved ? FinancePoApprovalStatus.APPROVED : FinancePoApprovalStatus.REJECTED,
+          reviewedById: actorId,
+          reviewedAt: new Date(),
+          reviewNote: dto.reviewNote ?? null,
+        },
+      });
+      await tx.financeProject.update({
+        where: { id },
+        data: {
+          poApprovalStatus: approved ? FinancePoApprovalStatus.APPROVED : FinancePoApprovalStatus.REJECTED,
+          ...(approved
+            ? {
+                poCustomer: change.proposedAmount,
+                ...(change.docUrl ? { poCustomerDocUrl: change.docUrl } : {}),
+              }
+            : {}),
+          updatedById: actorId,
+        },
+      });
+    });
+
+    await this.notifications.notifyUsersByRole(Role.FINANCE, {
+      title: approved ? 'PO Customer Disetujui' : 'PO Customer Ditolak',
+      message: `${change.financeProject.code}: pengajuan PO Rp ${Math.round(Number(change.proposedAmount)).toLocaleString('id-ID')} ${approved ? 'disetujui' : 'ditolak'} GM.`,
+      type: 'FINANCE_PO_REVIEWED',
+      link: `/finance-projects/${id}`,
+      entityId: requestId,
+    });
+
+    return this.findOne(id);
+  }
+
+  async listPoChangeRequests(id: string) {
+    await this.ensureProjectExists(id);
+    return this.prisma.financePoChangeRequest.findMany({
+      where: { financeProjectId: id },
+      include: {
+        submittedBy: { select: { id: true, name: true } },
+        reviewedBy: { select: { id: true, name: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  async listPendingPoApprovals() {
+    return this.prisma.financePoChangeRequest.findMany({
+      where: { status: FinancePoApprovalStatus.PENDING },
+      include: {
+        financeProject: { select: { id: true, code: true, name: true, hierarchyLevel: true } },
+        submittedBy: { select: { id: true, name: true } },
+      },
+      orderBy: { createdAt: 'asc' },
+    });
   }
 
   private async ensureProjectExists(id: string): Promise<void> {

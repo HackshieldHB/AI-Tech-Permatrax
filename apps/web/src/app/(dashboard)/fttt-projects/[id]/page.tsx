@@ -69,19 +69,32 @@ function PhaseIcon({ status }: { status: FtttPhaseStatus }) {
 
 // ─── Live Progress Bar ────────────────────────────────────────────────────────
 function LiveProgressBar({ project }: { project: FtttProject }) {
-  // Integra V2: Bulky projects aggregate progress from their Sites' own phase completion
+  // Integra V3: Bulky Parent progress = Initiation + Site Initiation only.
+  // Site children still use full operational lifecycle; optional aggregate label when Sites exist.
   const isBulky = project.hierarchyLevel === 'BULKY';
   const children = project.children ?? [];
+  const stepperPhases = isBulky ? BULKY_PHASES : PHASE_ORDER.filter((phase) => {
+    const progress = project.phaseProgresses.find((p) => p.phase === phase);
+    return progress && progress.status !== 'SKIPPED';
+  });
+
   let pct: number;
   let overallLabel = 'Overall Progress';
-  if (isBulky && children.length > 0) {
-    const childPcts = children.map((c) => {
-      const cp = (c.phaseProgresses ?? []).filter((p) => p.status !== 'SKIPPED');
-      const cCompleted = cp.filter((p) => p.status === 'COMPLETED').length;
-      return cp.length > 0 ? (cCompleted / cp.length) * 100 : 0;
-    });
-    pct = childPcts.length > 0 ? Math.round(childPcts.reduce((s, v) => s + v, 0) / childPcts.length) : 0;
-    overallLabel = 'Overall Progress (agregasi Site)';
+  if (isBulky) {
+    const bulkyProg = project.phaseProgresses.filter((p) => BULKY_PHASES.includes(p.phase));
+    const completed = bulkyProg.filter((p) => p.status === 'COMPLETED').length;
+    pct = bulkyProg.length > 0 ? Math.round((completed / bulkyProg.length) * 100) : 0;
+    if (children.length > 0) {
+      const childPcts = children.map((c) => {
+        const cp = (c.phaseProgresses ?? []).filter((p) => p.status !== 'SKIPPED');
+        const cCompleted = cp.filter((p) => p.status === 'COMPLETED').length;
+        return cp.length > 0 ? (cCompleted / cp.length) * 100 : 0;
+      });
+      const sitesPct = Math.round(childPcts.reduce((s, v) => s + v, 0) / childPcts.length);
+      overallLabel = `Parent Initiation · Sites ${sitesPct}%`;
+    } else {
+      overallLabel = 'Parent Progress (Initiation)';
+    }
   } else {
     const visible = project.phaseProgresses.filter((p) => p.status !== 'SKIPPED');
     const completed = visible.filter((p) => p.status === 'COMPLETED').length;
@@ -106,12 +119,12 @@ function LiveProgressBar({ project }: { project: FtttProject }) {
           }}
         />
       </div>
-      {/* Phase stepper */}
+      {/* Phase stepper — Bulky: Initiation + Site Initiation only (Integra V3) */}
       <div style={{ display: 'flex', alignItems: 'center', overflowX: 'auto', gap: 0, paddingBottom: 4 }}>
-        {PHASE_ORDER.map((phase, idx) => {
+        {(isBulky ? BULKY_PHASES : stepperPhases).map((phase, idx, arr) => {
           const progress = project.phaseProgresses.find((p) => p.phase === phase);
           if (!progress) return null;
-          const isLast = idx === PHASE_ORDER.length - 1;
+          const isLast = idx === arr.length - 1;
           return (
             <React.Fragment key={phase}>
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: 72, gap: 4 }}>
@@ -125,7 +138,7 @@ function LiveProgressBar({ project }: { project: FtttProject }) {
                     lineHeight: 1.2,
                   }}
                 >
-                  {FTTT_PHASE_LABELS[phase].split(' ')[0]}
+                  {FTTT_PHASE_LABELS[phase]}
                 </span>
               </div>
               {!isLast && (
@@ -458,10 +471,10 @@ function SurveySection({ project, onRefresh, continueMode = false }: { project: 
               </select>
             )}
 
-            {/* File format hint */}
+            {/* File format hint — Integra V3: KMZ accepted on Validation & Survey */}
             <span style={{ fontSize: 11, color: '#8c959f', alignSelf: 'center' }}>
-              {fileType === 'supporting_file' && 'Format: PDF, Word, Excel'}
-              {fileType === 'survey_evidence'  && 'Format: PDF, PNG, JPG, Word, Excel'}
+              {fileType === 'supporting_file' && 'Format: PDF, Word, Excel, KMZ'}
+              {fileType === 'survey_evidence'  && 'Format: PDF, PNG, JPG, Word, Excel, KMZ'}
               {fileType === 'operational_notes' && 'Input teks — tidak perlu file'}
             </span>
           </div>
@@ -556,9 +569,20 @@ function SurveySection({ project, onRefresh, continueMode = false }: { project: 
 }
 
 // ─── Site Initiation section (Integra V1: Bulky project → child Sites) ───────
-function SiteInitiationSection({ project, onRefresh, userRole }: { project: FtttProject; onRefresh: () => void; userRole: string }) {
+function SiteInitiationSection({
+  project,
+  onRefresh,
+  userRole,
+  monitoringOnly = false,
+}: {
+  project: FtttProject;
+  onRefresh: () => void;
+  userRole: string;
+  /** Integra V3: after Site Initiation done, Parent is monitoring + child list only */
+  monitoringOnly?: boolean;
+}) {
   const { user } = useAuthStore();
-  const canManage = userRole === 'ADMIN' || userRole === 'GENERAL_MANAGER' || userRole === 'PM_FTTT';
+  const canManage = !monitoringOnly && (userRole === 'ADMIN' || userRole === 'GENERAL_MANAGER' || userRole === 'PM_FTTT');
   const [sites, setSites] = useState<FtttSiteSummary[]>([]);
   const [available, setAvailable] = useState<FinanceSiteOption[]>([]);
   const [loading, setLoading] = useState(true);
@@ -571,13 +595,15 @@ function SiteInitiationSection({ project, onRefresh, userRole }: { project: Fttt
     try {
       const [sitesRes, availRes] = await Promise.all([
         apiFetch(`/fttt-projects/${project.id}/sites`, { method: 'GET' }, user?.id),
-        apiFetch(`/fttt-projects/${project.id}/available-finance-sites`, { method: 'GET' }, user?.id),
+        canManage
+          ? apiFetch(`/fttt-projects/${project.id}/available-finance-sites`, { method: 'GET' }, user?.id)
+          : Promise.resolve(null),
       ]);
       setSites(sitesRes.ok ? await sitesRes.json() : []);
-      setAvailable(availRes.ok ? await availRes.json() : []);
+      setAvailable(availRes && availRes.ok ? await availRes.json() : []);
     } catch { /* ignore */ }
     finally { setLoading(false); }
-  }, [project.id, user?.id]);
+  }, [project.id, user?.id, canManage]);
   useEffect(() => { void load(); }, [load]);
 
   const fmtIDR = (n: number) => 'Rp ' + Math.round(n).toLocaleString('id-ID');
@@ -612,9 +638,13 @@ function SiteInitiationSection({ project, onRefresh, userRole }: { project: Fttt
 
   return (
     <div>
-      <p style={{ fontWeight: 600, fontSize: 14, marginBottom: 4 }}>📍 Site Initiation</p>
+      <p style={{ fontWeight: 600, fontSize: 14, marginBottom: 4 }}>
+        {monitoringOnly ? '📍 Daftar Child Project (Site)' : '📍 Site Initiation'}
+      </p>
       <p style={{ fontSize: 12, color: '#57606a', marginBottom: 12 }}>
-        Project ini bersifat Bulky (gabungan beberapa Site). Tambahkan Site yang akan dikerjakan — setiap Site terhubung ke Finance Site (Segment) masing-masing.
+        {monitoringOnly
+          ? 'Parent Project berfungsi sebagai monitoring. Buka masing-masing Site untuk lifecycle operasional (Survey → Closing).'
+          : 'Project ini bersifat Bulky (gabungan beberapa Site). Tambahkan Site yang akan dikerjakan — setiap Site terhubung ke Finance Site (Segment) masing-masing.'}
       </p>
 
       {canManage && (
@@ -3501,9 +3531,29 @@ export default function FtttProjectDetailPage() {
   const userRole = user?.role ?? '';
   // v2: Surveyor FTTT only sees Validation & Survey activities (parallel survey OK)
   const isSurveyorFttt = userRole === 'SURVEYOR_FTTT';
-  // Integra V2: Bulky Project only manages Initiation lifecycle — operational
+  // Integra V2/V3: Bulky Project only manages Initiation lifecycle — operational
   // phase actions (Survey, Implementation, etc.) belong to its Sites
   const isBulky = project.hierarchyLevel === 'BULKY';
+  const bulkySiteInitProg = project.phaseProgresses.find((p) => p.phase === 'SITE_INITIATION');
+  const bulkyInitiationDone =
+    isBulky &&
+    (bulkySiteInitProg?.status === 'COMPLETED' ||
+      !BULKY_PHASES.includes(project.currentPhase));
+  const canShowAdvance =
+    !isCompletedOrCancelled &&
+    !isSurveyorFttt &&
+    readiness &&
+    !(isBulky && bulkyInitiationDone) &&
+    (() => {
+      // C5: Implementation — Admin only
+      if (project.currentPhase === 'IMPLEMENTATION' && userRole !== 'ADMIN' && userRole !== 'GENERAL_MANAGER') return false;
+      // C6-TI2: Documentation & Reconciliation — PM FTTT + Admin only
+      if ((project.currentPhase === 'DOCUMENTATION' || project.currentPhase === 'RECONCILIATION') &&
+          userRole === 'SURVEYOR_FTTT') return false;
+      // JLM: Project Closing — Admin only (after maintenance confirmation)
+      if (project.currentPhase === 'CLOSING' && userRole !== 'ADMIN' && userRole !== 'GENERAL_MANAGER') return false;
+      return true;
+    })();
 
   return (
     <div style={{ padding: 24, maxWidth: 800, margin: '0 auto' }}>
@@ -3526,6 +3576,11 @@ export default function FtttProjectDetailPage() {
               <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 999, background: '#DDF4FF', color: '#0969DA' }}>
                 {FTTT_COMPANY_LABELS[project.ftttCompany]}
               </span>
+              {isBulky && (
+                <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 999, background: '#F0F8FF', color: '#0550AE' }}>
+                  Parent / Bulky
+                </span>
+              )}
               <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 999, background: sc.bg, color: sc.text }}>
                 {statusCfg.label}
               </span>
@@ -3559,17 +3614,8 @@ export default function FtttProjectDetailPage() {
               )}
             </p>
           </div>
-          {/* Hide "Selesaikan Fase" in specific role-gated scenarios; Surveyor never advances phases */}
-          {!isCompletedOrCancelled && !isSurveyorFttt && readiness && (() => {
-            // C5: Implementation — Admin only
-            if (project.currentPhase === 'IMPLEMENTATION' && userRole !== 'ADMIN' && userRole !== 'GENERAL_MANAGER') return false;
-            // C6-TI2: Documentation & Reconciliation — PM FTTT + Admin only
-            if ((project.currentPhase === 'DOCUMENTATION' || project.currentPhase === 'RECONCILIATION') &&
-                userRole === 'SURVEYOR_FTTT') return false;
-            // JLM: Project Closing — Admin only (after maintenance confirmation)
-            if (project.currentPhase === 'CLOSING' && userRole !== 'ADMIN' && userRole !== 'GENERAL_MANAGER') return false;
-            return true;
-          })() && (
+          {/* Integra V3: hide Selesaikan Fase on Parent after Initiation + Site Initiation */}
+          {canShowAdvance && (
             <button
               onClick={handleAdvance}
               disabled={advancing || !readiness.ready}
@@ -3584,8 +3630,13 @@ export default function FtttProjectDetailPage() {
               {advancing ? 'Memproses…' : `Selesaikan Fase → ${FTTT_PHASE_LABELS[project.currentPhase]}`}
             </button>
           )}
+          {isBulky && bulkyInitiationDone && !isSurveyorFttt && (
+            <div style={{ padding: '8px 14px', borderRadius: 8, background: '#DAFBE1', border: '1px solid #1a7f37', fontSize: 12, color: '#1a7f37' }}>
+              Parent Initiation selesai — lanjutkan lifecycle operasional di masing-masing Child Site.
+            </div>
+          )}
           {/* Role-gated info messages */}
-          {!isCompletedOrCancelled && !isSurveyorFttt && project.currentPhase === 'IMPLEMENTATION' &&
+          {!isCompletedOrCancelled && !isSurveyorFttt && !isBulky && project.currentPhase === 'IMPLEMENTATION' &&
             userRole !== 'ADMIN' && userRole !== 'GENERAL_MANAGER' && (
             <div style={{ padding: '8px 14px', borderRadius: 8, background: '#F6F8FA', border: '1px solid #D0D7DE', fontSize: 12, color: '#57606a' }}>
               🔒 Penyelesaian fase Implementation hanya dapat dilakukan oleh Admin
@@ -3599,7 +3650,7 @@ export default function FtttProjectDetailPage() {
         </div>
 
         {/* Blocked reasons — not relevant for Surveyor (they don't advance phases) */}
-        {!isSurveyorFttt && readiness && !readiness.ready && readiness.blockedReasons.length > 0 && (
+        {!isSurveyorFttt && !bulkyInitiationDone && readiness && !readiness.ready && readiness.blockedReasons.length > 0 && (
           <div style={{ marginTop: 12, padding: 10, background: '#FFF8C5', borderRadius: 8, border: '1px solid #d4a017' }}>
             <p style={{ margin: 0, fontSize: 12, fontWeight: 600, color: '#9a6700' }}>Fase belum bisa diselesaikan:</p>
             <ul style={{ margin: '4px 0 0', paddingLeft: 16 }}>
@@ -3614,14 +3665,14 @@ export default function FtttProjectDetailPage() {
       {/* Live progress bar */}
       <LiveProgressBar project={project} />
 
-      {/* Phase timeline — Surveyor sees compact survey-focused status only */}
+      {/* Phase timeline — Integra V3: hidden on Parent Bulky; Surveyor sees compact survey status on Sites */}
+      {!isBulky && (
       <div style={{ background: '#fff', border: '1px solid #D0D7DE', borderRadius: 12, padding: 20, marginBottom: 16 }}>
         <p style={{ margin: '0 0 12px', fontWeight: 600, fontSize: 14 }}>
           {isSurveyorFttt ? 'Status Validation & Survey' : 'Timeline Fase'}
         </p>
         {(() => {
-          // Integra V2: Bulky projects only show Initiation lifecycle; Sites show operational phases
-          const scopedPhases = project.hierarchyLevel === 'BULKY' ? BULKY_PHASES : SITE_OPERATIONAL_PHASES;
+          const scopedPhases = SITE_OPERATIONAL_PHASES;
           return isSurveyorFttt ? scopedPhases.filter((p) => p === 'SURVEY') : scopedPhases;
         })().map((phase) => {
           const prog = project.phaseProgresses.find((p) => p.phase === phase);
@@ -3662,22 +3713,35 @@ export default function FtttProjectDetailPage() {
           </p>
         )}
       </div>
+      )}
 
       {/* Current phase actions */}
       {!isCompletedOrCancelled && (
         <div style={{ background: '#fff', border: '1px solid #D0D7DE', borderRadius: 12, padding: 20 }}>
           <p style={{ margin: '0 0 16px', fontWeight: 600, fontSize: 14 }}>
-            {isSurveyorFttt
-              ? 'Aktivitas Validation & Survey'
-              : `Aktivitas Fase: ${FTTT_PHASE_LABELS[project.currentPhase]}`}
+            {isBulky
+              ? (bulkyInitiationDone ? 'Monitoring Parent Project' : `Aktivitas Fase: ${FTTT_PHASE_LABELS[project.currentPhase]}`)
+              : isSurveyorFttt
+                ? 'Aktivitas Validation & Survey'
+                : `Aktivitas Fase: ${FTTT_PHASE_LABELS[project.currentPhase]}`}
           </p>
 
-          {/* Integra V1: Site Initiation — Bulky project manages its child Sites.
-              Only shown while the Bulky is actually on the Site Initiation phase. */}
-          {isBulky && project.currentPhase === 'SITE_INITIATION' && (
-            <div style={{ marginBottom: 20, paddingBottom: 20, borderBottom: '1px solid #EAEEF2' }}>
-              <SiteInitiationSection project={project} onRefresh={load} userRole={user?.role ?? ''} />
+          {/* Integra V3: always show Child Site list on Bulky (fix: children disappeared after leaving SITE_INITIATION) */}
+          {isBulky && (project.currentPhase === 'SITE_INITIATION' || bulkyInitiationDone || (project.children?.length ?? 0) > 0) && (
+            <div style={{ marginBottom: 20 }}>
+              <SiteInitiationSection
+                project={project}
+                onRefresh={load}
+                userRole={user?.role ?? ''}
+                monitoringOnly={bulkyInitiationDone}
+              />
             </div>
+          )}
+
+          {isBulky && project.currentPhase === 'INITIATION' && !bulkyInitiationDone && (
+            <p style={{ fontSize: 13, color: '#57606a' }}>
+              Validasi dokumen triggering, lalu klik &quot;Selesaikan Fase&quot; untuk masuk ke Site Initiation.
+            </p>
           )}
 
           {/* Survey — for Surveyor always (parallel); for others only on SURVEY / unfinished sites.
@@ -3764,14 +3828,6 @@ export default function FtttProjectDetailPage() {
                 </div>
               )}
             </>
-          )}
-
-          {/* Bulky Project — Initiation content for phases without a dedicated Site
-              Initiation action above (e.g. Project Initiation itself) */}
-          {isBulky && project.currentPhase !== 'SITE_INITIATION' && (
-            <p style={{ fontSize: 13, color: '#57606a' }}>
-              Koordinasikan kegiatan di fase ini. Klik tombol &quot;Selesaikan Fase&quot; di atas setelah semua aktivitas selesai.
-            </p>
           )}
         </div>
       )}

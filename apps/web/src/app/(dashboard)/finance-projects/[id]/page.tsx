@@ -25,6 +25,7 @@ import { num } from '../_lib/num';
 import { ForecastPanel } from './ForecastPanel';
 import { SCurveChart } from './SCurveChart';
 import { FtttFinanceMonitor } from './FtttFinanceMonitor';
+import { FinancialPerformance } from './FinancialPerformance';
 import { canManageFinance } from '../../../../lib/finance-roles';
 
 const PIE_COLORS = ['#10B981', '#6366F1', '#94A3B8'];
@@ -627,6 +628,16 @@ export default function FinanceProjectDetailPage() {
           </button>
         ))}
       </div>
+
+      {/* Integra V3: P&L — Finance + GM only */}
+      {canManageFinance(user?.role) && tab === 'overview' ? (
+        <FinancialPerformance
+          detail={detail}
+          canEdit={user?.role === 'FINANCE'}
+          isGm={user?.role === 'GENERAL_MANAGER'}
+          onRefresh={() => void loadDetail()}
+        />
+      ) : null}
 
       {/* JLM: FTTT projects render FTTT monitoring for overview/transaksi/kurva-s */}
       {isFttt && (tab === 'overview' || tab === 'transactions' || tab === 'scurve') ? (

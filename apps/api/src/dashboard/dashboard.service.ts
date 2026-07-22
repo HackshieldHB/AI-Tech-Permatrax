@@ -392,14 +392,58 @@ export class DashboardService {
     });
 
     // NEW: Integra V1 — project/budget widgets, filterable by projectKind
-    const [projectSummary, budgetSummary, onProgressProjects, attentionProjects, statusDistribution] =
+    // NEW: Integra Enhancement V3 — financial extras (over-budget/profit/loss/sites/segments),
+    // FTTH vs FTTT distribution, and Daily Activity feed for the Executive Dashboard
+    const [
+      projectSummary,
+      budgetSummary,
+      onProgressProjects,
+      attentionProjects,
+      statusDistribution,
+      financialExtras,
+      ftthVsFttt,
+      dailyActivityExtras,
+      pendingPoApprovals,
+    ] =
       await Promise.all([
         this.buildProjectSummary(projectKind),
         this.buildBudgetSummary(projectKind),
         this.buildOnProgressProjects(projectKind),
         this.buildAttentionProjects(projectKind),
         this.buildStatusDistribution(projectKind),
+        this.buildFinancialExtras(projectKind),
+        this.buildFtthVsFttt(),
+        this.buildDailyActivityRecent(),
+        this.prisma.financePoChangeRequest.count({ where: { status: 'PENDING' } }),
       ]);
+
+    // NEW: Integra Enhancement V3 — GM-facing quick insights, computed server-side from the stats above
+    const noActivityCount = attentionProjects.filter((p) => p.reasons.includes('no_recent_activity')).length;
+    const quickInsights: string[] = [];
+    if (slaBreached > 0) {
+      quickInsights.push(`${slaBreached} cluster melewati SLA HLD — perlu tindakan segera.`);
+    }
+    if (financialExtras.overBudgetCount > 0) {
+      quickInsights.push(`${financialExtras.overBudgetCount} proyek melebihi budget yang direncanakan.`);
+    }
+    if (financialExtras.lossCount > 0) {
+      quickInsights.push(`${financialExtras.lossCount} proyek berpotensi rugi (actual cost > PO Customer).`);
+    }
+    if (noActivityCount > 0) {
+      quickInsights.push(`${noActivityCount} proyek FTTT tidak ada aktivitas dalam ${NO_ACTIVITY_DAYS} hari terakhir.`);
+    }
+    if (dailyActivityExtras.overdueCount > 0) {
+      quickInsights.push(`${dailyActivityExtras.overdueCount} daily activity melewati target selesai.`);
+    }
+    if (cashOpPending > 0) {
+      quickInsights.push(`${cashOpPending} pengajuan cash operation menunggu approval.`);
+    }
+    if (pendingPoApprovals > 0) {
+      quickInsights.push(`${pendingPoApprovals} pengajuan PO Customer menunggu approval GM.`);
+    }
+    if (quickInsights.length === 0) {
+      quickInsights.push('Semua indikator utama dalam kondisi baik — tidak ada isu mendesak saat ini.');
+    }
 
     return {
       summary: {
@@ -412,6 +456,10 @@ export class DashboardService {
         pendingVisitRequests:  pendingVR,
         pendingCashOperations: cashOpPending,
         slaBreached,
+        // NEW: Integra Enhancement V3 — additional executive KPI fields
+        onHold: projectSummary.pending, // FIX: buildProjectSummary's "pending" bucket == ON_HOLD status
+        cancelled: projectSummary.cancelled,
+        pendingApprovals: pendingVR + pendingPoApprovals,
       },
       pipeline: {
         byPhase: byPhaseFormatted,
@@ -427,6 +475,16 @@ export class DashboardService {
       onProgressProjects,
       attentionProjects,
       statusDistribution,
+      // NEW: Integra Enhancement V3 — Executive Dashboard additions
+      totalSites: financialExtras.totalSites,
+      totalSegments: financialExtras.totalSegments,
+      overBudgetCount: financialExtras.overBudgetCount,
+      profitCount: financialExtras.profitCount,
+      lossCount: financialExtras.lossCount,
+      ftthVsFttt,
+      dailyActivityRecent: dailyActivityExtras.items,
+      dailyActivityOverdueCount: dailyActivityExtras.overdueCount,
+      quickInsights,
     };
   }
 
@@ -437,17 +495,17 @@ export class DashboardService {
     return bulkyCount > 0 ? FtttHierarchyLevel.BULKY : FtttHierarchyLevel.SITE;
   }
 
-  /** NEW: projectSummary — { total, onGoing, completed, pending, overdue } per projectKind */
+  /** NEW: projectSummary — { total, onGoing, completed, pending, overdue, cancelled } per projectKind */
   private async buildProjectSummary(kind: ProjectKind) {
     const now = new Date();
     const staleBefore = new Date(now.getTime() - STALE_DAYS * 24 * 60 * 60 * 1000);
 
-    const empty = { total: 0, onGoing: 0, completed: 0, pending: 0, overdue: 0 };
+    const empty = { total: 0, onGoing: 0, completed: 0, pending: 0, overdue: 0, cancelled: 0 };
     let ftth = { ...empty };
     let fttt = { ...empty };
 
     if (kind !== 'FTTT') {
-      const [total, onGoing, completed, pending, overdue] = await Promise.all([
+      const [total, onGoing, completed, pending, overdue, cancelled] = await Promise.all([
         this.prisma.permitCluster.count({ where: { fiberType: FiberType.FTTH } }),
         this.prisma.permitCluster.count({ where: { fiberType: FiberType.FTTH, status: 'IN_PROGRESS' } }),
         this.prisma.permitCluster.count({ where: { fiberType: FiberType.FTTH, status: 'COMPLETED' } }),
@@ -459,13 +517,14 @@ export class DashboardService {
             updatedAt: { lt: staleBefore },
           },
         }),
+        this.prisma.permitCluster.count({ where: { fiberType: FiberType.FTTH, status: 'CANCELLED' } }), // NEW: Integra V3
       ]);
-      ftth = { total, onGoing, completed, pending, overdue };
+      ftth = { total, onGoing, completed, pending, overdue, cancelled };
     }
 
     if (kind !== 'FTTH') {
       const hierarchyLevel = await this.resolveFtttHierarchyLevel();
-      const [total, onGoing, completed, pending, overdue] = await Promise.all([
+      const [total, onGoing, completed, pending, overdue, cancelled] = await Promise.all([
         this.prisma.ftttProject.count({ where: { hierarchyLevel } }),
         this.prisma.ftttProject.count({ where: { hierarchyLevel, status: 'ACTIVE' } }),
         this.prisma.ftttProject.count({ where: { hierarchyLevel, status: 'COMPLETED' } }),
@@ -473,8 +532,9 @@ export class DashboardService {
         this.prisma.ftttProject.count({
           where: { hierarchyLevel, status: 'ACTIVE', updatedAt: { lt: staleBefore } },
         }),
+        this.prisma.ftttProject.count({ where: { hierarchyLevel, status: 'CANCELLED' } }), // NEW: Integra V3
       ]);
-      fttt = { total, onGoing, completed, pending, overdue };
+      fttt = { total, onGoing, completed, pending, overdue, cancelled };
     }
 
     if (kind === 'FTTH') return ftth;
@@ -485,7 +545,116 @@ export class DashboardService {
       completed: ftth.completed + fttt.completed,
       pending: ftth.pending + fttt.pending,
       overdue: ftth.overdue + fttt.overdue,
+      cancelled: ftth.cancelled + fttt.cancelled,
     };
+  }
+
+  /** NEW: Integra Enhancement V3 — over-budget / profit / loss project counts + site/segment counts,
+   * derived from FinanceProject rows (SEGMENT rollup rows excluded from over-budget/profit/loss to avoid
+   * double-counting against their SITE children). */
+  private async buildFinancialExtras(kind: ProjectKind) {
+    const where: Prisma.FinanceProjectWhereInput = {
+      status: 'ACTIVE',
+      isDefaultUncategorized: false,
+      ...(kind !== 'ALL' ? { projectType: kind } : {}),
+    };
+
+    const projects = await this.prisma.financeProject.findMany({
+      where,
+      select: {
+        id: true,
+        hierarchyLevel: true,
+        totalBudget: true,
+        materialSpent: true,
+        jasaSpent: true,
+        poCustomer: true,
+      },
+    });
+
+    let disbursedByProject: Record<string, number> = {};
+    if (kind !== 'FTTH' && projects.length > 0) {
+      const disbursedRows = await this.prisma.ftttTransaction.groupBy({
+        by: ['financeProjectId'],
+        where: {
+          financeProjectId: { in: projects.map((p) => p.id) },
+          disbursedAt: { not: null },
+        },
+        _sum: { total: true },
+      });
+      disbursedByProject = Object.fromEntries(
+        disbursedRows
+          .filter((r) => r.financeProjectId)
+          .map((r) => [r.financeProjectId as string, Number(r._sum.total ?? 0)]),
+      );
+    }
+
+    let overBudgetCount = 0;
+    let profitCount = 0;
+    let lossCount = 0;
+    let totalSites = 0;
+    let totalSegments = 0;
+
+    for (const p of projects) {
+      if (p.hierarchyLevel === 'SITE') totalSites += 1;
+      if (p.hierarchyLevel === 'SEGMENT') totalSegments += 1;
+      if (p.hierarchyLevel === 'SEGMENT') continue; // FIX: rollup-only row — skip to avoid double-counting vs. SITE children
+
+      const spent = Number(p.materialSpent) + Number(p.jasaSpent) + (disbursedByProject[p.id] ?? 0);
+      const totalBudget = Number(p.totalBudget);
+      if (totalBudget > 0 && spent > totalBudget) overBudgetCount += 1;
+
+      if (p.poCustomer != null) {
+        const profit = Number(p.poCustomer) - spent;
+        if (profit > 0) profitCount += 1;
+        else if (profit < 0) lossCount += 1;
+      }
+    }
+
+    return { overBudgetCount, profitCount, lossCount, totalSites, totalSegments };
+  }
+
+  /** NEW: Integra Enhancement V3 — total FTTH clusters vs. FTTT (top-level) projects, unfiltered by projectKind
+   * so the GM can always compare the two portfolios side by side. */
+  private async buildFtthVsFttt() {
+    const hierarchyLevel = await this.resolveFtttHierarchyLevel();
+    const [ftth, fttt] = await Promise.all([
+      this.prisma.permitCluster.count(),
+      this.prisma.ftttProject.count({ where: { hierarchyLevel } }),
+    ]);
+    return { ftth, fttt };
+  }
+
+  /** NEW: Integra Enhancement V3 — most recent Daily Activity entries (all projects) + count of entries
+   * past their target completion date, for the Executive Dashboard's Recent Activity / Pipeline widgets. */
+  private async buildDailyActivityRecent() {
+    const now = new Date();
+    const [recent, overdueCount] = await Promise.all([
+      this.prisma.dailyActivity.findMany({
+        take: 8,
+        orderBy: { timestamp: 'desc' },
+        include: {
+          actor: { select: { name: true } },
+          ftttProject: { select: { projectName: true } },
+          financeProject: { select: { name: true } },
+        },
+      }),
+      this.prisma.dailyActivity.count({
+        where: { workStatus: { not: 'DONE' }, targetDoneAt: { lt: now } },
+      }),
+    ]);
+
+    const items = recent.map((a) => ({
+      id: a.id,
+      siteName: a.siteName || a.ftttProject?.projectName || a.financeProject?.name || '—',
+      scopeOfWork: a.scopeOfWork,
+      workStatus: a.workStatus as string,
+      actorName: a.actor?.name || '',
+      timestamp: a.timestamp,
+      targetDoneAt: a.targetDoneAt,
+      overdue: a.workStatus !== 'DONE' && !!a.targetDoneAt && a.targetDoneAt < now,
+    }));
+
+    return { items, overdueCount };
   }
 
   /** NEW: budgetSummary — FinanceProject (ACTIVE, not default-uncategorized) scoped by projectKind */
