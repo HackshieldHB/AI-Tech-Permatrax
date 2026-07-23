@@ -388,7 +388,7 @@ export default function FinanceProjectDetailPage() {
   return (
     <div className="max-w-6xl mx-auto px-3 pb-12 space-y-6">
       <Link
-        href="/finance-projects"
+        href={isSite && detail.parent?.id ? `/finance-projects/${detail.parent.id}` : '/finance-projects'}
         className="inline-flex items-center gap-2 text-sm text-slate-600 hover:text-[#00D4B4]"
       >
         <ArrowLeft className="w-4 h-4" />

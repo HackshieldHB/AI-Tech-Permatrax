@@ -2480,6 +2480,40 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
         </div>
       )}
 
+      {/* Integra V6: move lapangan-selesai CTA above tabs so users find it before scrolling logs */}
+      {lapanganDone && (
+        <div style={{ background: '#FFF8C5', border: '1px solid #d4a017', borderRadius: 8, padding: 10, marginBottom: 12 }}>
+          <p style={{ margin: 0, fontSize: 12, fontWeight: 700, color: '#9a6700' }}>
+            ✅ Pekerjaan lapangan ditandai selesai
+          </p>
+          <p style={{ margin: '3px 0 0', fontSize: 11, color: '#9a6700' }}>
+            {isAdmin ? 'Silakan upload Dokumen Monitoring, kemudian selesaikan fase.' : 'Menunggu Admin upload Dokumen Monitoring.'}
+          </p>
+        </div>
+      )}
+      {isSurveyor && !isTI && !lapanganDone && logs.length > 0 && (
+        <div style={{ background: '#DAFBE1', border: '1px solid #2DA44E', borderRadius: 8, padding: 10, marginBottom: 12 }}>
+          <p style={{ margin: '0 0 6px', fontSize: 12, fontWeight: 600, color: '#1a7f37' }}>
+            Pekerjaan lapangan sudah selesai?
+          </p>
+          <button type="button" onClick={() => void handleMarkDone()} disabled={markingDone}
+            style={{ padding: '7px 16px', borderRadius: 6, border: 'none', background: '#1a7f37', color: '#fff', fontWeight: 700, cursor: 'pointer', fontSize: 12 }}>
+            {markingDone ? 'Memproses…' : '✅ Selesai Fase → Implementation'}
+          </button>
+        </div>
+      )}
+      {isAdmin && !lapanganDone && logs.length > 0 && (
+        <div style={{ background: '#DAFBE1', border: '1px solid #2DA44E', borderRadius: 8, padding: 10, marginBottom: 12 }}>
+          <p style={{ margin: '0 0 6px', fontSize: 12, fontWeight: 600, color: '#1a7f37' }}>
+            Pekerjaan lapangan sudah selesai?
+          </p>
+          <button type="button" onClick={() => void handleMarkDone()} disabled={markingDone}
+            style={{ padding: '7px 16px', borderRadius: 6, border: 'none', background: '#1a7f37', color: '#fff', fontWeight: 700, cursor: 'pointer', fontSize: 12 }}>
+            {markingDone ? 'Memproses…' : '✅ Tandai Pekerjaan Lapangan Selesai'}
+          </button>
+        </div>
+      )}
+
       {/* Integra V2: Implementation tabs — Daily Log (Galian & KU) / Transaction Log / Log Aktivitas */}
       <div style={{ display: 'flex', gap: 4, marginBottom: 12, borderBottom: '1px solid #EAEEF2' }}>
         {([
@@ -2540,44 +2574,6 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
           )}
         </div>
       ))}
-
-      {/* C7-TI5/PST: Status banner when lapangan done */}
-      {lapanganDone && (
-        <div style={{ background: '#FFF8C5', border: '1px solid #d4a017', borderRadius: 8, padding: 10, marginTop: 8, marginBottom: 8 }}>
-          <p style={{ margin: 0, fontSize: 12, fontWeight: 700, color: '#9a6700' }}>
-            ✅ Pekerjaan lapangan ditandai selesai
-          </p>
-          <p style={{ margin: '3px 0 0', fontSize: 11, color: '#9a6700' }}>
-            {isAdmin ? 'Silakan upload Dokumen Monitoring, kemudian selesaikan fase.' : 'Menunggu Admin upload Dokumen Monitoring.'}
-          </p>
-        </div>
-      )}
-
-      {/* Mark lapangan done — PST/iFORTE: Surveyor sends to Admin; TI: Admin-only button below */}
-      {isSurveyor && !isTI && !lapanganDone && logs.length > 0 && (
-        <div style={{ background: '#DAFBE1', border: '1px solid #2DA44E', borderRadius: 8, padding: 10, marginTop: 8, marginBottom: 8 }}>
-          <p style={{ margin: '0 0 6px', fontSize: 12, fontWeight: 600, color: '#1a7f37' }}>
-            Pekerjaan lapangan sudah selesai?
-          </p>
-          <button type="button" onClick={() => void handleMarkDone()} disabled={markingDone}
-            style={{ padding: '7px 16px', borderRadius: 6, border: 'none', background: '#1a7f37', color: '#fff', fontWeight: 700, cursor: 'pointer', fontSize: 12 }}>
-            {markingDone ? 'Memproses…' : '✅ Selesai Fase → Implementation'}
-          </button>
-        </div>
-      )}
-
-      {/* C7-TI5: Admin button — confirm lapangan done (TI flow: Admin marks and uploads monitoring doc) */}
-      {isAdmin && !lapanganDone && logs.length > 0 && (
-        <div style={{ background: '#DAFBE1', border: '1px solid #2DA44E', borderRadius: 8, padding: 10, marginTop: 8, marginBottom: 8 }}>
-          <p style={{ margin: '0 0 6px', fontSize: 12, fontWeight: 600, color: '#1a7f37' }}>
-            Pekerjaan lapangan sudah selesai?
-          </p>
-          <button type="button" onClick={() => void handleMarkDone()} disabled={markingDone}
-            style={{ padding: '7px 16px', borderRadius: 6, border: 'none', background: '#1a7f37', color: '#fff', fontWeight: 700, cursor: 'pointer', fontSize: 12 }}>
-            {markingDone ? 'Memproses…' : '✅ Tandai Pekerjaan Lapangan Selesai'}
-          </button>
-        </div>
-      )}
 
       </>
       )}

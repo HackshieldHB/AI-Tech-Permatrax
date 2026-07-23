@@ -2079,6 +2079,9 @@ export class FtttProjectService {
         },
         transactions: { orderBy: { createdAt: 'asc' }, include: { createdBy: { select: { id: true, name: true } }, disbursedBy: { select: { id: true, name: true } } } },
         phaseProgresses: true,
+        // Integra V6: Actual Progress from implementation meters (Daily Log / Log Aktivitas)
+        implementationLogs: { select: { meterDone: true, createdAt: true }, orderBy: { createdAt: 'asc' } },
+        spans: { select: { lengthMeters: true, createdAt: true }, orderBy: { createdAt: 'asc' } },
       },
     });
 
@@ -2223,10 +2226,39 @@ export class FtttProjectService {
         .map(({ name, end: weekEnd }) => ({ name, end: weekEnd }));
     });
 
-    // Actual uses disbursedAt (or createdAt fallback for legacy rows already counted)
-    const txPoints = realized
-      .map((t) => ({ t: new Date(t.disbursedAt ?? t.createdAt).getTime(), v: num(t.total) }))
+    // Integra V6: Actual Cost from disbursed Transaction Log (Tanggal Dana Keluar).
+    // Exclude Site-owned LAIN_LAIN when Segment owns the Lain-Lain pool (avoid double-count).
+    const siteTxPoints = realized
+      .filter((t) => !(t.category === 'LAIN_LAIN' && segmentLainLainId))
+      .map((t) => ({ t: new Date(t.disbursedAt ?? t.createdAt).getTime(), v: num(t.total) }));
+    let segmentLainPoints: { t: number; v: number }[] = [];
+    if (segmentLainLainId) {
+      const lainRows = await this.prisma.ftttTransaction.findMany({
+        where: {
+          financeProjectId: segmentLainLainId,
+          category: 'LAIN_LAIN',
+          disbursedAt: { not: null, lte: new Date(nowMs) },
+        },
+        select: { disbursedAt: true, createdAt: true, total: true },
+      });
+      segmentLainPoints = lainRows.map((t) => ({
+        t: new Date(t.disbursedAt ?? t.createdAt).getTime(),
+        v: num(t.total),
+      }));
+    }
+    const txPoints = [...siteTxPoints, ...segmentLainPoints].sort((a, b) => a.t - b.t);
+
+    // Integra V6: Actual Progress from implementation meters (same source as Overview Progress %)
+    const totalPanjang = num(project.totalPanjangMeter);
+    const meterFromActivity = (project.implementationLogs ?? [])
+      .map((l) => ({ t: new Date(l.createdAt).getTime(), v: num(l.meterDone) }))
+      .filter((p) => p.v > 0);
+    const meterFromSpans = (project.spans ?? [])
+      .map((s) => ({ t: new Date(s.createdAt).getTime(), v: num(s.lengthMeters) }))
+      .filter((p) => p.v > 0);
+    const meterPoints = (meterFromActivity.length > 0 ? meterFromActivity : meterFromSpans)
       .sort((a, b) => a.t - b.t);
+    const useMeterProgress = totalPanjang > 0 && meterPoints.length > 0;
     const now = Date.now();
 
     const buildCurves = (buckets: Bucket[]) => {
@@ -2245,6 +2277,8 @@ export class FtttProjectService {
       const n = Math.max(1, buckets.length);
       let cumActual = 0;
       let ptr = 0;
+      let cumMeters = 0;
+      let meterPtr = 0;
       let lastActualCost = 0;
       let lastActualProg = 0;
       for (let i = 0; i < buckets.length; i++) {
@@ -2255,14 +2289,25 @@ export class FtttProjectService {
         const baselineCost = hasBaseline ? interp(baselineMs, b.end, 'budget') : (totalBudget * baselineProgress) / 100;
         const plannedCost = hasRevised ? interp(revisedMs, b.end, 'budget') : baselineCost;
 
-        // Actual: only for periods that have already ended (or are current); future = null
-        if (b.end <= now) {
-          while (ptr < txPoints.length && txPoints[ptr].t <= b.end) {
+        // Integra V6: include the current incomplete period (bucket end may still be in the future).
+        // Only omit Actual for periods that have not started yet.
+        const periodStart = i === 0 ? start.getTime() : buckets[i - 1].end;
+        if (periodStart <= now) {
+          const cutoff = Math.min(b.end, now);
+          while (ptr < txPoints.length && txPoints[ptr].t <= cutoff) {
             cumActual += txPoints[ptr].v;
             ptr++;
           }
           lastActualCost = cumActual;
-          lastActualProg = planPhases.filter((p) => p.completedAt && new Date(p.completedAt).getTime() <= b.end).length * phaseW;
+          if (useMeterProgress) {
+            while (meterPtr < meterPoints.length && meterPoints[meterPtr].t <= cutoff) {
+              cumMeters += meterPoints[meterPtr].v;
+              meterPtr++;
+            }
+            lastActualProg = Math.min(100, (cumMeters / totalPanjang) * 100);
+          } else {
+            lastActualProg = planPhases.filter((p) => p.completedAt && new Date(p.completedAt).getTime() <= cutoff).length * phaseW;
+          }
           cost.push({
             name: b.name,
             baselineCost: Math.round(baselineCost),

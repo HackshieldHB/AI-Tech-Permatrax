@@ -167,27 +167,30 @@ export function FinancialPerformance({ detail, canEdit, isGm, onRefresh }: Props
         )}
       </div>
 
-      {pending ? (
+      {pending && !isSegment ? (
         <div className="text-xs font-semibold text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
           Pengajuan PO menunggu approval General Manager
         </div>
       ) : null}
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-        <div className="rounded-xl bg-slate-50 p-3">
-          <div className="text-[11px] text-slate-500 font-semibold uppercase">PO Customer</div>
-          <div className="font-bold text-slate-900 mt-0.5">
-            {po != null && !Number.isNaN(po) ? formatRupiah(po) : '—'}
+      {/* Integra V6: Segment Overview hides PO Customer + Profit/Loss (Site-only concepts) */}
+      <div className={`grid gap-3 text-sm ${isSegment ? 'grid-cols-2' : 'grid-cols-2 md:grid-cols-4'}`}>
+        {!isSegment ? (
+          <div className="rounded-xl bg-slate-50 p-3">
+            <div className="text-[11px] text-slate-500 font-semibold uppercase">PO Customer</div>
+            <div className="font-bold text-slate-900 mt-0.5">
+              {po != null && !Number.isNaN(po) ? formatRupiah(po) : '—'}
+            </div>
+            {detail.poCustomerNumber ? (
+              <div className="text-[11px] text-slate-600 mt-0.5 font-medium">{detail.poCustomerNumber}</div>
+            ) : null}
+            {detail.poCustomerDocUrl ? (
+              <a href={fixFileUrl(detail.poCustomerDocUrl)} target="_blank" rel="noreferrer" className="text-[11px] text-blue-600">
+                Lihat dokumen ↗
+              </a>
+            ) : null}
           </div>
-          {detail.poCustomerNumber ? (
-            <div className="text-[11px] text-slate-600 mt-0.5 font-medium">{detail.poCustomerNumber}</div>
-          ) : null}
-          {detail.poCustomerDocUrl ? (
-            <a href={fixFileUrl(detail.poCustomerDocUrl)} target="_blank" rel="noreferrer" className="text-[11px] text-blue-600">
-              Lihat dokumen ↗
-            </a>
-          ) : null}
-        </div>
+        ) : null}
         <div className="rounded-xl bg-slate-50 p-3">
           <div className="text-[11px] text-slate-500 font-semibold uppercase">
             {isSegment ? 'Total RAB (Segment)' : 'Estimated Cost (RAB)'}
@@ -198,23 +201,23 @@ export function FinancialPerformance({ detail, canEdit, isGm, onRefresh }: Props
           <div className="text-[11px] text-slate-500 font-semibold uppercase">Actual Cost</div>
           <div className="font-bold text-slate-900 mt-0.5">{formatRupiah(actual)}</div>
         </div>
-        <div className="rounded-xl bg-slate-50 p-3">
-          <div className="text-[11px] text-slate-500 font-semibold uppercase">
-            {isSegment ? 'Profit Segment' : 'Estimasi P/L'}
+        {!isSegment ? (
+          <div className="rounded-xl bg-slate-50 p-3">
+            <div className="text-[11px] text-slate-500 font-semibold uppercase">Estimasi P/L</div>
+            <div className="font-bold mt-0.5" style={{ color: profitColor }}>{statusLabel}</div>
+            {estimasiLabel ? (
+              <div className="text-[11px] mt-1 font-semibold" style={{ color: profitColor }}>
+                {estimasiLabel}
+              </div>
+            ) : null}
+            {actualPlLabel && actual > 0 ? (
+              <div className="text-[10px] mt-1 text-slate-500">{actualPlLabel}</div>
+            ) : null}
           </div>
-          <div className="font-bold mt-0.5" style={{ color: profitColor }}>{statusLabel}</div>
-          {estimasiLabel ? (
-            <div className="text-[11px] mt-1 font-semibold" style={{ color: profitColor }}>
-              {estimasiLabel}
-            </div>
-          ) : null}
-          {actualPlLabel && actual > 0 ? (
-            <div className="text-[10px] mt-1 text-slate-500">{actualPlLabel}</div>
-          ) : null}
-        </div>
+        ) : null}
       </div>
 
-      {(canEdit || isGm) && history.length > 0 ? (
+      {!isSegment && (canEdit || isGm) && history.length > 0 ? (
         <div>
           <div className="text-xs font-bold text-slate-600 mb-2">Riwayat PO Customer</div>
           <div className="border border-slate-100 rounded-xl overflow-hidden divide-y divide-slate-100">
