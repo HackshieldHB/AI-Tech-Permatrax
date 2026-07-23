@@ -7,20 +7,25 @@ import {
   ArrowLeft,
   Settings,
   PieChart as PieIcon,
+  Folder,
+  Download,
+  Upload,
 } from 'lucide-react';
 import { PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { toast } from 'sonner';
 import { useAuthStore } from '../../../../store/authStore';
-import { apiGet, apiGetPaginated, apiPatch, apiPut, apiDownload } from '../../../../lib/api';
+import { apiGet, apiGetPaginated, apiPatch, apiPut, apiPost, apiDownload, apiPostForm } from '../../../../lib/api';
 import { formatRupiah, formatDateTimeID, formatDateID } from '../../../../lib/format';
 import type {
   BudgetLedger,
   FinanceProjectDetail,
+  FinanceProjectListItem,
 } from '../../../../types/api.types';
 import { num } from '../_lib/num';
 import { ForecastPanel } from './ForecastPanel';
 import { SCurveChart } from './SCurveChart';
 import { FtttFinanceMonitor } from './FtttFinanceMonitor';
+import { FinancialPerformance } from './FinancialPerformance';
 import { canManageFinance } from '../../../../lib/finance-roles';
 
 const PIE_COLORS = ['#10B981', '#6366F1', '#94A3B8'];
@@ -173,6 +178,13 @@ export default function FinanceProjectDetailPage() {
   const [reloadKey, setReloadKey] = useState(0);
   const [msRows, setMsRows] = useState<{ targetDate: string; plannedBudget: string; plannedProgressPct: string }[]>([]);
   const [hasBaselinePlan, setHasBaselinePlan] = useState(false);
+  // Integra V1: Segment → Site management + Set Plan Awal via Excel template
+  const [siteName, setSiteName] = useState('');
+  const [sitePerizinan, setSitePerizinan] = useState('');
+  const [siteMaterial, setSiteMaterial] = useState('');
+  const [siteJasa, setSiteJasa] = useState('');
+  const [creatingSite, setCreatingSite] = useState(false);
+  const [uploadingPlan, setUploadingPlan] = useState(false);
 
   const formatBudgetInput = (raw: string) => {
     const digits = raw.replace(/\D/g, '');
@@ -223,6 +235,50 @@ export default function FinanceProjectDetailPage() {
       void res;
     } catch (e) { toast.error(e instanceof Error ? e.message : 'Gagal menyimpan'); }
     finally { setSavingTimeline(false); }
+  };
+
+  const handleCreateSite = async () => {
+    if (!siteName.trim()) { toast.error('Nama Site wajib diisi'); return; }
+    setCreatingSite(true);
+    try {
+      await apiPost(`/finance-projects/${id}/sites`, {
+        name: siteName.trim(),
+        budgetPerizinan: Number(sitePerizinan) || 0,
+        materialBudget: Number(siteMaterial) || 0,
+        jasaBudget: Number(siteJasa) || 0,
+      });
+      toast.success('Site berhasil dibuat');
+      setSiteName(''); setSitePerizinan(''); setSiteMaterial(''); setSiteJasa('');
+      await loadDetail();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Gagal membuat Site');
+    } finally {
+      setCreatingSite(false);
+    }
+  };
+
+  const handleDownloadPlanTemplate = async () => {
+    try {
+      await apiDownload(`/finance-projects/${id}/plan-template`, 'template-set-plan-awal.xlsx');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Gagal mengunduh template');
+    }
+  };
+
+  const handleUploadPlan = async (file: File) => {
+    setUploadingPlan(true);
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      await apiPostForm(`/finance-projects/${id}/plan-import`, fd);
+      toast.success('Set Plan Awal berhasil diunggah');
+      setHasBaselinePlan(true);
+      setReloadKey((k) => k + 1);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Gagal mengunggah — periksa format sesuai template');
+    } finally {
+      setUploadingPlan(false);
+    }
   };
 
   const loadDetail = useCallback(async () => {
@@ -324,11 +380,15 @@ export default function FinanceProjectDetailPage() {
   const isGen = detail.isDefaultUncategorized;
   // JLM: FTTT finance projects show FTTT monitoring (no Forecast tab) + baseline timeline
   const isFttt = detail.projectType === 'FTTT';
+  // Integra V1: Segment (parent, Lain-Lain only) / Site (child, Perizinan+Material+Jasa)
+  const isSegment = detail.hierarchyLevel === 'SEGMENT';
+  const isSite = detail.hierarchyLevel === 'SITE';
+  const sites: FinanceProjectListItem[] = detail.sites ?? [];
 
   return (
     <div className="max-w-6xl mx-auto px-3 pb-12 space-y-6">
       <Link
-        href="/finance-projects"
+        href={isSite && detail.parent?.id ? `/finance-projects/${detail.parent.id}` : '/finance-projects'}
         className="inline-flex items-center gap-2 text-sm text-slate-600 hover:text-[#00D4B4]"
       >
         <ArrowLeft className="w-4 h-4" />
@@ -337,16 +397,36 @@ export default function FinanceProjectDetailPage() {
 
       <header className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between border-b border-slate-100 pb-4">
         <div>
-          <h1 className="text-2xl font-black text-slate-900">
-            {detail.code} · {detail.name}
-          </h1>
+          <div className="flex items-center gap-2 flex-wrap">
+            <h1 className="text-2xl font-black text-slate-900">
+              {detail.code} · {detail.name}
+            </h1>
+            {isSegment ? (
+              <span className="inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 uppercase">
+                <Folder className="w-3 h-3" /> Segment
+              </span>
+            ) : null}
+            {isSite ? (
+              <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-sky-100 text-sky-700 uppercase">
+                Site
+              </span>
+            ) : null}
+          </div>
           <p className="text-sm text-slate-500 mt-1">
             {detail.status} · Dibuat {formatDateID(detail.createdAt)}
           </p>
+          {isSite && detail.parent ? (
+            <p className="text-sm text-slate-600 mt-1">
+              Bagian dari Segment:{' '}
+              <Link href={`/finance-projects/${detail.parent.id}`} className="font-bold text-[#00D4B4] hover:underline">
+                {detail.parent.code} · {detail.parent.name}
+              </Link>
+            </p>
+          ) : null}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-4 text-sm">
             <div>
-              <div className="text-xs text-slate-500">Total Budget</div>
-              <div className="font-bold">{isGen ? '—' : formatRupiah(totalB)}</div>
+              <div className="text-xs text-slate-500">{isSegment ? 'Budget Lain-Lain' : 'Total Budget'}</div>
+              <div className="font-bold">{isGen ? '—' : formatRupiah(isSegment ? num(detail.budgetLainLain) : totalB)}</div>
             </div>
             <div>
               <div className="text-xs text-slate-500">Sisa</div>
@@ -361,6 +441,26 @@ export default function FinanceProjectDetailPage() {
               <div className="font-bold">{isGen ? '—' : `${(util * 100).toFixed(0)}%`}</div>
             </div>
           </div>
+          {isSite ? (
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-3 text-sm">
+              <div>
+                <div className="text-xs text-slate-500">Budget Perizinan</div>
+                <div className="font-bold">{formatRupiah(num(detail.budgetPerizinan))}</div>
+              </div>
+              <div>
+                <div className="text-xs text-slate-500">Budget Material</div>
+                <div className="font-bold">{formatRupiah(num(detail.materialBudget))}</div>
+              </div>
+              <div>
+                <div className="text-xs text-slate-500">Budget Jasa</div>
+                <div className="font-bold">{formatRupiah(num(detail.jasaBudget))}</div>
+              </div>
+              <div>
+                <div className="text-xs text-slate-500">Lain-Lain (dari Segment)</div>
+                <div className="font-bold">{formatRupiah(num(detail.budgetLainLain))}</div>
+              </div>
+            </div>
+          ) : null}
           {!isGen ? (
             <div className="h-2 rounded-full bg-slate-100 mt-3 max-w-md">
               <div
@@ -370,7 +470,7 @@ export default function FinanceProjectDetailPage() {
             </div>
           ) : null}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           {/* JLM: Finance sets the S-Curve Planning baseline (milestones) for linked FTTT projects */}
           {isFttt && canEditTimeline ? (
             <button
@@ -380,6 +480,36 @@ export default function FinanceProjectDetailPage() {
             >
               {hasBaselinePlan ? '✏️ Edit Planning' : '📌 Set Plan Awal'}
             </button>
+          ) : null}
+          {/* Integra V1: Excel template download + Set Plan Awal bulk import.
+              Upload is only offered before a baseline exists — once Set Plan Awal
+              is done, Planning changes go through "Edit Planning" instead. */}
+          {isFttt && canEditTimeline ? (
+            <>
+              <button
+                type="button"
+                onClick={() => void handleDownloadPlanTemplate()}
+                className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-bold text-slate-700"
+              >
+                <Download className="w-4 h-4" /> Template Set Plan Awal
+              </button>
+              {!hasBaselinePlan ? (
+                <label className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-bold text-slate-700 cursor-pointer">
+                  <Upload className="w-4 h-4" /> {uploadingPlan ? 'Mengunggah…' : 'Upload Set Plan Awal'}
+                  <input
+                    type="file"
+                    accept=".xlsx,.xls"
+                    className="hidden"
+                    disabled={uploadingPlan}
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (f) void handleUploadPlan(f);
+                      e.target.value = '';
+                    }}
+                  />
+                </label>
+              ) : null}
+            </>
           ) : null}
           {manage ? (
             <button
@@ -393,6 +523,85 @@ export default function FinanceProjectDetailPage() {
           ) : null}
         </div>
       </header>
+
+      {isSegment ? (
+        <section className="rounded-2xl border border-slate-100 bg-white p-5 space-y-4">
+          <h3 className="font-bold text-slate-800 flex items-center gap-2">
+            <Folder className="w-4 h-4 text-amber-500" /> Sites di bawah Segment ini ({sites.length})
+          </h3>
+          {sites.length === 0 ? (
+            <p className="text-sm text-slate-500">Belum ada Site. Tambahkan Site menggunakan form di bawah.</p>
+          ) : (
+            <div className="overflow-x-auto rounded-xl border border-slate-100">
+              <table className="min-w-full text-sm">
+                <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500">
+                  <tr>
+                    <th className="p-2">Kode</th>
+                    <th className="p-2">Nama</th>
+                    <th className="p-2">Status</th>
+                    <th className="p-2 text-right">Total Budget</th>
+                    <th className="p-2 text-right">Terpakai</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sites.map((s) => (
+                    <tr
+                      key={s.id}
+                      className="border-t border-slate-100 hover:bg-slate-50 cursor-pointer"
+                      onClick={() => router.push(`/finance-projects/${s.id}`)}
+                    >
+                      <td className="p-2 font-bold text-[#00D4B4]">{s.code}</td>
+                      <td className="p-2">{s.name}</td>
+                      <td className="p-2">{s.status}</td>
+                      <td className="p-2 text-right tabular-nums">{formatRupiah(num(s.totalBudget))}</td>
+                      <td className="p-2 text-right tabular-nums">{formatRupiah(num(s.totalSpent))}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {manage ? (
+            <div className="rounded-xl border border-dashed border-slate-200 p-4 space-y-3">
+              <p className="text-xs font-bold text-slate-500 uppercase">Tambah Site</p>
+              <input
+                className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                placeholder="Nama Site *"
+                value={siteName}
+                onChange={(e) => setSiteName(e.target.value)}
+              />
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <input
+                  className="rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                  placeholder="Budget Perizinan"
+                  value={sitePerizinan}
+                  onChange={(e) => setSitePerizinan(e.target.value.replace(/\D/g, ''))}
+                />
+                <input
+                  className="rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                  placeholder="Budget Material"
+                  value={siteMaterial}
+                  onChange={(e) => setSiteMaterial(e.target.value.replace(/\D/g, ''))}
+                />
+                <input
+                  className="rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                  placeholder="Budget Jasa"
+                  value={siteJasa}
+                  onChange={(e) => setSiteJasa(e.target.value.replace(/\D/g, ''))}
+                />
+              </div>
+              <button
+                type="button"
+                disabled={creatingSite}
+                onClick={() => void handleCreateSite()}
+                className="rounded-xl bg-[#0F1B2D] text-white px-4 py-2 text-sm font-bold disabled:opacity-50"
+              >
+                {creatingSite ? 'Menyimpan…' : '+ Tambah Site'}
+              </button>
+            </div>
+          ) : null}
+        </section>
+      ) : null}
 
       <div className="flex flex-wrap gap-2 border-b border-slate-100">
         {(
@@ -423,6 +632,16 @@ export default function FinanceProjectDetailPage() {
           </button>
         ))}
       </div>
+
+      {/* Integra V3: P&L — Finance + GM only */}
+      {canManageFinance(user?.role) && tab === 'overview' ? (
+        <FinancialPerformance
+          detail={detail}
+          canEdit={user?.role === 'FINANCE'}
+          isGm={user?.role === 'GENERAL_MANAGER'}
+          onRefresh={() => void loadDetail()}
+        />
+      ) : null}
 
       {/* JLM: FTTT projects render FTTT monitoring for overview/transaksi/kurva-s */}
       {isFttt && (tab === 'overview' || tab === 'transactions' || tab === 'scurve') ? (

@@ -21,8 +21,14 @@ import {
   FTTT_PROJECT_STATUS_LABELS,
   FTTT_DOC_TYPE_LABELS,
   FTTT_COST_CATEGORY_LABELS,
+  FTTT_PRIORITY_LABELS,
+  FTTT_PRIORITY_COLORS,
+  FTTT_REQUEST_STATUS_LABELS,
+  FTTT_REQUEST_STATUS_COLORS,
   type FtttCostCategory,
   type FtttTransaction,
+  type FtttSiteSummary,
+  type FinanceSiteOption,
 } from '../../../../types/api.types';
 import { io, Socket } from 'socket.io-client';
 import {
@@ -31,9 +37,15 @@ import {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const PHASE_ORDER: FtttPhase[] = [
-  'INITIATION', 'SURVEY', 'PREPARATION', 'PROCUREMENT',
+  'INITIATION', 'SITE_INITIATION', 'SURVEY', 'PREPARATION', 'PROCUREMENT',
   'IMPLEMENTATION', 'DOCUMENTATION', 'RECONCILIATION', 'CLOSING',
 ];
+// Integra V2: Bulky projects only manage Initiation lifecycle; operational
+// phases (Survey → Closing) belong to their Sites
+const BULKY_PHASES: FtttPhase[] = ['INITIATION', 'SITE_INITIATION'];
+const SITE_OPERATIONAL_PHASES: FtttPhase[] = PHASE_ORDER.filter(
+  (p) => !BULKY_PHASES.includes(p),
+);
 
 function fmt(date: string | null) {
   if (!date) return '—';
@@ -57,14 +69,42 @@ function PhaseIcon({ status }: { status: FtttPhaseStatus }) {
 
 // ─── Live Progress Bar ────────────────────────────────────────────────────────
 function LiveProgressBar({ project }: { project: FtttProject }) {
-  const visible = project.phaseProgresses.filter((p) => p.status !== 'SKIPPED');
-  const completed = visible.filter((p) => p.status === 'COMPLETED').length;
-  const pct = visible.length > 0 ? Math.round((completed / visible.length) * 100) : 0;
+  // Integra V3: Bulky Parent progress = Initiation + Site Initiation only.
+  // Site children still use full operational lifecycle; optional aggregate label when Sites exist.
+  const isBulky = project.hierarchyLevel === 'BULKY';
+  const children = project.children ?? [];
+  const stepperPhases = isBulky ? BULKY_PHASES : PHASE_ORDER.filter((phase) => {
+    const progress = project.phaseProgresses.find((p) => p.phase === phase);
+    return progress && progress.status !== 'SKIPPED';
+  });
+
+  let pct: number;
+  let overallLabel = 'Overall Progress';
+  if (isBulky) {
+    const bulkyProg = project.phaseProgresses.filter((p) => BULKY_PHASES.includes(p.phase));
+    const completed = bulkyProg.filter((p) => p.status === 'COMPLETED').length;
+    pct = bulkyProg.length > 0 ? Math.round((completed / bulkyProg.length) * 100) : 0;
+    if (children.length > 0) {
+      const childPcts = children.map((c) => {
+        const cp = (c.phaseProgresses ?? []).filter((p) => p.status !== 'SKIPPED');
+        const cCompleted = cp.filter((p) => p.status === 'COMPLETED').length;
+        return cp.length > 0 ? (cCompleted / cp.length) * 100 : 0;
+      });
+      const sitesPct = Math.round(childPcts.reduce((s, v) => s + v, 0) / childPcts.length);
+      overallLabel = `Parent Initiation · Sites ${sitesPct}%`;
+    } else {
+      overallLabel = 'Parent Progress (Initiation)';
+    }
+  } else {
+    const visible = project.phaseProgresses.filter((p) => p.status !== 'SKIPPED');
+    const completed = visible.filter((p) => p.status === 'COMPLETED').length;
+    pct = visible.length > 0 ? Math.round((completed / visible.length) * 100) : 0;
+  }
 
   return (
     <div style={{ background: '#fff', border: '1px solid #D0D7DE', borderRadius: 12, padding: 16, marginBottom: 16 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 8 }}>
-        <span style={{ fontWeight: 600 }}>Overall Progress</span>
+        <span style={{ fontWeight: 600 }}>{overallLabel}</span>
         <span style={{ fontWeight: 700, color: pct === 100 ? '#1a7f37' : '#0969DA' }}>{pct}%</span>
       </div>
       {/* Bar */}
@@ -79,12 +119,12 @@ function LiveProgressBar({ project }: { project: FtttProject }) {
           }}
         />
       </div>
-      {/* Phase stepper */}
+      {/* Phase stepper — Bulky: Initiation + Site Initiation only (Integra V3) */}
       <div style={{ display: 'flex', alignItems: 'center', overflowX: 'auto', gap: 0, paddingBottom: 4 }}>
-        {PHASE_ORDER.map((phase, idx) => {
+        {(isBulky ? BULKY_PHASES : stepperPhases).map((phase, idx, arr) => {
           const progress = project.phaseProgresses.find((p) => p.phase === phase);
           if (!progress) return null;
-          const isLast = idx === PHASE_ORDER.length - 1;
+          const isLast = idx === arr.length - 1;
           return (
             <React.Fragment key={phase}>
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: 72, gap: 4 }}>
@@ -98,7 +138,7 @@ function LiveProgressBar({ project }: { project: FtttProject }) {
                     lineHeight: 1.2,
                   }}
                 >
-                  {FTTT_PHASE_LABELS[phase].split(' ')[0]}
+                  {FTTT_PHASE_LABELS[phase]}
                 </span>
               </div>
               {!isLast && (
@@ -124,8 +164,8 @@ const FILE_TYPE_LABELS: Record<string, string> = {
 
 // Accepted file formats per activity type
 const FILE_ACCEPT: Record<string, string> = {
-  supporting_file:   '.pdf,.doc,.docx,.xls,.xlsx',
-  survey_evidence:   '.pdf,.png,.jpg,.jpeg,.doc,.docx,.xls,.xlsx,.webp,.bmp,.tiff',
+  supporting_file:   '.pdf,.doc,.docx,.xls,.xlsx,.kmz',
+  survey_evidence:   '.pdf,.png,.jpg,.jpeg,.doc,.docx,.xls,.xlsx,.webp,.bmp,.tiff,.kmz',
   operational_notes: '',   // text-only — no file
 };
 
@@ -431,10 +471,10 @@ function SurveySection({ project, onRefresh, continueMode = false }: { project: 
               </select>
             )}
 
-            {/* File format hint */}
+            {/* File format hint — Integra V3: KMZ accepted on Validation & Survey */}
             <span style={{ fontSize: 11, color: '#8c959f', alignSelf: 'center' }}>
-              {fileType === 'supporting_file' && 'Format: PDF, Word, Excel'}
-              {fileType === 'survey_evidence'  && 'Format: PDF, PNG, JPG, Word, Excel'}
+              {fileType === 'supporting_file' && 'Format: PDF, Word, Excel, KMZ'}
+              {fileType === 'survey_evidence'  && 'Format: PDF, PNG, JPG, Word, Excel, KMZ'}
               {fileType === 'operational_notes' && 'Input teks — tidak perlu file'}
             </span>
           </div>
@@ -492,7 +532,7 @@ function SurveySection({ project, onRefresh, continueMode = false }: { project: 
                 ) : (
                   <a href={fixFileUrl(u.fileUrl)} target="_blank" rel="noopener noreferrer"
                     style={{ fontSize: 12, color: '#0969DA', textDecoration: 'none', display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {u.caption || u.fileUrl?.split('/').pop() || 'File'} <ExternalLink size={10} />
+                    {u.caption || u.originalFileName || u.fileUrl?.split('/').pop() || 'File'} <ExternalLink size={10} />
                   </a>
                 )}
                 <span style={{ fontSize: 10, color: '#8c959f' }}>
@@ -522,6 +562,138 @@ function SurveySection({ project, onRefresh, continueMode = false }: { project: 
             style={{ padding: '7px 16px', borderRadius: 6, border: 'none', background: '#1a7f37', color: '#fff', fontWeight: 700, cursor: 'pointer', fontSize: 12 }}>
             {submitting ? 'Mengirim…' : '📤 Submit ke PM untuk Review'}
           </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Site Initiation section (Integra V1: Bulky project → child Sites) ───────
+function SiteInitiationSection({
+  project,
+  onRefresh,
+  userRole,
+  monitoringOnly = false,
+}: {
+  project: FtttProject;
+  onRefresh: () => void;
+  userRole: string;
+  /** Integra V3: after Site Initiation done, Parent is monitoring + child list only */
+  monitoringOnly?: boolean;
+}) {
+  const { user } = useAuthStore();
+  const canManage = !monitoringOnly && (userRole === 'ADMIN' || userRole === 'GENERAL_MANAGER' || userRole === 'PM_FTTT');
+  const [sites, setSites] = useState<FtttSiteSummary[]>([]);
+  const [available, setAvailable] = useState<FinanceSiteOption[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedFinanceSiteId, setSelectedFinanceSiteId] = useState('');
+  const [adding, setAdding] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [sitesRes, availRes] = await Promise.all([
+        apiFetch(`/fttt-projects/${project.id}/sites`, { method: 'GET' }, user?.id),
+        canManage
+          ? apiFetch(`/fttt-projects/${project.id}/available-finance-sites`, { method: 'GET' }, user?.id)
+          : Promise.resolve(null),
+      ]);
+      setSites(sitesRes.ok ? await sitesRes.json() : []);
+      setAvailable(availRes && availRes.ok ? await availRes.json() : []);
+    } catch { /* ignore */ }
+    finally { setLoading(false); }
+  }, [project.id, user?.id, canManage]);
+  useEffect(() => { void load(); }, [load]);
+
+  const fmtIDR = (n: number) => 'Rp ' + Math.round(n).toLocaleString('id-ID');
+
+  const handleAddSite = async () => {
+    if (!selectedFinanceSiteId) { toast.error('Pilih Finance Site terlebih dahulu'); return; }
+    setAdding(true);
+    try {
+      const res = await apiFetch(`/fttt-projects/${project.id}/sites`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ financeProjectId: selectedFinanceSiteId }),
+      }, user?.id);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal menambahkan site');
+      toast.success('Site berhasil ditambahkan');
+      setSelectedFinanceSiteId('');
+      void load(); onRefresh();
+    } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
+    finally { setAdding(false); }
+  };
+
+  const handleDeleteSite = async (siteId: string) => {
+    if (!confirm('Hapus site ini?')) return;
+    setDeletingId(siteId);
+    try {
+      const res = await apiFetch(`/fttt-projects/sites/${siteId}`, { method: 'DELETE' }, user?.id);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal menghapus site');
+      toast.success('Site dihapus');
+      void load(); onRefresh();
+    } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
+    finally { setDeletingId(null); }
+  };
+
+  return (
+    <div>
+      <p style={{ fontWeight: 600, fontSize: 14, marginBottom: 4 }}>
+        {monitoringOnly ? '📍 Daftar Child Project (Site)' : '📍 Site Initiation'}
+      </p>
+      <p style={{ fontSize: 12, color: '#57606a', marginBottom: 12 }}>
+        {monitoringOnly
+          ? 'Parent Project berfungsi sebagai monitoring. Buka masing-masing Site untuk lifecycle operasional (Survey → Closing).'
+          : 'Project ini bersifat Bulky (gabungan beberapa Site). Tambahkan Site yang akan dikerjakan — setiap Site terhubung ke Finance Site (Segment) masing-masing.'}
+      </p>
+
+      {canManage && (
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 14, flexWrap: 'wrap' }}>
+          <select value={selectedFinanceSiteId} onChange={(e) => setSelectedFinanceSiteId(e.target.value)}
+            style={{ flex: 1, minWidth: 220, padding: '7px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12 }}>
+            <option value="">— Pilih Finance Site —</option>
+            {available.map((fs) => (
+              <option key={fs.id} value={fs.id}>{fs.code} · {fs.name} ({fmtIDR(Number(fs.totalBudget))})</option>
+            ))}
+          </select>
+          <button type="button" disabled={adding || !selectedFinanceSiteId} onClick={() => void handleAddSite()}
+            style={{ padding: '7px 14px', borderRadius: 6, border: 'none', background: '#0969DA', color: '#fff', fontWeight: 600, cursor: adding ? 'not-allowed' : 'pointer', fontSize: 12 }}>
+            {adding ? 'Menambahkan…' : '+ Add Site'}
+          </button>
+        </div>
+      )}
+      {canManage && available.length === 0 && !loading && (
+        <p style={{ fontSize: 11, color: '#8c959f', marginTop: -8, marginBottom: 12 }}>Tidak ada Finance Site yang tersedia untuk ditambahkan.</p>
+      )}
+
+      {loading ? (
+        <p style={{ fontSize: 12, color: '#8c959f' }}>Memuat…</p>
+      ) : sites.length === 0 ? (
+        <p style={{ fontSize: 12, color: '#8c959f' }}>Belum ada Site.</p>
+      ) : (
+        <div style={{ border: '1px solid #D0D7DE', borderRadius: 10, overflow: 'hidden' }}>
+          {sites.map((s) => (
+            <div key={s.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, padding: '10px 12px', borderBottom: '1px solid #F0F3F6' }}>
+              <div>
+                <Link href={`/fttt-projects/${s.id}`} style={{ fontWeight: 600, fontSize: 13, color: '#0969DA', textDecoration: 'none' }}>
+                  {s.projectName ?? `Site ${s.id.slice(-6).toUpperCase()}`}
+                </Link>
+                <div style={{ fontSize: 11, color: '#57606a', marginTop: 2 }}>
+                  {FTTT_PHASE_LABELS[s.currentPhase]} · {s.financeProject ? `${s.financeProject.code} · ${s.financeProject.name}` : 'Belum terhubung Finance Site'}
+                  {s.pm?.name ? ` · PM: ${s.pm.name}` : ''}
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <Link href={`/fttt-projects/${s.id}`} style={{ fontSize: 11, color: '#0969DA' }}>Lihat ↗</Link>
+                {canManage && (
+                  <button type="button" disabled={deletingId === s.id} onClick={() => void handleDeleteSite(s.id)}
+                    style={{ fontSize: 11, color: '#cf222e', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
+                    {deletingId === s.id ? 'Menghapus…' : 'Delete Site'}
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
         </div>
       )}
     </div>
@@ -907,7 +1079,9 @@ function JaminanSection({ project, onRefresh }: { project: FtttProject; onRefres
 // ─── iFORTE Project Preparation: Supporting Document (Opsional) ───────────────
 // Upload PDF/Excel sebagai referensi project; BUKAN syarat lanjut fase.
 // Admin Project upload → PM FTTT review/approval. Material tidak dikelola di PermaTrax.
-function IforteSupportingDocSection({ project, onRefresh, userRole }: { project: FtttProject; onRefresh: () => void; userRole: string }) {
+// Integra V1: generalized for all companies (was iFORTE-only) — optional supporting
+// document upload/approval on the Preparation phase
+function SupportingDocSection({ project, onRefresh, userRole }: { project: FtttProject; onRefresh: () => void; userRole: string }) {
   const { user } = useAuthStore();
   const canUpload = userRole === 'ADMIN' || userRole === 'GENERAL_MANAGER';
   const canPmApprove = userRole === 'PM_FTTT';
@@ -955,7 +1129,7 @@ function IforteSupportingDocSection({ project, onRefresh, userRole }: { project:
       <p style={{ fontWeight: 600, fontSize: 14, marginBottom: 4 }}>📎 Supporting Document (Opsional)</p>
       <p style={{ fontSize: 12, color: '#57606a', marginBottom: 12 }}>
         Admin Project mengunggah dokumen pendukung (PDF / Excel) sebagai referensi. PM FTTT melakukan review &amp; approval.
-        Upload bersifat opsional — fase dapat dilanjutkan tanpa dokumen ini. Material tidak dikelola di PermaTrax (material milik iFORTE).
+        Upload bersifat opsional — fase dapat dilanjutkan tanpa dokumen ini.
       </p>
 
       {doc ? (
@@ -1323,23 +1497,32 @@ function DocumentationSection({ project, onRefresh, userRole }: { project: FtttP
 
 // ─── Implementation phase section ─────────────────────────────────────────────
 // C5-Issue4: MONITORING_DOC is Admin-only; Surveyor+PM can only upload photos+notes
-// ─── Span-based Daily Implementation Log (Telkom Infra only) ─────────────────
+// ─── Folder-based Daily Implementation Log (Galian: Span / KU: Folder KU) ─────
 const SPAN_LOG_CATEGORY_LABELS: Record<string, string> = {
   GALIAN: 'Galian', VIDEO_GALIAN: 'Video Galian', PERBAIKAN: 'Perbaikan',
   HANDHOLE: 'Handhole', JEMBATAN: 'Jembatan', JOIN_TERMINASI: 'Join Terminasi', MARKING_POS: 'Marking Pos',
+  // Integra V2: Kabel Udara (KU) activities
+  PENARIKAN_KABEL: 'Penarikan Kabel', PENANAMAN_TIANG: 'Penanaman Tiang',
 };
+// Integra V2: category options differ per Metode Implementasi
+const GALIAN_LOG_CATEGORIES = ['GALIAN', 'VIDEO_GALIAN', 'PERBAIKAN', 'HANDHOLE', 'JEMBATAN', 'JOIN_TERMINASI', 'MARKING_POS'];
+const KU_LOG_CATEGORIES = ['PENARIKAN_KABEL', 'PENANAMAN_TIANG', 'JOIN_TERMINASI'];
 
-function SpanSection({ project, onRefresh, isAdmin, canLog }: { project: FtttProject; onRefresh: () => void; isAdmin: boolean; canLog?: boolean }) {
+function SpanSection({ project, onRefresh, isAdmin, canLog, mode }: { project: FtttProject; onRefresh: () => void; isAdmin: boolean; canLog?: boolean; mode?: 'GALIAN' | 'KU' }) {
   const { user } = useAuthStore();
+  const isKu = mode === 'KU';
+  const itemLabel = isKu ? 'Folder KU' : 'Span';
+  const logCategories = isKu ? KU_LOG_CATEGORIES : GALIAN_LOG_CATEGORIES;
   const spans: FtttSpan[] = project.spans ?? [];
   const [newSpanNumber, setNewSpanNumber] = useState('');
+  // Integra V2: panjang folder (meter) — diisi sekali saat buat Span/Folder KU
+  const [newSpanLength, setNewSpanLength] = useState('');
   const [creatingSpan, setCreatingSpan] = useState(false);
   const [expandedSpan, setExpandedSpan] = useState<string | null>(null);
   const [uploadingLog, setUploadingLog] = useState<string | null>(null);
-  const [logCategory, setLogCategory] = useState<string>('GALIAN');
+  const [logCategory, setLogCategory] = useState<string>(isKu ? 'PENARIKAN_KABEL' : 'GALIAN');
+  useEffect(() => { setLogCategory(isKu ? 'PENARIKAN_KABEL' : 'GALIAN'); }, [isKu]);
   const [logCaption, setLogCaption] = useState('');
-  // iFORTE GENERAL: meter pekerjaan yang diselesaikan — wajib diisi per log harian
-  const [logMeter, setLogMeter] = useState('');
   const [uploadProgress, setUploadProgress] = useState('');
   const logFileRef = useRef<HTMLInputElement>(null);
   const logFolderRef = useRef<HTMLInputElement>(null);
@@ -1348,24 +1531,29 @@ function SpanSection({ project, onRefresh, isAdmin, canLog }: { project: FtttPro
 
   const handleCreateSpan = async () => {
     if (!newSpanNumber.trim()) return;
+    const lengthVal = Number(newSpanLength);
+    if (newSpanLength.trim() === '' || Number.isNaN(lengthVal) || lengthVal <= 0) {
+      toast.error(`Isi panjang pekerjaan (meter) untuk ${itemLabel} ini`);
+      return;
+    }
     setCreatingSpan(true);
     try {
       const res = await apiFetch(`/fttt-projects/${project.id}/spans`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ spanNumber: newSpanNumber.trim() }),
+        body: JSON.stringify({ spanNumber: newSpanNumber.trim(), lengthMeters: lengthVal }),
       }, user?.id);
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
-      setNewSpanNumber(''); toast.success('Span berhasil dibuat'); onRefresh();
+      setNewSpanNumber(''); setNewSpanLength(''); toast.success(`${itemLabel} berhasil dibuat`); onRefresh();
     } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
     finally { setCreatingSpan(false); }
   };
 
   const handleDeleteSpan = async (spanId: string) => {
-    if (!confirm('Hapus span ini beserta seluruh log-nya?')) return;
+    if (!confirm(`Hapus ${itemLabel.toLowerCase()} ini beserta seluruh log-nya?`)) return;
     try {
       const res = await apiFetch(`/fttt-projects/spans/${spanId}`, { method: 'DELETE' }, user?.id);
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
-      toast.success('Span dihapus'); onRefresh();
+      toast.success(`${itemLabel} dihapus`); onRefresh();
     } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
   };
 
@@ -1373,12 +1561,6 @@ function SpanSection({ project, onRefresh, isAdmin, canLog }: { project: FtttPro
   const handleAddLogs = async (spanId: string, files: FileList | File[]) => {
     const arr = Array.from(files).filter((f) => f.size > 0);
     if (arr.length === 0) return;
-    // iFORTE GENERAL: meter wajib diisi setiap kali membuat log implementasi
-    const meterVal = Number(logMeter);
-    if (logMeter.trim() === '' || Number.isNaN(meterVal) || meterVal < 0) {
-      toast.error('Isi jumlah meter yang dikerjakan pada log ini (boleh 0 bila tidak ada penambahan)');
-      return;
-    }
     setUploadingLog(spanId);
     let ok = 0;
     try {
@@ -1387,15 +1569,13 @@ function SpanSection({ project, onRefresh, isAdmin, canLog }: { project: FtttPro
         const fd = new FormData();
         fd.append('category', logCategory);
         if (logCaption) fd.append('caption', logCaption);
-        // meter hanya dikirim pada file PERTAMA agar tidak terhitung ganda
-        if (i === 0) fd.append('meterDone', String(meterVal));
         fd.append('file', arr[i]);
         const res = await apiFetch(`/fttt-projects/spans/${spanId}/logs`, { method: 'POST', body: fd }, user?.id);
         if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error((e as { message?: string }).message ?? 'Gagal'); }
         ok++;
       }
-      setLogCaption(''); setLogMeter('');
-      toast.success(arr.length > 1 ? `${ok} file berhasil diunggah` : 'Log span berhasil diunggah');
+      setLogCaption('');
+      toast.success(arr.length > 1 ? `${ok} file berhasil diunggah` : 'Log berhasil diunggah');
       onRefresh();
     } catch (err: unknown) {
       toast.error(`${err instanceof Error ? err.message : 'Gagal'} (${ok}/${arr.length} terunggah)`);
@@ -1414,23 +1594,27 @@ function SpanSection({ project, onRefresh, isAdmin, canLog }: { project: FtttPro
 
   return (
     <div style={{ marginBottom: 20 }}>
-      <p style={{ fontWeight: 700, fontSize: 13, marginBottom: 8 }}>📍 Daily Implementation Log — Span</p>
+      <p style={{ fontWeight: 700, fontSize: 13, marginBottom: 8 }}>📍 Daily Implementation Log — {itemLabel}</p>
 
-      {/* Create Span */}
+      {/* Create Span / Folder KU */}
       {mayLog && (
-        <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+        <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
           <input value={newSpanNumber} onChange={(e) => setNewSpanNumber(e.target.value)}
-            placeholder="Nomor Span (mis. SP-001)"
-            style={{ flex: 1, padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12 }} />
-          <button type="button" onClick={() => void handleCreateSpan()} disabled={creatingSpan || !newSpanNumber.trim()}
+            placeholder={isKu ? 'Nomor Folder KU (mis. KU-001)' : 'Nomor Span (mis. SP-001)'}
+            style={{ flex: 1, minWidth: 160, padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12 }} />
+          <input type="number" min={0} value={newSpanLength} onChange={(e) => setNewSpanLength(e.target.value)}
+            placeholder="Panjang (m) *"
+            title="Panjang Pekerjaan (Meter) — wajib diisi saat membuat folder"
+            style={{ width: 130, padding: '6px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12 }} />
+          <button type="button" onClick={() => void handleCreateSpan()} disabled={creatingSpan || !newSpanNumber.trim() || !newSpanLength.trim()}
             style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: '#0969DA', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 12 }}>
-            {creatingSpan ? '…' : '+ Tambah Span'}
+            {creatingSpan ? '…' : isKu ? '+ Tambah KU' : '+ Tambah Span'}
           </button>
         </div>
       )}
 
       {spans.length === 0 && (
-        <p style={{ fontSize: 12, color: '#57606a' }}>Belum ada span. {mayLog ? 'Tambahkan span pertama di atas.' : 'Admin akan membuat span.'}</p>
+        <p style={{ fontSize: 12, color: '#57606a' }}>Belum ada {itemLabel.toLowerCase()}. {mayLog ? `Tambahkan ${itemLabel.toLowerCase()} pertama di atas.` : 'Admin akan membuat folder.'}</p>
       )}
 
       {spans.map((span) => (
@@ -1438,7 +1622,12 @@ function SpanSection({ project, onRefresh, isAdmin, canLog }: { project: FtttPro
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 12px', background: '#F6F8FA', cursor: 'pointer' }}
             onClick={() => setExpandedSpan(expandedSpan === span.id ? null : span.id)}>
             <div>
-              <span style={{ fontWeight: 700, fontSize: 13 }}>Span {span.spanNumber}</span>
+              <span style={{ fontWeight: 700, fontSize: 13 }}>{itemLabel} {span.spanNumber}</span>
+              {span.lengthMeters != null && (
+                <span style={{ fontSize: 11, fontWeight: 700, color: '#0969DA', background: '#EFF6FF', padding: '1px 6px', borderRadius: 999, marginLeft: 8 }}>
+                  {Number(span.lengthMeters).toLocaleString('id-ID')} m
+                </span>
+              )}
               <span style={{ fontSize: 11, color: '#57606a', marginLeft: 8 }}>{span.spanLogs.length} log</span>
               <span style={{ fontSize: 11, color: '#8c959f', marginLeft: 8 }}>· dibuat {fmt(span.createdAt)}</span>
             </div>
@@ -1497,15 +1686,10 @@ function SpanSection({ project, onRefresh, isAdmin, canLog }: { project: FtttPro
                 <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                   <select value={logCategory} onChange={(e) => setLogCategory(e.target.value)}
                     style={{ padding: '5px 8px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 11 }}>
-                    {Object.entries(SPAN_LOG_CATEGORY_LABELS).map(([k, v]) => (
-                      <option key={k} value={k}>{v}</option>
+                    {logCategories.map((k) => (
+                      <option key={k} value={k}>{SPAN_LOG_CATEGORY_LABELS[k] ?? k}</option>
                     ))}
                   </select>
-                  {/* iFORTE GENERAL: meter dikerjakan — wajib per log harian */}
-                  <input type="number" min={0} value={logMeter} onChange={(e) => setLogMeter(e.target.value)}
-                    placeholder="Panjang Selesai (m) *"
-                    title="Panjang Pekerjaan Selesai (Meter) — wajib diisi setiap Daily Log"
-                    style={{ width: 150, padding: '5px 8px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 11 }} />
                   <input value={logCaption} onChange={(e) => setLogCaption(e.target.value)}
                     placeholder="Keterangan (opsional)"
                     style={{ flex: 1, minWidth: 120, padding: '5px 8px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 11 }} />
@@ -1620,8 +1804,14 @@ function TransactionLogSection({ project, onRefresh, userRole }: { project: Fttt
   const [disburseDate, setDisburseDate] = useState('');
   const [disbursing, setDisbursing] = useState(false);
   const [openCat, setOpenCat] = useState<FtttCostCategory | null>(null);
-  const [form, setForm] = useState({ aktivitas: '', uom: '', qty: '', price: '', remarks: '' });
+  const [form, setForm] = useState({ aktivitas: '', uom: '', qty: '', price: '', remarks: '', expectedNeedDate: '', reason: '' });
   const [saving, setSaving] = useState(false);
+  // Integra V1: Finance review (Accept/Decline) of a Financial Request
+  const [reviewId, setReviewId] = useState<string | null>(null);
+  const [reviewAction, setReviewAction] = useState<'accept' | 'decline' | null>(null);
+  const [scheduledReleaseAt, setScheduledReleaseAt] = useState('');
+  const [declinedReason, setDeclinedReason] = useState('');
+  const [reviewing, setReviewing] = useState(false);
   const [planOpen, setPlanOpen] = useState(false);
   const [planRows, setPlanRows] = useState<{ targetDate: string; plannedBudget: string; plannedProgressPct: string }[]>([]);
   const [hasBaselinePlan, setHasBaselinePlan] = useState(false);
@@ -1692,21 +1882,59 @@ function TransactionLogSection({ project, onRefresh, userRole }: { project: Fttt
   const handleAdd = async (category: FtttCostCategory) => {
     if (!form.aktivitas.trim()) { toast.error('Aktivitas wajib diisi'); return; }
     if (!form.remarks.trim()) { toast.error('Remarks wajib diisi'); return; }
+    if (!form.expectedNeedDate) { toast.error('Tanggal Kebutuhan wajib diisi'); return; }
+    if (!form.reason.trim()) { toast.error('Alasan/justifikasi wajib diisi'); return; }
     const qty = Number(form.qty); const price = Number(form.price);
     if (!(qty > 0)) { toast.error('Qty harus lebih dari 0'); return; }
     setSaving(true);
     try {
       const res = await apiFetch(`/fttt-projects/${project.id}/transactions`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ category, aktivitas: form.aktivitas, uom: form.uom || undefined, qty, price, remarks: form.remarks }),
+        body: JSON.stringify({
+          category, aktivitas: form.aktivitas, uom: form.uom || undefined, qty, price, remarks: form.remarks,
+          expectedNeedDate: new Date(form.expectedNeedDate + 'T12:00:00').toISOString(),
+          reason: form.reason,
+        }),
       }, user?.id);
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
-      toast.success('Transaksi tercatat');
-      setForm({ aktivitas: '', uom: '', qty: '', price: '', remarks: '' });
+      toast.success('Financial Request tercatat — menunggu review Finance');
+      setForm({ aktivitas: '', uom: '', qty: '', price: '', remarks: '', expectedNeedDate: '', reason: '' });
       setOpenCat(null);
       onRefresh(); void loadScurve();
     } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
     finally { setSaving(false); }
+  };
+
+  const handleAccept = async (id: string) => {
+    if (!scheduledReleaseAt) { toast.error('Isi Rencana Tanggal Pencairan'); return; }
+    setReviewing(true);
+    try {
+      const res = await apiFetch(`/fttt-projects/transactions/${id}/accept`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scheduledReleaseAt: new Date(scheduledReleaseAt).toISOString() }),
+      }, user?.id);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
+      toast.success('Financial Request disetujui');
+      setReviewId(null); setReviewAction(null); setScheduledReleaseAt('');
+      onRefresh(); void loadScurve();
+    } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
+    finally { setReviewing(false); }
+  };
+
+  const handleDecline = async (id: string) => {
+    if (!declinedReason.trim()) { toast.error('Isi alasan penolakan'); return; }
+    setReviewing(true);
+    try {
+      const res = await apiFetch(`/fttt-projects/transactions/${id}/decline`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ declinedReason: declinedReason.trim() }),
+      }, user?.id);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
+      toast.success('Financial Request ditolak');
+      setReviewId(null); setReviewAction(null); setDeclinedReason('');
+      onRefresh(); void loadScurve();
+    } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
+    finally { setReviewing(false); }
   };
 
   const handleDelete = async (id: string) => {
@@ -1791,7 +2019,7 @@ function TransactionLogSection({ project, onRefresh, userRole }: { project: Fttt
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', background: '#F6F8FA' }}>
               <span style={{ fontWeight: 700, fontSize: 13 }}>{FTTT_COST_CATEGORY_LABELS[cat]} <span style={{ fontSize: 11, color: '#57606a' }}>({catTxns.length})</span></span>
               {isPm && (
-                <button type="button" onClick={() => { setOpenCat(openCat === cat ? null : cat); setForm({ aktivitas: '', uom: '', qty: '', price: '', remarks: '' }); }}
+                <button type="button" onClick={() => { setOpenCat(openCat === cat ? null : cat); setForm({ aktivitas: '', uom: '', qty: '', price: '', remarks: '', expectedNeedDate: '', reason: '' }); }}
                   style={{ padding: '3px 10px', borderRadius: 6, border: 'none', background: '#0969DA', color: '#fff', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
                   + Add
                 </button>
@@ -1804,11 +2032,13 @@ function TransactionLogSection({ project, onRefresh, userRole }: { project: Fttt
                 <input placeholder="Qty" type="number" value={form.qty} onChange={(e) => setForm({ ...form, qty: e.target.value })} style={txnInp} />
                 <input placeholder="Price" type="number" value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} style={txnInp} />
                 <input placeholder="Remarks (wajib)" value={form.remarks} onChange={(e) => setForm({ ...form, remarks: e.target.value })} style={{ ...txnInp, gridColumn: '1 / 4' }} />
+                <input type="date" title="Tanggal Kebutuhan" value={form.expectedNeedDate} onChange={(e) => setForm({ ...form, expectedNeedDate: e.target.value })} style={txnInp} />
+                <input placeholder="Alasan/justifikasi (wajib)" value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })} style={{ ...txnInp, gridColumn: '1 / 4' }} />
                 <button type="button" disabled={saving} onClick={() => void handleAdd(cat)}
                   style={{ borderRadius: 6, border: 'none', background: '#1a7f37', color: '#fff', fontWeight: 700, fontSize: 11, cursor: saving ? 'not-allowed' : 'pointer' }}>
                   {saving ? '…' : 'Simpan'}
                 </button>
-                <div style={{ gridColumn: '1 / 5', fontSize: 11, color: '#57606a' }}>Total otomatis: <b>{fmtIDR((Number(form.qty) || 0) * (Number(form.price) || 0))}</b> · Timestamp dibuat otomatis saat disimpan</div>
+                <div style={{ gridColumn: '1 / 5', fontSize: 11, color: '#57606a' }}>Total otomatis: <b>{fmtIDR((Number(form.qty) || 0) * (Number(form.price) || 0))}</b> · Timestamp dibuat otomatis saat disimpan · Prioritas dihitung otomatis dari Tanggal Kebutuhan</div>
               </div>
             )}
             {catTxns.length === 0 ? (
@@ -1820,6 +2050,11 @@ function TransactionLogSection({ project, onRefresh, userRole }: { project: Fttt
               const hasDate = !!t.disbursedAt;
               const realized = hasDate && new Date(t.disbursedAt!).getTime() <= nowMs;
               const scheduled = hasDate && !realized;
+              // Integra V1: legacy transactions (no `reason`) skip the Financial Request review gate
+              const isFinancialRequest = !!t.reason;
+              const pendingReview = isFinancialRequest && t.requestStatus === 'PENDING_REVIEW';
+              const accepted = !isFinancialRequest || t.requestStatus === 'ACCEPTED';
+              const declined = isFinancialRequest && t.requestStatus === 'DECLINED';
               return (
                 <div key={t.id} style={{ padding: '8px 12px', borderBottom: '1px solid #F0F3F6', fontSize: 12 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
@@ -1827,6 +2062,16 @@ function TransactionLogSection({ project, onRefresh, userRole }: { project: Fttt
                       <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: realized ? '#1a7f37' : scheduled ? '#0969DA' : '#9a6700', background: realized ? '#DAFBE1' : scheduled ? '#DDF4FF' : '#FFF8C5', padding: '1px 6px', borderRadius: 999 }}>
                         {realized ? 'Terealisasi' : scheduled ? 'Terjadwal' : 'Menunggu Dana Keluar'}
                       </span>
+                      {t.priority && (
+                        <span style={{ marginLeft: 4, fontSize: 10, fontWeight: 700, color: '#fff', background: FTTT_PRIORITY_COLORS[t.priority] ?? '#57606a', padding: '1px 6px', borderRadius: 999 }}>
+                          {FTTT_PRIORITY_LABELS[t.priority] ?? t.priority}
+                        </span>
+                      )}
+                      {isFinancialRequest && t.requestStatus && (
+                        <span style={{ marginLeft: 4, fontSize: 10, fontWeight: 700, color: FTTT_REQUEST_STATUS_COLORS[t.requestStatus] ?? '#57606a', background: '#F6F8FA', padding: '1px 6px', borderRadius: 999, border: `1px solid ${FTTT_REQUEST_STATUS_COLORS[t.requestStatus] ?? '#D0D7DE'}` }}>
+                          {FTTT_REQUEST_STATUS_LABELS[t.requestStatus] ?? t.requestStatus}
+                        </span>
+                      )}
                     </span>
                     <span style={{ fontWeight: 700 }}>{fmtIDR(total)}</span>
                   </div>
@@ -1834,12 +2079,65 @@ function TransactionLogSection({ project, onRefresh, userRole }: { project: Fttt
                     {Number(t.qty)} {t.uom ?? ''} × {fmtIDR(Number(t.price))} · Bobot {bobot.toFixed(2)}%
                   </div>
                   <div style={{ fontSize: 10, color: '#8c959f', marginTop: 2 }}>📝 {t.remarks} · 🕒 {fmtDT(t.createdAt)} · {t.createdBy?.name}</div>
+                  {t.expectedNeedDate && (
+                    <div style={{ fontSize: 10, color: '#8c959f', marginTop: 2 }}>
+                      📅 Kebutuhan: {new Date(t.expectedNeedDate).toLocaleDateString('id-ID')}{t.reason ? ` · Alasan: ${t.reason}` : ''}
+                    </div>
+                  )}
+                  {declined && (
+                    <div style={{ fontSize: 10, color: '#cf222e', marginTop: 2 }}>
+                      ✕ Ditolak{t.reviewedBy?.name ? ` oleh ${t.reviewedBy.name}` : ''}{t.declinedReason ? ` · Alasan: ${t.declinedReason}` : ''}
+                    </div>
+                  )}
+                  {isFinancialRequest && t.requestStatus === 'ACCEPTED' && t.scheduledReleaseAt && !hasDate && (
+                    <div style={{ fontSize: 10, color: '#1a7f37', marginTop: 2 }}>
+                      ✓ Disetujui{t.reviewedBy?.name ? ` oleh ${t.reviewedBy.name}` : ''} · Rencana pencairan: {new Date(t.scheduledReleaseAt).toLocaleDateString('id-ID')}
+                    </div>
+                  )}
                   {hasDate && (
                     <div style={{ fontSize: 10, color: realized ? '#1a7f37' : '#0969DA', marginTop: 2 }}>
                       💵 Dana keluar: {fmtDT(t.disbursedAt!)}{t.disbursedBy?.name ? ` · ${t.disbursedBy.name}` : ''}{scheduled ? ' (menunggu tanggal)' : ''}
                     </div>
                   )}
-                  {!hasDate && isFinance && (
+                  {isFinance && pendingReview && (
+                    <div style={{ marginTop: 6, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                      {reviewId === t.id && reviewAction === 'accept' ? (
+                        <>
+                          <input type="datetime-local" value={scheduledReleaseAt} onChange={(e) => setScheduledReleaseAt(e.target.value)}
+                            style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 11 }} />
+                          <button type="button" disabled={reviewing} onClick={() => void handleAccept(t.id)}
+                            style={{ padding: '4px 10px', borderRadius: 6, border: 'none', background: '#1a7f37', color: '#fff', fontWeight: 700, fontSize: 11, cursor: 'pointer' }}>
+                            {reviewing ? '…' : 'Konfirmasi Setuju'}
+                          </button>
+                          <button type="button" onClick={() => { setReviewId(null); setReviewAction(null); setScheduledReleaseAt(''); }}
+                            style={{ fontSize: 11, background: 'none', border: 'none', color: '#57606a', cursor: 'pointer' }}>Batal</button>
+                        </>
+                      ) : reviewId === t.id && reviewAction === 'decline' ? (
+                        <>
+                          <input placeholder="Alasan penolakan…" value={declinedReason} onChange={(e) => setDeclinedReason(e.target.value)}
+                            style={{ flex: 1, minWidth: 160, padding: '4px 8px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 11 }} />
+                          <button type="button" disabled={reviewing} onClick={() => void handleDecline(t.id)}
+                            style={{ padding: '4px 10px', borderRadius: 6, border: 'none', background: '#cf222e', color: '#fff', fontWeight: 700, fontSize: 11, cursor: 'pointer' }}>
+                            {reviewing ? '…' : 'Konfirmasi Tolak'}
+                          </button>
+                          <button type="button" onClick={() => { setReviewId(null); setReviewAction(null); setDeclinedReason(''); }}
+                            style={{ fontSize: 11, background: 'none', border: 'none', color: '#57606a', cursor: 'pointer' }}>Batal</button>
+                        </>
+                      ) : (
+                        <>
+                          <button type="button" onClick={() => { setReviewId(t.id); setReviewAction('accept'); setScheduledReleaseAt(''); }}
+                            style={{ padding: '4px 10px', borderRadius: 6, border: 'none', background: '#1a7f37', color: '#fff', fontWeight: 600, fontSize: 11, cursor: 'pointer' }}>
+                            ✓ Accept
+                          </button>
+                          <button type="button" onClick={() => { setReviewId(t.id); setReviewAction('decline'); setDeclinedReason(''); }}
+                            style={{ padding: '4px 10px', borderRadius: 6, border: 'none', background: '#cf222e', color: '#fff', fontWeight: 600, fontSize: 11, cursor: 'pointer' }}>
+                            ✕ Decline
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  )}
+                  {!hasDate && isFinance && accepted && !pendingReview && (
                     <div style={{ marginTop: 6, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
                       {disburseId === t.id ? (
                         <>
@@ -1951,10 +2249,11 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
   const isTI         = project.ftttCompany === 'TELKOM_INFRA';
   const isPST        = project.ftttCompany === 'PST';
   const isIforte     = project.ftttCompany === 'IFORTE';
-  // JLM: PST chooses implementation type — Galian (span-based) vs KU (existing flow)
+  // Integra V1: Metode Implementasi (Galian / KU) generalized for ALL companies —
+  // method-first daily logging (was PST-only)
   const implType     = project.implementationType ?? null;
-  // iFORTE: Daily Log Span adalah bagian dari business process Implementation
-  const useSpanFlow  = isTI || isIforte || (isPST && implType === 'GALIAN');
+  // Integra V4: KU must show the same Total Panjang / Progress monitoring as Galian
+  const showLengthProgress = implType === 'GALIAN' || implType === 'KU';
   // Issue 2: TI Implementation — Admin only; PST/iFORTE — Surveyor/PM/Admin
   const canUpload    = isTI ? isAdmin : (isSurveyor || isAdmin || isPmFttt);
   const canMonitoring = isAdmin;
@@ -1984,16 +2283,19 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
   const [uploading, setUploading]   = useState(false);
   const [markingDone, setMarkingDone] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<string>('');
-  // JLM: Implementation tabs — Daily Log Span / Transaction Log / Log Aktivitas
-  const [implTab, setImplTab] = useState<'daily' | 'transaction' | 'activity'>('daily');
+  // Integra V2: Daily Log tab is shown for both Galian and KU — Transaction Log / Log Aktivitas remain company-wide
+  const [implTab, setImplTab] = useState<'daily' | 'transaction' | 'activity'>(implType ? 'daily' : 'activity');
+  // Re-sync default tab once implType becomes known after initial mount (method-first selector)
+  useEffect(() => { if (implType) setImplTab('daily'); }, [implType]);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const LOG_LABELS: Record<string, string> = { PHOTO: '📷 Foto Progress', MONITORING_DOC: '📊 Dokumen Monitoring', NOTE: '📝 Catatan Progress', RFSD: '📦 RFSD (Ready For Sales Document)' };
 
   // ── iFORTE GENERAL: Progress (%) berdasarkan panjang implementasi (meter) ──
   const totalPanjang = Number(project.totalPanjangMeter ?? 0);
+  // Integra V2: panjang folder (meter) diisi sekali saat buat Span/Folder KU — bukan per aktivitas
   const meterFromSpans = (project.spans ?? []).reduce(
-    (sum, sp) => sum + sp.spanLogs.reduce((s, l) => s + Number(l.meterDone ?? 0), 0), 0,
+    (sum, sp) => sum + Number(sp.lengthMeters ?? 0), 0,
   );
   // Prefer Log Aktivitas meters when Daily Log already mirrored there (avoid double-count)
   const meterFromActivity = (project.implementationLogs ?? []).reduce(
@@ -2080,13 +2382,14 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
     (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
   );
 
-  // JLM: PST must pick implementation type before any implementation activity
-  if (isPST && !implType) {
+  // Integra V1: Method-first Daily Log — every company picks implementation
+  // method (Galian / KU) before any implementation activity is shown
+  if (!implType) {
     return (
       <div>
-        <p style={{ fontWeight: 600, fontSize: 14, marginBottom: 4 }}>Pilih Jenis Implementasi</p>
+        <p style={{ fontWeight: 600, fontSize: 14, marginBottom: 4 }}>Pilih Metode Implementasi</p>
         <p style={{ fontSize: 12, color: '#57606a', marginBottom: 12 }}>
-          Project PST memiliki dua jenis pekerjaan implementasi. Pilih jenis pekerjaan terlebih dahulu untuk menentukan alur dokumentasi.
+          Project ini memiliki dua jenis pekerjaan implementasi. Pilih metode terlebih dahulu untuk menentukan alur dokumentasi Daily Log.
         </p>
         {isAdmin ? (
           <div style={{ display: 'flex', gap: 10 }}>
@@ -2114,14 +2417,14 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
 
   return (
     <div>
-      {isPST && implType && (
+      {implType && (
         <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 10px', borderRadius: 999, background: '#EDF2F4', fontSize: 11, fontWeight: 600, color: '#374151', marginBottom: 10 }}>
-          Jenis Implementasi: {implType === 'GALIAN' ? '⛏️ Galian' : '🔌 KU (Kabel Udara)'}
+          Metode Implementasi: {implType === 'GALIAN' ? '⛏️ Galian' : '🔌 KU (Kabel Udara)'}
         </div>
       )}
 
-      {/* iFORTE GENERAL: Total Panjang Pekerjaan (meter) + Progress (%) */}
-      {useSpanFlow && (
+      {/* Integra V4: Total Panjang + Progress — Galian and KU */}
+      {showLengthProgress && (
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center', border: '1px solid #D0D7DE', borderRadius: 10, padding: '10px 14px', marginBottom: 12, background: '#F6F8FA' }}>
           <div style={{ flex: 1, minWidth: 200 }}>
             <p style={{ margin: 0, fontSize: 11, fontWeight: 700, color: '#57606a', textTransform: 'uppercase' }}>Total Panjang Pekerjaan</p>
@@ -2177,10 +2480,44 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
         </div>
       )}
 
-      {/* JLM: Implementation tabs — Daily Log Span / Transaction Log / Log Aktivitas */}
+      {/* Integra V6: move lapangan-selesai CTA above tabs so users find it before scrolling logs */}
+      {lapanganDone && (
+        <div style={{ background: '#FFF8C5', border: '1px solid #d4a017', borderRadius: 8, padding: 10, marginBottom: 12 }}>
+          <p style={{ margin: 0, fontSize: 12, fontWeight: 700, color: '#9a6700' }}>
+            ✅ Pekerjaan lapangan ditandai selesai
+          </p>
+          <p style={{ margin: '3px 0 0', fontSize: 11, color: '#9a6700' }}>
+            {isAdmin ? 'Silakan upload Dokumen Monitoring, kemudian selesaikan fase.' : 'Menunggu Admin upload Dokumen Monitoring.'}
+          </p>
+        </div>
+      )}
+      {isSurveyor && !isTI && !lapanganDone && logs.length > 0 && (
+        <div style={{ background: '#DAFBE1', border: '1px solid #2DA44E', borderRadius: 8, padding: 10, marginBottom: 12 }}>
+          <p style={{ margin: '0 0 6px', fontSize: 12, fontWeight: 600, color: '#1a7f37' }}>
+            Pekerjaan lapangan sudah selesai?
+          </p>
+          <button type="button" onClick={() => void handleMarkDone()} disabled={markingDone}
+            style={{ padding: '7px 16px', borderRadius: 6, border: 'none', background: '#1a7f37', color: '#fff', fontWeight: 700, cursor: 'pointer', fontSize: 12 }}>
+            {markingDone ? 'Memproses…' : '✅ Selesai Fase → Implementation'}
+          </button>
+        </div>
+      )}
+      {isAdmin && !lapanganDone && logs.length > 0 && (
+        <div style={{ background: '#DAFBE1', border: '1px solid #2DA44E', borderRadius: 8, padding: 10, marginBottom: 12 }}>
+          <p style={{ margin: '0 0 6px', fontSize: 12, fontWeight: 600, color: '#1a7f37' }}>
+            Pekerjaan lapangan sudah selesai?
+          </p>
+          <button type="button" onClick={() => void handleMarkDone()} disabled={markingDone}
+            style={{ padding: '7px 16px', borderRadius: 6, border: 'none', background: '#1a7f37', color: '#fff', fontWeight: 700, cursor: 'pointer', fontSize: 12 }}>
+            {markingDone ? 'Memproses…' : '✅ Tandai Pekerjaan Lapangan Selesai'}
+          </button>
+        </div>
+      )}
+
+      {/* Integra V2: Implementation tabs — Daily Log (Galian & KU) / Transaction Log / Log Aktivitas */}
       <div style={{ display: 'flex', gap: 4, marginBottom: 12, borderBottom: '1px solid #EAEEF2' }}>
         {([
-          { k: 'daily' as const, label: '📍 Daily Log Span' },
+          { k: 'daily' as const, label: '📍 Daily Log' },
           { k: 'transaction' as const, label: '💰 Transaction Log' },
           { k: 'activity' as const, label: '🗂️ Log Aktivitas' },
         ]).map((t) => (
@@ -2193,9 +2530,9 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
 
       {implTab === 'transaction' && <TransactionLogSection project={project} onRefresh={onRefresh} userRole={userRole} />}
 
-      {/* JLM: span-based daily log for TI, PST-Galian, dan iFORTE */}
-      {implTab === 'daily' && useSpanFlow && (
-        <SpanSection project={project} onRefresh={onRefresh} isAdmin={isAdmin}
+      {/* Integra V2: Folder-based Daily Log — shown for both Galian and KU */}
+      {implTab === 'daily' && (
+        <SpanSection project={project} onRefresh={onRefresh} isAdmin={isAdmin} mode={implType ?? undefined}
           canLog={isAdmin || (isIforte && (isPmFttt || isSurveyor))} />
       )}
 
@@ -2237,44 +2574,6 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
           )}
         </div>
       ))}
-
-      {/* C7-TI5/PST: Status banner when lapangan done */}
-      {lapanganDone && (
-        <div style={{ background: '#FFF8C5', border: '1px solid #d4a017', borderRadius: 8, padding: 10, marginTop: 8, marginBottom: 8 }}>
-          <p style={{ margin: 0, fontSize: 12, fontWeight: 700, color: '#9a6700' }}>
-            ✅ Pekerjaan lapangan ditandai selesai
-          </p>
-          <p style={{ margin: '3px 0 0', fontSize: 11, color: '#9a6700' }}>
-            {isAdmin ? 'Silakan upload Dokumen Monitoring, kemudian selesaikan fase.' : 'Menunggu Admin upload Dokumen Monitoring.'}
-          </p>
-        </div>
-      )}
-
-      {/* Mark lapangan done — PST/iFORTE: Surveyor sends to Admin; TI: Admin-only button below */}
-      {isSurveyor && !isTI && !lapanganDone && logs.length > 0 && (
-        <div style={{ background: '#DAFBE1', border: '1px solid #2DA44E', borderRadius: 8, padding: 10, marginTop: 8, marginBottom: 8 }}>
-          <p style={{ margin: '0 0 6px', fontSize: 12, fontWeight: 600, color: '#1a7f37' }}>
-            Pekerjaan lapangan sudah selesai?
-          </p>
-          <button type="button" onClick={() => void handleMarkDone()} disabled={markingDone}
-            style={{ padding: '7px 16px', borderRadius: 6, border: 'none', background: '#1a7f37', color: '#fff', fontWeight: 700, cursor: 'pointer', fontSize: 12 }}>
-            {markingDone ? 'Memproses…' : '✅ Selesai Fase → Implementation'}
-          </button>
-        </div>
-      )}
-
-      {/* C7-TI5: Admin button — confirm lapangan done (TI flow: Admin marks and uploads monitoring doc) */}
-      {isAdmin && !lapanganDone && logs.length > 0 && (
-        <div style={{ background: '#DAFBE1', border: '1px solid #2DA44E', borderRadius: 8, padding: 10, marginTop: 8, marginBottom: 8 }}>
-          <p style={{ margin: '0 0 6px', fontSize: 12, fontWeight: 600, color: '#1a7f37' }}>
-            Pekerjaan lapangan sudah selesai?
-          </p>
-          <button type="button" onClick={() => void handleMarkDone()} disabled={markingDone}
-            style={{ padding: '7px 16px', borderRadius: 6, border: 'none', background: '#1a7f37', color: '#fff', fontWeight: 700, cursor: 'pointer', fontSize: 12 }}>
-            {markingDone ? 'Memproses…' : '✅ Tandai Pekerjaan Lapangan Selesai'}
-          </button>
-        </div>
-      )}
 
       </>
       )}
@@ -3229,12 +3528,41 @@ export default function FtttProjectDetailPage() {
   const userRole = user?.role ?? '';
   // v2: Surveyor FTTT only sees Validation & Survey activities (parallel survey OK)
   const isSurveyorFttt = userRole === 'SURVEYOR_FTTT';
+  // Integra V2/V3: Bulky Project only manages Initiation lifecycle — operational
+  // phase actions (Survey, Implementation, etc.) belong to its Sites
+  const isBulky = project.hierarchyLevel === 'BULKY';
+  const bulkySiteInitProg = project.phaseProgresses.find((p) => p.phase === 'SITE_INITIATION');
+  const bulkyInitiationDone =
+    isBulky &&
+    (bulkySiteInitProg?.status === 'COMPLETED' ||
+      !BULKY_PHASES.includes(project.currentPhase));
+  const canShowAdvance =
+    !isCompletedOrCancelled &&
+    !isSurveyorFttt &&
+    readiness &&
+    !(isBulky && bulkyInitiationDone) &&
+    (() => {
+      // C5: Implementation — Admin only
+      if (project.currentPhase === 'IMPLEMENTATION' && userRole !== 'ADMIN' && userRole !== 'GENERAL_MANAGER') return false;
+      // C6-TI2: Documentation & Reconciliation — PM FTTT + Admin only
+      if ((project.currentPhase === 'DOCUMENTATION' || project.currentPhase === 'RECONCILIATION') &&
+          userRole === 'SURVEYOR_FTTT') return false;
+      // JLM: Project Closing — Admin only (after maintenance confirmation)
+      if (project.currentPhase === 'CLOSING' && userRole !== 'ADMIN' && userRole !== 'GENERAL_MANAGER') return false;
+      return true;
+    })();
 
   return (
     <div style={{ padding: 24, maxWidth: 800, margin: '0 auto' }}>
-      <Link href="/fttt-projects" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: '#0969DA', marginBottom: 16, textDecoration: 'none' }}>
-        <ArrowLeft size={16} /> Daftar FTTT Projects
-      </Link>
+      {project.hierarchyLevel === 'SITE' && project.parentId ? (
+        <Link href={`/fttt-projects/${project.parentId}`} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: '#0969DA', marginBottom: 16, textDecoration: 'none' }}>
+          <ArrowLeft size={16} /> Kembali ke Bulky Project
+        </Link>
+      ) : (
+        <Link href="/fttt-projects" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: '#0969DA', marginBottom: 16, textDecoration: 'none' }}>
+          <ArrowLeft size={16} /> Daftar FTTT Projects
+        </Link>
+      )}
 
       {/* Header */}
       <div style={{ background: '#fff', border: '1px solid #D0D7DE', borderRadius: 12, padding: 20, marginBottom: 16 }}>
@@ -3245,6 +3573,11 @@ export default function FtttProjectDetailPage() {
               <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 999, background: '#DDF4FF', color: '#0969DA' }}>
                 {FTTT_COMPANY_LABELS[project.ftttCompany]}
               </span>
+              {isBulky && (
+                <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 999, background: '#F0F8FF', color: '#0550AE' }}>
+                  Parent / Bulky
+                </span>
+              )}
               <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 999, background: sc.bg, color: sc.text }}>
                 {statusCfg.label}
               </span>
@@ -3278,17 +3611,8 @@ export default function FtttProjectDetailPage() {
               )}
             </p>
           </div>
-          {/* Hide "Selesaikan Fase" in specific role-gated scenarios; Surveyor never advances phases */}
-          {!isCompletedOrCancelled && !isSurveyorFttt && readiness && (() => {
-            // C5: Implementation — Admin only
-            if (project.currentPhase === 'IMPLEMENTATION' && userRole !== 'ADMIN' && userRole !== 'GENERAL_MANAGER') return false;
-            // C6-TI2: Documentation & Reconciliation — PM FTTT + Admin only
-            if ((project.currentPhase === 'DOCUMENTATION' || project.currentPhase === 'RECONCILIATION') &&
-                userRole === 'SURVEYOR_FTTT') return false;
-            // JLM: Project Closing — Admin only (after maintenance confirmation)
-            if (project.currentPhase === 'CLOSING' && userRole !== 'ADMIN' && userRole !== 'GENERAL_MANAGER') return false;
-            return true;
-          })() && (
+          {/* Integra V3: hide Selesaikan Fase on Parent after Initiation + Site Initiation */}
+          {canShowAdvance && (
             <button
               onClick={handleAdvance}
               disabled={advancing || !readiness.ready}
@@ -3303,8 +3627,13 @@ export default function FtttProjectDetailPage() {
               {advancing ? 'Memproses…' : `Selesaikan Fase → ${FTTT_PHASE_LABELS[project.currentPhase]}`}
             </button>
           )}
+          {isBulky && bulkyInitiationDone && !isSurveyorFttt && (
+            <div style={{ padding: '8px 14px', borderRadius: 8, background: '#DAFBE1', border: '1px solid #1a7f37', fontSize: 12, color: '#1a7f37' }}>
+              Parent Initiation selesai — lanjutkan lifecycle operasional di masing-masing Child Site.
+            </div>
+          )}
           {/* Role-gated info messages */}
-          {!isCompletedOrCancelled && !isSurveyorFttt && project.currentPhase === 'IMPLEMENTATION' &&
+          {!isCompletedOrCancelled && !isSurveyorFttt && !isBulky && project.currentPhase === 'IMPLEMENTATION' &&
             userRole !== 'ADMIN' && userRole !== 'GENERAL_MANAGER' && (
             <div style={{ padding: '8px 14px', borderRadius: 8, background: '#F6F8FA', border: '1px solid #D0D7DE', fontSize: 12, color: '#57606a' }}>
               🔒 Penyelesaian fase Implementation hanya dapat dilakukan oleh Admin
@@ -3318,7 +3647,7 @@ export default function FtttProjectDetailPage() {
         </div>
 
         {/* Blocked reasons — not relevant for Surveyor (they don't advance phases) */}
-        {!isSurveyorFttt && readiness && !readiness.ready && readiness.blockedReasons.length > 0 && (
+        {!isSurveyorFttt && !bulkyInitiationDone && readiness && !readiness.ready && readiness.blockedReasons.length > 0 && (
           <div style={{ marginTop: 12, padding: 10, background: '#FFF8C5', borderRadius: 8, border: '1px solid #d4a017' }}>
             <p style={{ margin: 0, fontSize: 12, fontWeight: 600, color: '#9a6700' }}>Fase belum bisa diselesaikan:</p>
             <ul style={{ margin: '4px 0 0', paddingLeft: 16 }}>
@@ -3333,12 +3662,16 @@ export default function FtttProjectDetailPage() {
       {/* Live progress bar */}
       <LiveProgressBar project={project} />
 
-      {/* Phase timeline — Surveyor sees compact survey-focused status only */}
+      {/* Phase timeline — Integra V3: hidden on Parent Bulky; Surveyor sees compact survey status on Sites */}
+      {!isBulky && (
       <div style={{ background: '#fff', border: '1px solid #D0D7DE', borderRadius: 12, padding: 20, marginBottom: 16 }}>
         <p style={{ margin: '0 0 12px', fontWeight: 600, fontSize: 14 }}>
           {isSurveyorFttt ? 'Status Validation & Survey' : 'Timeline Fase'}
         </p>
-        {(isSurveyorFttt ? PHASE_ORDER.filter((p) => p === 'SURVEY') : PHASE_ORDER).map((phase) => {
+        {(() => {
+          const scopedPhases = SITE_OPERATIONAL_PHASES;
+          return isSurveyorFttt ? scopedPhases.filter((p) => p === 'SURVEY') : scopedPhases;
+        })().map((phase) => {
           const prog = project.phaseProgresses.find((p) => p.phase === phase);
           if (!prog) return null;
           const isCurrentPhase = phase === project.currentPhase;
@@ -3377,18 +3710,40 @@ export default function FtttProjectDetailPage() {
           </p>
         )}
       </div>
+      )}
 
       {/* Current phase actions */}
       {!isCompletedOrCancelled && (
         <div style={{ background: '#fff', border: '1px solid #D0D7DE', borderRadius: 12, padding: 20 }}>
           <p style={{ margin: '0 0 16px', fontWeight: 600, fontSize: 14 }}>
-            {isSurveyorFttt
-              ? 'Aktivitas Validation & Survey'
-              : `Aktivitas Fase: ${FTTT_PHASE_LABELS[project.currentPhase]}`}
+            {isBulky
+              ? (bulkyInitiationDone ? 'Monitoring Parent Project' : `Aktivitas Fase: ${FTTT_PHASE_LABELS[project.currentPhase]}`)
+              : isSurveyorFttt
+                ? 'Aktivitas Validation & Survey'
+                : `Aktivitas Fase: ${FTTT_PHASE_LABELS[project.currentPhase]}`}
           </p>
 
-          {/* Survey — for Surveyor always (parallel); for others only on SURVEY / unfinished sites */}
-          {(() => {
+          {/* Integra V3: always show Child Site list on Bulky (fix: children disappeared after leaving SITE_INITIATION) */}
+          {isBulky && (project.currentPhase === 'SITE_INITIATION' || bulkyInitiationDone || (project.children?.length ?? 0) > 0) && (
+            <div style={{ marginBottom: 20 }}>
+              <SiteInitiationSection
+                project={project}
+                onRefresh={load}
+                userRole={user?.role ?? ''}
+                monitoringOnly={bulkyInitiationDone}
+              />
+            </div>
+          )}
+
+          {isBulky && project.currentPhase === 'INITIATION' && !bulkyInitiationDone && (
+            <p style={{ fontSize: 13, color: '#57606a' }}>
+              Validasi dokumen triggering, lalu klik &quot;Selesaikan Fase&quot; untuk masuk ke Site Initiation.
+            </p>
+          )}
+
+          {/* Survey — for Surveyor always (parallel); for others only on SURVEY / unfinished sites.
+              Bulky Project itself never runs Survey — that belongs to its Sites. */}
+          {!isBulky && (() => {
             const onSurvey = project.currentPhase === 'SURVEY';
             const continuePartial =
               project.status === 'ACTIVE' &&
@@ -3411,8 +3766,9 @@ export default function FtttProjectDetailPage() {
             );
           })()}
 
-          {/* Non-survey lifecycle activities — hidden from Surveyor FTTT (visibility v2) */}
-          {!isSurveyorFttt && (
+          {/* Non-survey lifecycle activities — hidden from Surveyor FTTT, and hidden
+              for Bulky Project (operational work belongs to its Sites) */}
+          {!isSurveyorFttt && !isBulky && (
             <>
               {/* Preparation — DRM for PST */}
               {project.currentPhase === 'PREPARATION' && project.ftttCompany === 'PST' && (
@@ -3424,9 +3780,11 @@ export default function FtttProjectDetailPage() {
                 <JaminanSection project={project} onRefresh={load} />
               )}
 
-              {/* Preparation — iFORTE: Supporting Document (Opsional) */}
-              {project.currentPhase === 'PREPARATION' && project.ftttCompany === 'IFORTE' && (
-                <IforteSupportingDocSection project={project} onRefresh={load} userRole={user?.role ?? ''} />
+              {/* Integra V1: Supporting Document (Opsional) — all companies on Preparation, not just iFORTE */}
+              {project.currentPhase === 'PREPARATION' && (
+                <div style={{ marginTop: project.ftttCompany === 'IFORTE' ? 0 : 16, borderTop: project.ftttCompany === 'IFORTE' ? 'none' : '1px solid #EAEEF2', paddingTop: project.ftttCompany === 'IFORTE' ? 0 : 12 }}>
+                  <SupportingDocSection project={project} onRefresh={load} userRole={user?.role ?? ''} />
+                </div>
               )}
 
               {/* C6-PST5: Procurement phase — PM uploads PO (PST only) */}

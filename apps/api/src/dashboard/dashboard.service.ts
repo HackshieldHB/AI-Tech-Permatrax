@@ -3,10 +3,20 @@ import { PrismaService } from '../prisma/prisma.service';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import {
   FiberType,
+  FtttHierarchyLevel,
   OrderStatus,
   PermitPhase,
+  Prisma,
   PurchaseRequestStatus,
 } from '@prisma/client'; // FIX: FiberType for PM/designer-scoped queries
+
+// NEW: Integra V1 — GM dashboard project-kind filter
+export type ProjectKind = 'ALL' | 'FTTH' | 'FTTT';
+
+// NEW: threshold shared by overdue / attention checks below (kept consistent with SLA_DAYS elsewhere)
+const STALE_DAYS = 14;
+const NO_ACTIVITY_DAYS = 7;
+const BUDGET_ATTENTION_UTIL = 0.9;
 
 const PHASES: PermitPhase[] = [
   'CLUSTER_INTAKE',
@@ -273,7 +283,8 @@ export class DashboardService {
   }
 
   // FIX Fix 2A: new dedicated GM stats endpoint — returns clean, human-readable numbers for the refreshed dashboard
-  async getGmStats() {
+  // NEW: Integra V1 — accepts projectKind filter (ALL | FTTH | FTTT) for the project/budget widgets below
+  async getGmStats(projectKind: ProjectKind = 'ALL') {
     const now = new Date();
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1); // FIX Fix 2A: month boundary for "selesai bulan ini"
     const startOfYear  = new Date(now.getFullYear(), 0, 1); // FIX Fix 2A: year boundary for YTD progress tile
@@ -380,6 +391,60 @@ export class DashboardService {
       };
     });
 
+    // NEW: Integra V1 — project/budget widgets, filterable by projectKind
+    // NEW: Integra Enhancement V3 — financial extras (over-budget/profit/loss/sites/segments),
+    // FTTH vs FTTT distribution, and Daily Activity feed for the Executive Dashboard
+    const [
+      projectSummary,
+      budgetSummary,
+      onProgressProjects,
+      attentionProjects,
+      statusDistribution,
+      financialExtras,
+      ftthVsFttt,
+      dailyActivityExtras,
+      pendingPoApprovals,
+    ] =
+      await Promise.all([
+        this.buildProjectSummary(projectKind),
+        this.buildBudgetSummary(projectKind),
+        this.buildOnProgressProjects(projectKind),
+        this.buildAttentionProjects(projectKind),
+        this.buildStatusDistribution(projectKind),
+        this.buildFinancialExtras(projectKind),
+        this.buildFtthVsFttt(),
+        this.buildDailyActivityRecent(),
+        this.prisma.financePoChangeRequest.count({ where: { status: 'PENDING' } }),
+      ]);
+
+    // NEW: Integra Enhancement V3 — GM-facing quick insights, computed server-side from the stats above
+    const noActivityCount = attentionProjects.filter((p) => p.reasons.includes('no_recent_activity')).length;
+    const quickInsights: string[] = [];
+    if (slaBreached > 0) {
+      quickInsights.push(`${slaBreached} cluster melewati SLA HLD — perlu tindakan segera.`);
+    }
+    if (financialExtras.overBudgetCount > 0) {
+      quickInsights.push(`${financialExtras.overBudgetCount} proyek melebihi budget yang direncanakan.`);
+    }
+    if (financialExtras.lossCount > 0) {
+      quickInsights.push(`${financialExtras.lossCount} proyek berpotensi rugi (actual cost > PO Customer).`);
+    }
+    if (noActivityCount > 0) {
+      quickInsights.push(`${noActivityCount} proyek FTTT tidak ada aktivitas dalam ${NO_ACTIVITY_DAYS} hari terakhir.`);
+    }
+    if (dailyActivityExtras.overdueCount > 0) {
+      quickInsights.push(`${dailyActivityExtras.overdueCount} daily activity melewati target selesai.`);
+    }
+    if (cashOpPending > 0) {
+      quickInsights.push(`${cashOpPending} pengajuan cash operation menunggu approval.`);
+    }
+    if (pendingPoApprovals > 0) {
+      quickInsights.push(`${pendingPoApprovals} pengajuan PO Customer menunggu approval GM.`);
+    }
+    if (quickInsights.length === 0) {
+      quickInsights.push('Semua indikator utama dalam kondisi baik — tidak ada isu mendesak saat ini.');
+    }
+
     return {
       summary: {
         totalClusters,
@@ -391,6 +456,10 @@ export class DashboardService {
         pendingVisitRequests:  pendingVR,
         pendingCashOperations: cashOpPending,
         slaBreached,
+        // NEW: Integra Enhancement V3 — additional executive KPI fields
+        onHold: projectSummary.pending, // FIX: buildProjectSummary's "pending" bucket == ON_HOLD status
+        cancelled: projectSummary.cancelled,
+        pendingApprovals: pendingVR + pendingPoApprovals,
       },
       pipeline: {
         byPhase: byPhaseFormatted,
@@ -400,7 +469,407 @@ export class DashboardService {
         })),
       },
       recentActivity: recentActivityFormatted,
+      projectKind,
+      projectSummary,
+      budgetSummary,
+      onProgressProjects,
+      attentionProjects,
+      statusDistribution,
+      // NEW: Integra Enhancement V3 — Executive Dashboard additions
+      totalSites: financialExtras.totalSites,
+      totalSegments: financialExtras.totalSegments,
+      overBudgetCount: financialExtras.overBudgetCount,
+      profitCount: financialExtras.profitCount,
+      lossCount: financialExtras.lossCount,
+      ftthVsFttt,
+      dailyActivityRecent: dailyActivityExtras.items,
+      dailyActivityOverdueCount: dailyActivityExtras.overdueCount,
+      quickInsights,
     };
+  }
+
+  /** NEW: resolve which FtttProject hierarchy level represents "one project" for KPI counting —
+   * prefer BULKY (parent) rows; fall back to SITE when no Bulky rows exist yet. */
+  private async resolveFtttHierarchyLevel(): Promise<FtttHierarchyLevel> {
+    const bulkyCount = await this.prisma.ftttProject.count({ where: { hierarchyLevel: 'BULKY' } });
+    return bulkyCount > 0 ? FtttHierarchyLevel.BULKY : FtttHierarchyLevel.SITE;
+  }
+
+  /** NEW: projectSummary — { total, onGoing, completed, pending, overdue, cancelled } per projectKind */
+  private async buildProjectSummary(kind: ProjectKind) {
+    const now = new Date();
+    const staleBefore = new Date(now.getTime() - STALE_DAYS * 24 * 60 * 60 * 1000);
+
+    const empty = { total: 0, onGoing: 0, completed: 0, pending: 0, overdue: 0, cancelled: 0 };
+    let ftth = { ...empty };
+    let fttt = { ...empty };
+
+    if (kind !== 'FTTT') {
+      const [total, onGoing, completed, pending, overdue, cancelled] = await Promise.all([
+        this.prisma.permitCluster.count({ where: { fiberType: FiberType.FTTH } }),
+        this.prisma.permitCluster.count({ where: { fiberType: FiberType.FTTH, status: 'IN_PROGRESS' } }),
+        this.prisma.permitCluster.count({ where: { fiberType: FiberType.FTTH, status: 'COMPLETED' } }),
+        this.prisma.permitCluster.count({ where: { fiberType: FiberType.FTTH, status: 'ON_HOLD' } }),
+        this.prisma.permitCluster.count({
+          where: {
+            fiberType: FiberType.FTTH,
+            status: { in: ['IN_PROGRESS', 'ON_HOLD'] },
+            updatedAt: { lt: staleBefore },
+          },
+        }),
+        this.prisma.permitCluster.count({ where: { fiberType: FiberType.FTTH, status: 'CANCELLED' } }), // NEW: Integra V3
+      ]);
+      ftth = { total, onGoing, completed, pending, overdue, cancelled };
+    }
+
+    if (kind !== 'FTTH') {
+      const hierarchyLevel = await this.resolveFtttHierarchyLevel();
+      const [total, onGoing, completed, pending, overdue, cancelled] = await Promise.all([
+        this.prisma.ftttProject.count({ where: { hierarchyLevel } }),
+        this.prisma.ftttProject.count({ where: { hierarchyLevel, status: 'ACTIVE' } }),
+        this.prisma.ftttProject.count({ where: { hierarchyLevel, status: 'COMPLETED' } }),
+        this.prisma.ftttProject.count({ where: { hierarchyLevel, status: 'ON_HOLD' } }),
+        this.prisma.ftttProject.count({
+          where: { hierarchyLevel, status: 'ACTIVE', updatedAt: { lt: staleBefore } },
+        }),
+        this.prisma.ftttProject.count({ where: { hierarchyLevel, status: 'CANCELLED' } }), // NEW: Integra V3
+      ]);
+      fttt = { total, onGoing, completed, pending, overdue, cancelled };
+    }
+
+    if (kind === 'FTTH') return ftth;
+    if (kind === 'FTTT') return fttt;
+    return {
+      total: ftth.total + fttt.total,
+      onGoing: ftth.onGoing + fttt.onGoing,
+      completed: ftth.completed + fttt.completed,
+      pending: ftth.pending + fttt.pending,
+      overdue: ftth.overdue + fttt.overdue,
+      cancelled: ftth.cancelled + fttt.cancelled,
+    };
+  }
+
+  /** NEW: Integra Enhancement V3 — over-budget / profit / loss project counts + site/segment counts,
+   * derived from FinanceProject rows (SEGMENT rollup rows excluded from over-budget/profit/loss to avoid
+   * double-counting against their SITE children). */
+  private async buildFinancialExtras(kind: ProjectKind) {
+    const where: Prisma.FinanceProjectWhereInput = {
+      status: 'ACTIVE',
+      isDefaultUncategorized: false,
+      ...(kind !== 'ALL' ? { projectType: kind } : {}),
+    };
+
+    const projects = await this.prisma.financeProject.findMany({
+      where,
+      select: {
+        id: true,
+        hierarchyLevel: true,
+        totalBudget: true,
+        materialSpent: true,
+        jasaSpent: true,
+        poCustomer: true,
+      },
+    });
+
+    let disbursedByProject: Record<string, number> = {};
+    if (kind !== 'FTTH' && projects.length > 0) {
+      const disbursedRows = await this.prisma.ftttTransaction.groupBy({
+        by: ['financeProjectId'],
+        where: {
+          financeProjectId: { in: projects.map((p) => p.id) },
+          disbursedAt: { not: null },
+        },
+        _sum: { total: true },
+      });
+      disbursedByProject = Object.fromEntries(
+        disbursedRows
+          .filter((r) => r.financeProjectId)
+          .map((r) => [r.financeProjectId as string, Number(r._sum.total ?? 0)]),
+      );
+    }
+
+    let overBudgetCount = 0;
+    let profitCount = 0;
+    let lossCount = 0;
+    let totalSites = 0;
+    let totalSegments = 0;
+
+    for (const p of projects) {
+      if (p.hierarchyLevel === 'SITE') totalSites += 1;
+      if (p.hierarchyLevel === 'SEGMENT') totalSegments += 1;
+      if (p.hierarchyLevel === 'SEGMENT') continue; // FIX: rollup-only row — skip to avoid double-counting vs. SITE children
+
+      const spent = Number(p.materialSpent) + Number(p.jasaSpent) + (disbursedByProject[p.id] ?? 0);
+      const totalBudget = Number(p.totalBudget);
+      if (totalBudget > 0 && spent > totalBudget) overBudgetCount += 1;
+
+      if (p.poCustomer != null) {
+        const profit = Number(p.poCustomer) - spent;
+        if (profit > 0) profitCount += 1;
+        else if (profit < 0) lossCount += 1;
+      }
+    }
+
+    return { overBudgetCount, profitCount, lossCount, totalSites, totalSegments };
+  }
+
+  /** NEW: Integra Enhancement V3 — total FTTH clusters vs. FTTT (top-level) projects, unfiltered by projectKind
+   * so the GM can always compare the two portfolios side by side. */
+  private async buildFtthVsFttt() {
+    const hierarchyLevel = await this.resolveFtttHierarchyLevel();
+    const [ftth, fttt] = await Promise.all([
+      this.prisma.permitCluster.count(),
+      this.prisma.ftttProject.count({ where: { hierarchyLevel } }),
+    ]);
+    return { ftth, fttt };
+  }
+
+  /** NEW: Integra Enhancement V3 — most recent Daily Activity entries (all projects) + count of entries
+   * past their target completion date, for the Executive Dashboard's Recent Activity / Pipeline widgets. */
+  private async buildDailyActivityRecent() {
+    const now = new Date();
+    const [recent, overdueCount] = await Promise.all([
+      this.prisma.dailyActivity.findMany({
+        take: 8,
+        orderBy: { timestamp: 'desc' },
+        include: {
+          actor: { select: { name: true } },
+          ftttProject: { select: { projectName: true } },
+          financeProject: { select: { name: true } },
+        },
+      }),
+      this.prisma.dailyActivity.count({
+        where: { workStatus: { not: 'DONE' }, targetDoneAt: { lt: now } },
+      }),
+    ]);
+
+    const items = recent.map((a) => ({
+      id: a.id,
+      siteName: a.siteName || a.ftttProject?.projectName || a.financeProject?.name || '—',
+      scopeOfWork: a.scopeOfWork,
+      workStatus: a.workStatus as string,
+      actorName: a.actor?.name || '',
+      timestamp: a.timestamp,
+      targetDoneAt: a.targetDoneAt,
+      overdue: a.workStatus !== 'DONE' && !!a.targetDoneAt && a.targetDoneAt < now,
+    }));
+
+    return { items, overdueCount };
+  }
+
+  /** NEW: budgetSummary — FinanceProject (ACTIVE, not default-uncategorized) scoped by projectKind */
+  private async buildBudgetSummary(kind: ProjectKind) {
+    const where: Prisma.FinanceProjectWhereInput = {
+      status: 'ACTIVE',
+      isDefaultUncategorized: false,
+      ...(kind !== 'ALL' ? { projectType: kind } : {}),
+    };
+
+    const [agg, scopedProjects] = await Promise.all([
+      this.prisma.financeProject.aggregate({
+        where,
+        _sum: { totalBudget: true, materialSpent: true, jasaSpent: true },
+      }),
+      this.prisma.financeProject.findMany({ where, select: { id: true } }),
+    ]);
+
+    const totalBudget = Number(agg._sum.totalBudget ?? 0);
+    let spent = Number(agg._sum.materialSpent ?? 0) + Number(agg._sum.jasaSpent ?? 0);
+
+    // NEW: fold in disbursed FTTT implementation transactions for the scoped finance projects
+    if (kind !== 'FTTH' && scopedProjects.length > 0) {
+      const disbursedAgg = await this.prisma.ftttTransaction.aggregate({
+        where: {
+          financeProjectId: { in: scopedProjects.map((p) => p.id) },
+          disbursedAt: { not: null },
+        },
+        _sum: { total: true },
+      });
+      spent += Number(disbursedAgg._sum.total ?? 0);
+    }
+
+    const remaining = totalBudget - spent;
+    const utilizationPct = totalBudget > 0 ? Math.round((spent / totalBudget) * 1000) / 10 : 0;
+
+    return { totalBudget, spent, remaining, utilizationPct };
+  }
+
+  /** NEW: onProgressProjects — top 20 active projects across FTTH/FTTT, most recently updated first */
+  private async buildOnProgressProjects(kind: ProjectKind) {
+    type Row = {
+      id: string;
+      name: string;
+      kind: 'FTTH' | 'FTTT';
+      status: string;
+      progressPct: number;
+      budgetRemaining: number | null;
+      _updatedAt: Date;
+    };
+    const rows: Row[] = [];
+
+    if (kind !== 'FTTT') {
+      const clusters = await this.prisma.permitCluster.findMany({
+        where: { fiberType: FiberType.FTTH, status: 'IN_PROGRESS' },
+        orderBy: { updatedAt: 'desc' },
+        take: 20,
+        include: { visitRequest: { include: { cleanList: { select: { siteName: true, rwCode: true } } } } },
+      });
+      const phaseIdx = Object.fromEntries(PHASES.map((p, i) => [p, i]));
+      for (const c of clusters) {
+        const pct = Math.round(((phaseIdx[c.currentPhase] ?? 0) / (PHASES.length - 1)) * 1000) / 10;
+        rows.push({
+          id: c.id,
+          name: c.visitRequest?.cleanList?.siteName || c.visitRequest?.cleanList?.rwCode || c.clusterCode,
+          kind: 'FTTH',
+          status: c.status,
+          progressPct: pct,
+          budgetRemaining: null, // FTTH clusters aren't linked 1:1 to a FinanceProject in the current schema
+          _updatedAt: c.updatedAt,
+        });
+      }
+    }
+
+    if (kind !== 'FTTH') {
+      const hierarchyLevel = await this.resolveFtttHierarchyLevel();
+      const projects = await this.prisma.ftttProject.findMany({
+        where: { hierarchyLevel, status: 'ACTIVE' },
+        orderBy: { updatedAt: 'desc' },
+        take: 20,
+        include: {
+          phaseProgresses: true,
+          financeProject: { select: { totalBudget: true, materialSpent: true, jasaSpent: true } },
+        },
+      });
+      for (const p of projects) {
+        const relevant = p.phaseProgresses.filter((pp) => pp.status !== 'SKIPPED');
+        const done = relevant.filter((pp) => pp.status === 'COMPLETED').length;
+        const pct = relevant.length > 0 ? Math.round((done / relevant.length) * 1000) / 10 : 0;
+        const budgetRemaining = p.financeProject
+          ? Number(p.financeProject.totalBudget) - Number(p.financeProject.materialSpent) - Number(p.financeProject.jasaSpent)
+          : null;
+        rows.push({
+          id: p.id,
+          name: p.projectName || p.id,
+          kind: 'FTTT',
+          status: p.status,
+          progressPct: pct,
+          budgetRemaining,
+          _updatedAt: p.updatedAt,
+        });
+      }
+    }
+
+    return rows
+      .sort((a, b) => b._updatedAt.getTime() - a._updatedAt.getTime())
+      .slice(0, 20)
+      .map(({ _updatedAt, ...row }) => row);
+  }
+
+  /** NEW: attentionProjects — budget util > 90% OR overdue (SLA-stale) OR no recent activity logged */
+  private async buildAttentionProjects(kind: ProjectKind) {
+    const now = new Date();
+    const staleBefore = new Date(now.getTime() - STALE_DAYS * 24 * 60 * 60 * 1000);
+    const noActivityBefore = new Date(now.getTime() - NO_ACTIVITY_DAYS * 24 * 60 * 60 * 1000);
+
+    type Row = { id: string; name: string; kind: 'FTTH' | 'FTTT'; status: string; reasons: string[] };
+    const rows: Row[] = [];
+
+    if (kind !== 'FTTT') {
+      const clusters = await this.prisma.permitCluster.findMany({
+        where: {
+          fiberType: FiberType.FTTH,
+          status: { in: ['IN_PROGRESS', 'ON_HOLD'] },
+          updatedAt: { lt: staleBefore },
+        },
+        orderBy: { updatedAt: 'asc' },
+        take: 20,
+        include: { visitRequest: { include: { cleanList: { select: { siteName: true, rwCode: true } } } } },
+      });
+      for (const c of clusters) {
+        rows.push({
+          id: c.id,
+          name: c.visitRequest?.cleanList?.siteName || c.visitRequest?.cleanList?.rwCode || c.clusterCode,
+          kind: 'FTTH',
+          status: c.status,
+          reasons: ['overdue'],
+        });
+      }
+    }
+
+    if (kind !== 'FTTH') {
+      const hierarchyLevel = await this.resolveFtttHierarchyLevel();
+      const projects = await this.prisma.ftttProject.findMany({
+        where: { hierarchyLevel, status: 'ACTIVE' },
+        include: {
+          financeProject: { select: { totalBudget: true, materialSpent: true, jasaSpent: true } },
+        },
+      });
+
+      for (const p of projects) {
+        const reasons: string[] = [];
+
+        if (p.updatedAt < staleBefore) reasons.push('overdue');
+
+        if (p.financeProject) {
+          const totalBudget = Number(p.financeProject.totalBudget);
+          const spent = Number(p.financeProject.materialSpent) + Number(p.financeProject.jasaSpent);
+          if (totalBudget > 0 && spent / totalBudget > BUDGET_ATTENTION_UTIL) reasons.push('budget_util_high');
+        }
+
+        const recentActivity = await this.prisma.dailyActivity.count({
+          where: { ftttProjectId: p.id, timestamp: { gte: noActivityBefore } },
+        });
+        if (recentActivity === 0) reasons.push('no_recent_activity');
+
+        if (reasons.length > 0) {
+          rows.push({
+            id: p.id,
+            name: p.projectName || p.id,
+            kind: 'FTTT',
+            status: p.status,
+            reasons,
+          });
+        }
+      }
+    }
+
+    return rows.sort((a, b) => b.reasons.length - a.reasons.length).slice(0, 20);
+  }
+
+  /** NEW: statusDistribution — unified IN_PROGRESS / ON_HOLD / COMPLETED / CANCELLED counts across kinds */
+  private async buildStatusDistribution(kind: ProjectKind) {
+    const buckets: Record<string, number> = {
+      IN_PROGRESS: 0,
+      ON_HOLD: 0,
+      COMPLETED: 0,
+      CANCELLED: 0,
+    };
+
+    if (kind !== 'FTTT') {
+      const grouped = await this.prisma.permitCluster.groupBy({
+        by: ['status'],
+        where: { fiberType: FiberType.FTTH },
+        _count: { id: true },
+      });
+      for (const g of grouped) buckets[g.status] = (buckets[g.status] ?? 0) + g._count.id;
+    }
+
+    if (kind !== 'FTTH') {
+      const hierarchyLevel = await this.resolveFtttHierarchyLevel();
+      const grouped = await this.prisma.ftttProject.groupBy({
+        by: ['status'],
+        where: { hierarchyLevel },
+        _count: { id: true },
+      });
+      // FtttProjectStatus uses ACTIVE where PermitClusterStatus uses IN_PROGRESS — unify labels
+      const statusMap: Record<string, string> = { ACTIVE: 'IN_PROGRESS' };
+      for (const g of grouped) {
+        const label = statusMap[g.status] ?? g.status;
+        buckets[label] = (buckets[label] ?? 0) + g._count.id;
+      }
+    }
+
+    return Object.entries(buckets).map(([status, count]) => ({ status, count }));
   }
 
   async getSlaReport() {

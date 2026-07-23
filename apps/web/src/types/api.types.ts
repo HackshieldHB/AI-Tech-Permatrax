@@ -624,6 +624,9 @@ export interface CleanListDashStats {
 
 export type FinanceProjectStatus = 'ACTIVE' | 'CLOSED' | 'ARCHIVED';
 
+// Integra V1: Finance Project hierarchy (Segment → Site) alongside legacy Standalone
+export type FinanceHierarchyLevel = 'SEGMENT' | 'SITE' | 'STANDALONE';
+
 export interface FinanceProjectListItem {
   id: string;
   code: string;
@@ -633,6 +636,12 @@ export interface FinanceProjectListItem {
   projectType?: 'FTTH' | 'FTTT';
   budgetPerizinan?: string | number | null;
   budgetLainLain?: string | number | null;
+  // Integra V1: Segment/Site hierarchy
+  hierarchyLevel?: FinanceHierarchyLevel;
+  parentId?: string | null;
+  childCount?: number;
+  sites?: FinanceProjectListItem[];
+  parent?: { id: string; code: string; name: string } | null;
   totalBudget: string | number;
   materialBudget: string | number | null;
   jasaBudget: string | number | null;
@@ -653,6 +662,16 @@ export interface FinanceProjectListItem {
   totalRemaining?: number;
   perizinanSpent?: number;
   lainLainSpent?: number;
+  // Integra V3: P&L
+  poCustomer?: string | number | null;
+  poCustomerDocUrl?: string | null;
+  poCustomerNumber?: string | null;
+  poApprovalStatus?: 'NONE' | 'PENDING' | 'APPROVED' | 'REJECTED';
+  poCustomerAmount?: number | null;
+  totalRab?: number;
+  actualCost?: number;
+  estimatedMargin?: number | null;
+  actualProfit?: number | null;
 }
 
 export type BudgetLedgerEntryType =
@@ -985,8 +1004,12 @@ export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
 
 export type FtttCompany = 'TELKOM_INFRA' | 'IFORTE' | 'PST';
 export type FtttPhase =
-  | 'INITIATION' | 'SURVEY' | 'PREPARATION' | 'PROCUREMENT'
+  | 'INITIATION' | 'SITE_INITIATION' | 'SURVEY' | 'PREPARATION' | 'PROCUREMENT'
   | 'IMPLEMENTATION' | 'DOCUMENTATION' | 'RECONCILIATION' | 'CLOSING';
+// Integra V1: Bulky (parent) → Site (child operational unit)
+export type FtttHierarchyLevel = 'BULKY' | 'SITE';
+export type FtttRequestStatus = 'PENDING_REVIEW' | 'ACCEPTED' | 'DECLINED';
+export type FtttRequestPriority = 'HIGH' | 'MEDIUM' | 'LOW';
 export type FtttPhaseStatus = 'LOCKED' | 'ACTIVE' | 'COMPLETED' | 'SKIPPED';
 export type FtttProjectStatus = 'ACTIVE' | 'COMPLETED' | 'ON_HOLD' | 'CANCELLED';
 export type FtttDocType = 'PO_CONTRACT' | 'SITELIST' | 'BOQ_TOS';
@@ -1001,7 +1024,9 @@ export type FtttDocumentType =
 
 export type FtttSpanLogCategory =
   | 'GALIAN' | 'VIDEO_GALIAN' | 'PERBAIKAN' | 'HANDHOLE'
-  | 'JEMBATAN' | 'JOIN_TERMINASI' | 'MARKING_POS';
+  | 'JEMBATAN' | 'JOIN_TERMINASI' | 'MARKING_POS'
+  // Integra V2: Kabel Udara (KU) activities
+  | 'PENARIKAN_KABEL' | 'PENANAMAN_TIANG';
 
 export interface FtttSpanLog {
   id:          string;
@@ -1019,6 +1044,8 @@ export interface FtttSpan {
   id:          string;
   projectId:   string;
   spanNumber:  string;
+  // Integra V2: panjang folder (meter) — diisi sekali saat buat Span/Folder KU
+  lengthMeters?: string | number | null;
   createdAt:   string;
   createdBy:   { id: string; name: string };
   spanLogs:    FtttSpanLog[];
@@ -1036,6 +1063,15 @@ export interface FtttTransaction {
   total:       string | number;
   remarks:     string;
   createdAt:   string;
+  // Integra V1: Financial Request workflow — PM records the need, Finance reviews
+  expectedNeedDate?: string | null;
+  reason?:           string | null;
+  priority?:         FtttRequestPriority | null;
+  requestStatus?:    FtttRequestStatus;
+  scheduledReleaseAt?: string | null;
+  declinedReason?:   string | null;
+  reviewedBy?:        { id: string; name: string } | null;
+  reviewedAt?:         string | null;
   // Stage 2 — set by Finance; null = belum memotong budget
   disbursedAt?: string | null;
   createdBy:   { id: string; name: string };
@@ -1049,6 +1085,28 @@ export const FTTT_COST_CATEGORY_LABELS: Record<FtttCostCategory, string> = {
   LAIN_LAIN: 'Lain-Lain',
 };
 
+// Integra V1: Financial Request priority / review status labels & colors
+export const FTTT_PRIORITY_LABELS: Record<FtttRequestPriority, string> = {
+  HIGH:   'Prioritas Tinggi',
+  MEDIUM: 'Prioritas Sedang',
+  LOW:    'Prioritas Rendah',
+};
+export const FTTT_PRIORITY_COLORS: Record<FtttRequestPriority, string> = {
+  HIGH:   '#cf222e',
+  MEDIUM: '#9a6700',
+  LOW:    '#57606a',
+};
+export const FTTT_REQUEST_STATUS_LABELS: Record<FtttRequestStatus, string> = {
+  PENDING_REVIEW: 'Menunggu Review',
+  ACCEPTED:       'Disetujui',
+  DECLINED:       'Ditolak',
+};
+export const FTTT_REQUEST_STATUS_COLORS: Record<FtttRequestStatus, string> = {
+  PENDING_REVIEW: '#9a6700',
+  ACCEPTED:       '#1a7f37',
+  DECLINED:       '#cf222e',
+};
+
 export const FTTT_COMPANY_LABELS: Record<FtttCompany, string> = {
   TELKOM_INFRA: 'Telkom Infra',
   IFORTE:       'iForte',
@@ -1057,6 +1115,7 @@ export const FTTT_COMPANY_LABELS: Record<FtttCompany, string> = {
 
 export const FTTT_PHASE_LABELS: Record<FtttPhase, string> = {
   INITIATION:     'Project Initiation',
+  SITE_INITIATION: 'Site Initiation',
   SURVEY:         'Validation & Survey',
   PREPARATION:    'Project Preparation',
   PROCUREMENT:    'Procurement',
@@ -1097,6 +1156,18 @@ export interface FtttProject {
   currentPhase:   FtttPhase;
   status:         FtttProjectStatus;
   projectName:    string | null;
+  // Integra V1: Bulky (parent) / Site (child) hierarchy
+  hierarchyLevel?: FtttHierarchyLevel;
+  parentId?:       string | null;
+  parent?:         { id: string; projectName: string | null; ftttCompany?: FtttCompany; hierarchyLevel?: FtttHierarchyLevel } | null;
+  children?:       Array<{
+    id: string;
+    projectName: string | null;
+    currentPhase: FtttPhase;
+    status: FtttProjectStatus;
+    phaseProgresses?: Array<{ phase: FtttPhase; status: FtttPhaseStatus }>;
+    financeProject?: { id: string; code: string; name: string } | null;
+  }>;
   notes:          string | null;
   pmId:           string;
   // JLM: PST implementation type + Project Closing maintenance confirmation/reminder
@@ -1129,6 +1200,27 @@ export interface FtttProject {
   spans:              FtttSpan[];
 }
 
+// Integra V1: lightweight Site summary returned by GET /fttt-projects/:id/sites
+export interface FtttSiteSummary {
+  id:             string;
+  projectName:    string | null;
+  currentPhase:   FtttPhase;
+  status:         FtttProjectStatus;
+  createdAt:      string;
+  pm?:            { id: string; name: string } | null;
+  financeProject?: { id: string; code: string; name: string } | null;
+  phaseProgresses?: FtttPhaseProgress[];
+  _count?:        { surveyUploads: number; transactions: number; spans: number };
+}
+
+// Integra V1: available Finance Site candidates for GET /fttt-projects/:id/available-finance-sites
+export interface FinanceSiteOption {
+  id: string;
+  code: string;
+  name: string;
+  totalBudget: string | number;
+}
+
 export interface FtttSurveySite {
   id:          string;
   name:        string;
@@ -1149,6 +1241,8 @@ export interface FtttSurveyUpload {
   createdAt:    string;
   siteId?:      string | null;
   site?:        { id: string; name: string; code: string | null } | null;
+  // Integra V1: original client filename (storage path may use a random UUID)
+  originalFileName?: string | null;
   uploadedBy:   { id: string; name: string };
 }
 

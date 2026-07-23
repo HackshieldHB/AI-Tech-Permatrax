@@ -5,9 +5,10 @@ import { PrismaModule } from '../prisma/prisma.module';
 import { BudgetLedgerModule } from '../budget-ledger/budget-ledger.module';
 
 import { FinanceForecastModule } from '../finance-forecast/finance-forecast.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
-  imports: [PrismaModule, BudgetLedgerModule, FinanceForecastModule],
+  imports: [PrismaModule, BudgetLedgerModule, FinanceForecastModule, NotificationsModule],
   controllers: [FinanceProjectController],
   providers: [FinanceProjectService],
   exports: [FinanceProjectService],
