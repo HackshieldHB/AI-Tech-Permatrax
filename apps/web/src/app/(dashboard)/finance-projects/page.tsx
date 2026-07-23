@@ -296,16 +296,20 @@ export default function FinanceProjectsDashboardPage() {
                       {manage && (isFttt || isSegment) ? (
                         <>
                           <div className="rounded-lg p-2 bg-slate-50 col-span-2">
-                            <div className="text-slate-500">PO Customer · Actual · P/L</div>
+                            {/* Integra V5: list shows Estimasi = PO − RAB (not PO − Actual) */}
+                            <div className="text-slate-500">PO Customer · RAB · Estimasi P/L</div>
                             <div className="font-bold text-slate-800 flex flex-wrap gap-x-3 gap-y-0.5">
                               <span>{formatRupiah(num(p.poCustomerAmount ?? p.poCustomer))}</span>
                               <span className="text-slate-400">·</span>
-                              <span>{formatRupiah(p.actualCost ?? spentOverall(p))}</span>
+                              <span>{formatRupiah(p.totalRab ?? num(p.totalBudget))}</span>
                               <span className="text-slate-400">·</span>
-                              <span style={{ color: (p.actualProfit ?? 0) >= 0 ? '#1a7f37' : '#cf222e' }}>
-                                {p.actualProfit == null && p.poCustomerAmount == null && p.poCustomer == null
+                              <span style={{ color: (p.estimatedMargin ?? 0) >= 0 ? '#1a7f37' : '#cf222e' }}>
+                                {p.estimatedMargin == null && p.poCustomerAmount == null && p.poCustomer == null
                                   ? '—'
-                                  : formatRupiah(p.actualProfit ?? (num(p.poCustomerAmount ?? p.poCustomer) - (p.actualCost ?? spentOverall(p))))}
+                                  : formatRupiah(
+                                      p.estimatedMargin ??
+                                        (num(p.poCustomerAmount ?? p.poCustomer) - (p.totalRab ?? num(p.totalBudget))),
+                                    )}
                               </span>
                             </div>
                           </div>

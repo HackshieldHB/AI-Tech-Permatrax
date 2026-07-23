@@ -45,7 +45,12 @@ export function FinancialPerformance({ detail, canEdit, isGm, onRefresh }: Props
   const po = detail.poCustomerAmount != null ? detail.poCustomerAmount : num(detail.poCustomer);
   const rab = detail.totalRab != null ? detail.totalRab : num(detail.totalBudget);
   const actual = detail.actualCost != null ? detail.actualCost : (detail.totalSpent != null ? num(detail.totalSpent) : 0);
-  const profit = detail.actualProfit != null ? detail.actualProfit : (po != null && !Number.isNaN(po) ? po - actual : null);
+  // Integra V5: Estimasi Profit/Loss = PO Customer − Estimated Cost (RAB) — NOT PO − Actual Cost
+  const estimasi =
+    detail.estimatedMargin != null
+      ? detail.estimatedMargin
+      : (po != null && !Number.isNaN(po) ? po - rab : null);
+  const actualPl = po != null && !Number.isNaN(po) ? po - actual : null;
   const isSegment = detail.hierarchyLevel === 'SEGMENT';
   const pending = detail.poApprovalStatus === 'PENDING';
 
@@ -129,12 +134,22 @@ export function FinancialPerformance({ detail, canEdit, isGm, onRefresh }: Props
     }
   };
 
-  const profitColor = profit == null ? '#57606a' : profit >= 0 ? '#1a7f37' : '#cf222e';
-  // Integra V4: status label separate from estimasi amount
-  const statusLabel = profit == null ? '—' : profit >= 0 ? '🟢 Profit' : '🔴 Loss';
-  const estimasiLabel = profit == null
-    ? null
-    : `${profit >= 0 ? 'Estimasi Profit' : 'Estimasi Loss'}: ${formatRupiah(Math.abs(profit))}`;
+  const profitColor = estimasi == null ? '#57606a' : estimasi > 0 ? '#1a7f37' : estimasi < 0 ? '#cf222e' : '#57606a';
+  // Integra V5: status + Estimasi amount both use PO − RAB
+  const statusLabel =
+    estimasi == null ? '—' : estimasi > 0 ? '🟢 Profit' : estimasi < 0 ? '🔴 Loss' : 'Break Even';
+  const estimasiLabel =
+    estimasi == null
+      ? null
+      : estimasi > 0
+        ? `Estimasi Profit: ${formatRupiah(estimasi)}`
+        : estimasi < 0
+          ? `Estimasi Loss: ${formatRupiah(Math.abs(estimasi))}`
+          : 'Estimasi: Rp0';
+  const actualPlLabel =
+    actualPl == null
+      ? null
+      : `Actual P/L: ${formatRupiah(actualPl)}`;
 
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-5 space-y-4">
@@ -185,13 +200,16 @@ export function FinancialPerformance({ detail, canEdit, isGm, onRefresh }: Props
         </div>
         <div className="rounded-xl bg-slate-50 p-3">
           <div className="text-[11px] text-slate-500 font-semibold uppercase">
-            {isSegment ? 'Profit Segment' : 'Actual P/L'}
+            {isSegment ? 'Profit Segment' : 'Estimasi P/L'}
           </div>
           <div className="font-bold mt-0.5" style={{ color: profitColor }}>{statusLabel}</div>
           {estimasiLabel ? (
             <div className="text-[11px] mt-1 font-semibold" style={{ color: profitColor }}>
               {estimasiLabel}
             </div>
+          ) : null}
+          {actualPlLabel && actual > 0 ? (
+            <div className="text-[10px] mt-1 text-slate-500">{actualPlLabel}</div>
           ) : null}
         </div>
       </div>
@@ -215,7 +233,17 @@ export function FinancialPerformance({ detail, canEdit, isGm, onRefresh }: Props
                   ) : null}
                 </div>
                 {isGm && h.status === 'PENDING' ? (
-                  <div className="flex gap-2">
+                  <div className="flex gap-2 flex-wrap">
+                    {h.docUrl ? (
+                      <a
+                        href={fixFileUrl(h.docUrl)}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="px-2 py-1 rounded border border-slate-300 bg-white text-slate-800 font-bold no-underline"
+                      >
+                        Lihat Dokumen
+                      </a>
+                    ) : null}
                     <button
                       type="button"
                       disabled={reviewingId === h.id}
@@ -233,6 +261,15 @@ export function FinancialPerformance({ detail, canEdit, isGm, onRefresh }: Props
                       Reject
                     </button>
                   </div>
+                ) : h.docUrl ? (
+                  <a
+                    href={fixFileUrl(h.docUrl)}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-[11px] text-blue-600 font-semibold"
+                  >
+                    Lihat Dokumen ↗
+                  </a>
                 ) : null}
               </div>
             ))}

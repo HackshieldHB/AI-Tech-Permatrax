@@ -319,7 +319,115 @@ export default function GmDashboard() {
         [1.2, 1, 1.2, 1.4],
       );
 
-      sectionTitle('3. Running Project Summary (max 10)');
+      // Integra V5: Pie/Donut charts after Project & Financial Summary
+      const renderDonutPng = (
+        slices: { name: string; value: number; color: string }[],
+        size = 280,
+      ): string | null => {
+        const data = slices.filter((s) => s.value > 0);
+        const total = data.reduce((sum, s) => sum + s.value, 0);
+        if (total <= 0 || typeof document === 'undefined') return null;
+        const canvas = document.createElement('canvas');
+        canvas.width = size;
+        canvas.height = size;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return null;
+        const cx = size / 2;
+        const cy = size / 2;
+        const rOuter = size * 0.38;
+        const rInner = size * 0.22;
+        let angle = -Math.PI / 2;
+        data.forEach((slice) => {
+          const sweep = (slice.value / total) * Math.PI * 2;
+          ctx.beginPath();
+          ctx.moveTo(cx + Math.cos(angle) * rInner, cy + Math.sin(angle) * rInner);
+          ctx.arc(cx, cy, rOuter, angle, angle + sweep);
+          ctx.arc(cx, cy, rInner, angle + sweep, angle, true);
+          ctx.closePath();
+          ctx.fillStyle = slice.color;
+          ctx.fill();
+          angle += sweep;
+        });
+        // hole center fill for clean donut look
+        ctx.beginPath();
+        ctx.arc(cx, cy, rInner - 1, 0, Math.PI * 2);
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fill();
+        ctx.fillStyle = '#0F1B2D';
+        ctx.font = 'bold 14px Helvetica, Arial, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(String(total), cx, cy - 6);
+        ctx.font = '10px Helvetica, Arial, sans-serif';
+        ctx.fillStyle = '#64748B';
+        ctx.fillText('Total', cx, cy + 10);
+        return canvas.toDataURL('image/png');
+      };
+
+      const drawDonutWithLegend = (
+        title: string,
+        slices: { name: string; value: number; color: string }[],
+        x: number,
+        topY: number,
+        boxW: number,
+      ) => {
+        const img = renderDonutPng(slices, 260);
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(9);
+        doc.setTextColor(15, 27, 45);
+        doc.text(title, x, topY + 12);
+        if (img) {
+          doc.addImage(img, 'PNG', x + 10, topY + 18, 110, 110);
+        } else {
+          doc.setFont('helvetica', 'normal');
+          doc.setFontSize(8);
+          doc.setTextColor(100, 100, 100);
+          doc.text('Tidak ada data', x + 20, topY + 70);
+        }
+        let ly = topY + 30;
+        const total = slices.reduce((sum, s) => sum + s.value, 0) || 1;
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(8);
+        slices.filter((s) => s.value > 0).forEach((s) => {
+          doc.setFillColor(s.color);
+          doc.roundedRect(x + 130, ly - 6, 8, 8, 1, 1, 'F');
+          doc.setTextColor(40, 40, 40);
+          const pct = Math.round((s.value / total) * 100);
+          doc.text(`${s.name}: ${s.value} (${pct}%)`, x + 142, ly);
+          ly += 14;
+        });
+        void boxW;
+      };
+
+      ensureSpace(160);
+      sectionTitle('3. Distribusi Project (Charts)');
+      const chartTop = y;
+      const halfW = (contentW - 12) / 2;
+      drawDonutWithLegend(
+        'Distribusi Status Project',
+        statusChartData.map((d, i) => ({
+          name: d.name,
+          value: d.value,
+          color: STATUS_COLORS[i % STATUS_COLORS.length],
+        })),
+        margin,
+        chartTop,
+        halfW,
+      );
+      drawDonutWithLegend(
+        'Distribusi FTTH vs FTTT',
+        kindChartData.map((d, i) => ({
+          name: d.name,
+          value: d.value,
+          color: KIND_COLORS[i % KIND_COLORS.length],
+        })),
+        margin + halfW + 12,
+        chartTop,
+        halfW,
+      );
+      y = chartTop + 145;
+
+      sectionTitle('4. Running Project Summary (max 10)');
       if (onProgressProjects.length === 0) {
         doc.setFontSize(9);
         doc.text('Tidak ada project berjalan.', margin, y + 10);
@@ -337,7 +445,7 @@ export default function GmDashboard() {
         );
       }
 
-      sectionTitle('4. Project Requiring Attention');
+      sectionTitle('5. Project Requiring Attention');
       if (attentionProjects.length === 0) {
         doc.setFontSize(9);
         doc.text('Tidak ada project yang membutuhkan perhatian.', margin, y + 10);
@@ -354,7 +462,22 @@ export default function GmDashboard() {
         );
       }
 
-      sectionTitle('5. Quick Insight');
+      // Recent Activity (if available)
+      if (dailyRecent.length > 0) {
+        sectionTitle('6. Recent Activity');
+        drawTable(
+          ['Site', 'Aktivitas', 'Status', 'User'],
+          dailyRecent.slice(0, 8).map((a) => [
+            a.siteName,
+            a.scopeOfWork,
+            a.workStatus,
+            a.actorName,
+          ]),
+          [1.4, 2.2, 0.9, 1],
+        );
+      }
+
+      sectionTitle(dailyRecent.length > 0 ? '7. Quick Insight' : '6. Quick Insight');
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(9);
       quickInsights.forEach((q) => {
