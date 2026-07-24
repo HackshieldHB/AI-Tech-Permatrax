@@ -22,12 +22,17 @@ const REMINDER_SWEEP_INTERVAL_MS = 60 * 60 * 1000; // every 60 minutes
 const OVERDUE_GRACE_MS = 3 * 24 * 60 * 60 * 1000; // targetDoneAt + 3 days
 const REMINDER_COOLDOWN_MS = 60 * 60 * 1000; // don't re-notify within 1 hour
 
-/** Roles that may manage (update) any Daily Activity record, not only their own. */
-const ELEVATED_MANAGE_ROLES: Role[] = [
+/**
+ * Integra V9: any role with Daily Activity manage access may update status on any
+ * project activity (not only the original creator). Matches DAILY_ACTIVITY_MANAGE.
+ */
+const TEAM_MANAGE_ROLES: Role[] = [
   Role.GENERAL_MANAGER,
   Role.ADMIN,
   Role.PM_SENIOR,
   Role.PM_FTTT,
+  Role.FINANCE,
+  Role.SURVEYOR_FTTT,
 ];
 
 const includeRelations = {
@@ -135,6 +140,7 @@ export class DailyActivityService implements OnModuleInit, OnModuleDestroy {
         { siteName: { contains: q, mode: 'insensitive' } },
         { remarks: { contains: q, mode: 'insensitive' } },
         { actor: { name: { contains: q, mode: 'insensitive' } } },
+        { updatedBy: { name: { contains: q, mode: 'insensitive' } } },
       ];
     }
 
@@ -187,6 +193,8 @@ export class DailyActivityService implements OnModuleInit, OnModuleDestroy {
     }
 
     const data: Prisma.DailyActivityUpdateInput = {
+      // Integra V9: bump list timestamp + record who last updated status
+      timestamp: new Date(),
       updatedBy: { connect: { id: user.userId } },
     };
     if (dto.workStatus) data.workStatus = dto.workStatus;
@@ -247,6 +255,7 @@ export class DailyActivityService implements OnModuleInit, OnModuleDestroy {
         where: { id },
         data: {
           evidenceUrl: files[files.length - 1].fileUrl,
+          timestamp: new Date(),
           updatedBy: { connect: { id: user.userId } },
         },
       }),
@@ -255,10 +264,11 @@ export class DailyActivityService implements OnModuleInit, OnModuleDestroy {
     return this.findOne(id);
   }
 
-  private assertCanManage(activity: DailyActivity, user: AuthUser): void {
-    if (ELEVATED_MANAGE_ROLES.includes(user.role)) return;
-    if (activity.actorId === user.userId) return;
-    throw new ForbiddenException('Anda hanya dapat mengubah Daily Activity milik sendiri');
+  private assertCanManage(_activity: DailyActivity, user: AuthUser): void {
+    // Integra V9: project team members with manage permission can Update Status
+    // for any Daily Activity (progress monitoring is shared across the project).
+    if (TEAM_MANAGE_ROLES.includes(user.role)) return;
+    throw new ForbiddenException('Anda tidak memiliki akses untuk mengubah Daily Activity');
   }
 
   // ─── Reminder sweep ─────────────────────────────────────────────────────

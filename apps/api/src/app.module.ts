@@ -3,6 +3,7 @@ import { ConfigModule } from '@nestjs/config';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { TimeoutInterceptor } from './common/interceptors/timeout.interceptor'; // FIX: register globally
+import { SystemActivityInterceptor } from './common/interceptors/system-activity.interceptor'; // Integra V9
 import { PrismaModule } from './prisma/prisma.module';
 import { ProjectsModule } from './projects/projects.module';
 import { MapModule } from './map/map.module';
@@ -172,6 +173,10 @@ import { AppController } from './app.controller'; // FIX: root + live probes
     {
       provide: APP_INTERCEPTOR,
       useClass: TimeoutInterceptor, // FIX: now registered globally -- 10s timeout on every request
+    },
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: SystemActivityInterceptor, // Integra V9 — System Overview durable log
     },
     {
       provide: APP_GUARD,
