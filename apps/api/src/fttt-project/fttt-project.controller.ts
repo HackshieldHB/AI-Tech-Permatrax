@@ -19,16 +19,19 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { AuthUser } from '../auth/types/auth-user.types';
 import { FtttProjectService } from './fttt-project.service';
 import {
+  AcceptFinancialRequestDto,
   AddClosingLogDto,
   AddFtttTransactionDto,
   AddImplLogDto,
   AddJaminanDto,
   AddReconDocDto,
+  AddSiteToBulkyDto,
   AddSpanDto,
   AddSpanLogDto,
   AdvancePhaseDto,
   ApproveDocumentDto,
   CreateFtttProjectDto,
+  DeclineFinancialRequestDto,
   DisburseFtttTransactionDto,
   FtttProjectFilterDto,
   ResolveSanggahDto,
@@ -101,6 +104,39 @@ export class FtttProjectController {
     return this.service.findOne(id, user.userId, user.role);
   }
 
+  // ─── Integra V1: Bulky Project → Site management ─────────────────────────
+
+  // GET /fttt-projects/:id/sites
+  @Get(':id/sites')
+  listSites(@Param('id') id: string) {
+    return this.service.listSites(id);
+  }
+
+  // GET /fttt-projects/:id/available-finance-sites
+  @Get(':id/available-finance-sites')
+  listAvailableFinanceSites(@Param('id') id: string) {
+    return this.service.listAvailableFinanceSites(id);
+  }
+
+  // POST /fttt-projects/:id/sites
+  @Post(':id/sites')
+  addSite(
+    @Param('id') id: string,
+    @Body(new ZodValidationPipe(AddSiteToBulkyDto)) dto: any,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.service.addSite(id, dto.financeProjectId, user.userId, user.role);
+  }
+
+  // DELETE /fttt-projects/sites/:siteId
+  @Delete('sites/:siteId')
+  deleteSite(
+    @Param('siteId') siteId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.service.deleteSite(siteId, user.userId, user.role);
+  }
+
   // GET /fttt-projects/:id/budget-scurve  (budget summary + cost/progress S-curve)
   @Get(':id/budget-scurve')
   getBudgetScurve(@Param('id') id: string) {
@@ -135,6 +171,26 @@ export class FtttProjectController {
     @CurrentUser() user: AuthUser,
   ) {
     return this.service.disburseTransaction(txId, dto.disbursedAt, user.userId, user.role);
+  }
+
+  // POST /fttt-projects/transactions/:txId/accept  (Finance — Financial Request Accepted)
+  @Post('transactions/:txId/accept')
+  acceptFinancialRequest(
+    @Param('txId') txId: string,
+    @Body(new ZodValidationPipe(AcceptFinancialRequestDto)) dto: any,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.service.acceptFinancialRequest(txId, dto.scheduledReleaseAt, user.userId, user.role);
+  }
+
+  // POST /fttt-projects/transactions/:txId/decline  (Finance — Financial Request Declined)
+  @Post('transactions/:txId/decline')
+  declineFinancialRequest(
+    @Param('txId') txId: string,
+    @Body(new ZodValidationPipe(DeclineFinancialRequestDto)) dto: any,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.service.declineFinancialRequest(txId, dto.declinedReason, user.userId, user.role);
   }
 
   // DELETE /fttt-projects/transactions/:txId

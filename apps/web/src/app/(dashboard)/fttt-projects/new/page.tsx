@@ -50,7 +50,7 @@ export default function NewFtttProjectPage() {
   const [dragActive, setDragActive] = useState(false);
   // JLM: Nama Project is now a dropdown of FTTT Finance Projects
   const [financeProjectId, setFinanceProjectId] = useState('');
-  const [financeOptions, setFinanceOptions] = useState<{ id: string; code: string; name: string }[]>([]);
+  const [financeOptions, setFinanceOptions] = useState<{ id: string; code: string; name: string; hierarchyLevel?: string; parentId?: string | null }[]>([]);
 
   useEffect(() => {
     void (async () => {
@@ -60,6 +60,10 @@ export default function NewFtttProjectPage() {
       } catch { /* ignore */ }
     })();
   }, [user?.id]);
+
+  // Integra V1: an FTTT project should be linked to a Segment (or a root/STANDALONE
+  // project), not directly to an individual Site — Sites are managed via Site Initiation.
+  const segmentFinanceOptions = financeOptions.filter((fp) => fp.hierarchyLevel !== 'SITE' && !fp.parentId);
 
   // Same validation for both Browse and Drag & Drop paths (format + max 50 MB)
   const MAX_FILE_SIZE = 50 * 1024 * 1024;
@@ -245,13 +249,13 @@ export default function NewFtttProjectPage() {
               style={{ padding: 10, borderRadius: 8, border: '1px solid #D0D7DE', fontSize: 14, background: '#fff' }}
             >
               <option value="">— Pilih Finance Project (FTTT) —</option>
-              {financeOptions.map((fp) => (
+              {segmentFinanceOptions.map((fp) => (
                 <option key={fp.id} value={fp.id}>{fp.code} · {fp.name}</option>
               ))}
             </select>
             <span style={{ fontSize: 11, color: '#8c959f' }}>
-              Wajib diisi. Hanya menampilkan project Finance bertipe FTTT yang masih aktif. Budget & monitoring mengikuti project ini.
-              {financeOptions.length === 0 && ' (Belum ada — buat dulu di menu Finance Project.)'}
+              Wajib diisi. Hanya menampilkan Segment (atau project Finance) bertipe FTTT yang masih aktif — Site dikelola lewat Site Initiation setelah project dibuat. Budget & monitoring mengikuti project ini.
+              {segmentFinanceOptions.length === 0 && ' (Belum ada — buat dulu di menu Finance Project.)'}
             </span>
           </label>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13 }}>

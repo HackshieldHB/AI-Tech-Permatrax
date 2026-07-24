@@ -285,4 +285,16 @@ export const PERMISSIONS = {
   ],
 
   ORDER_CREATE_RESTOCK: [Role.ADMIN_STOCK],
+
+  // NEW: Integra V1 — Daily Activity (auto log + status monitoring/reminder)
+  DAILY_ACTIVITY_VIEW: [
+    Role.GENERAL_MANAGER, Role.FINANCE, Role.PM_FTTT, Role.PM_SENIOR,
+    Role.ADMIN, Role.SURVEYOR_FTTT,
+  ],
+  /** Service layer additionally restricts mutation to the record's own actor unless the
+   * caller holds an elevated role (GM/ADMIN/PM_SENIOR/PM_FTTT). */
+  DAILY_ACTIVITY_MANAGE: [
+    Role.GENERAL_MANAGER, Role.FINANCE, Role.PM_FTTT, Role.PM_SENIOR,
+    Role.ADMIN, Role.SURVEYOR_FTTT,
+  ],
 } as const;

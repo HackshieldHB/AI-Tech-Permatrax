@@ -1,6 +1,6 @@
-import { Controller, Get, Param, Req } from '@nestjs/common';
-import { ApiTags, ApiOperation } from '@nestjs/swagger';
-import { DashboardService } from './dashboard.service';
+import { Controller, Get, Param, Query, Req } from '@nestjs/common';
+import { ApiTags, ApiOperation, ApiQuery } from '@nestjs/swagger';
+import { DashboardService, ProjectKind } from './dashboard.service';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { Role } from '@prisma/client';
 
@@ -19,9 +19,11 @@ export class DashboardController {
   // FIX Fix 2A: new lean GM stats endpoint — clean labels + cluster-centric recent activity
   @Get('gm')
   @Roles(Role.GENERAL_MANAGER, Role.PM_SENIOR)
-  @ApiOperation({ summary: 'GM ringkas — summary / pipeline / recentActivity (label Indonesia)' })
-  async gmStats() {
-    return this.dashboardService.getGmStats();
+  @ApiOperation({ summary: 'GM ringkas — summary / pipeline / recentActivity / project & budget summary' })
+  @ApiQuery({ name: 'projectKind', required: false, enum: ['ALL', 'FTTH', 'FTTT'] })
+  async gmStats(@Query('projectKind') projectKind?: string) {
+    const kind: ProjectKind = projectKind === 'FTTH' || projectKind === 'FTTT' ? projectKind : 'ALL';
+    return this.dashboardService.getGmStats(kind);
   }
 
   @Get('sla')

@@ -8,10 +8,13 @@ import {
   FtttClosingLogType,
   FtttCompany,
   FtttDocumentType,
+  FtttHierarchyLevel,
   FtttImplLogType,
   FtttPhase,
   FtttPhaseStatus,
   FtttProjectStatus,
+  FtttRequestPriority,
+  FtttRequestStatus,
   Role,
 } from '@prisma/client';
 // ─── Reconciliation doc config (mirrors frontend RECON_DOCS) ─────────────────
@@ -65,6 +68,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { StorageService } from '../storage/storage.service';
 import { NotificationsGateway } from '../notifications/notifications.gateway';
 import { NotificationsService } from '../notifications/notifications.service';
+import { DailyActivityService } from '../daily-activity/daily-activity.service';
 import { paginate } from '../common/dto/pagination.dto';
 import {
   AddClosingLogDtoType,
@@ -87,6 +91,35 @@ import {
   UploadSurveyDtoType,
 } from './fttt-project.dto';
 
+// Integra V1: resolve the Finance Project that should be linked as a Bulky Project's
+// Segment. A Finance SITE is auto-resolved to its parent Segment; SEGMENT/STANDALONE
+// (STANDALONE kept for back-compat until the Finance module itself adopts the
+// Segment/Site hierarchy) are linked directly.
+async function resolveSegmentFinanceProjectId(
+  prisma: PrismaService,
+  financeProjectId: string,
+): Promise<{ id: string; name: string }> {
+  const fp = await prisma.financeProject.findUnique({
+    where: { id: financeProjectId },
+    select: { id: true, name: true, projectType: true, status: true, hierarchyLevel: true, parentId: true },
+  });
+  if (!fp || fp.projectType !== 'FTTT') {
+    throw new BadRequestException('Finance Project tidak valid (harus bertipe FTTT)');
+  }
+  if (fp.status !== 'ACTIVE') {
+    throw new BadRequestException('Finance Project tidak aktif');
+  }
+  if (fp.hierarchyLevel === 'SITE') {
+    if (!fp.parentId) {
+      throw new BadRequestException('Finance Site tidak memiliki Segment induk yang valid');
+    }
+    const segment = await prisma.financeProject.findUnique({ where: { id: fp.parentId }, select: { id: true, name: true } });
+    if (!segment) throw new BadRequestException('Segment induk dari Finance Site tidak ditemukan');
+    return segment;
+  }
+  return { id: fp.id, name: fp.name };
+}
+
 @Injectable()
 export class FtttProjectService {
   constructor(
@@ -94,7 +127,23 @@ export class FtttProjectService {
     private readonly storage: StorageService,
     private readonly gateway: NotificationsGateway,
     private readonly notifications: NotificationsService,
+    private readonly dailyActivity: DailyActivityService,
   ) {}
+
+  private async logActivity(params: {
+    actorId: string;
+    scopeOfWork: string;
+    ftttProjectId?: string | null;
+    financeProjectId?: string | null;
+    siteName?: string | null;
+    remarks?: string | null;
+  }) {
+    try {
+      await this.dailyActivity.createAuto(params);
+    } catch {
+      // non-blocking
+    }
+  }
 
   // ─── Create project (PM_FTTT only — Issue #5) ─────────────────────────────
   async create(dto: CreateFtttProjectDtoType, triggerDocFile: Express.Multer.File, pmId: string, userRole: Role) {
@@ -105,24 +154,21 @@ export class FtttProjectService {
     const triggerDocUrl = await this.storage.uploadMulterFile(triggerDocFile, 'fttt-trigger', dto.ftttCompany);
 
     // JLM: link to a Finance Project (must be Project Type = FTTT and active)
+    // Integra V1: this project is created as a Bulky Project, which links to the
+    // Finance SEGMENT that owns the overall budget (a Finance SITE is auto-resolved
+    // to its parent Segment)
     let linkedProjectName: string | null = dto.projectName ?? null;
+    let resolvedFinanceProjectId: string | null = null;
     if (dto.financeProjectId) {
-      const fp = await this.prisma.financeProject.findUnique({
-        where: { id: dto.financeProjectId },
-        select: { id: true, name: true, projectType: true, status: true },
-      });
-      if (!fp || fp.projectType !== 'FTTT') {
-        throw new BadRequestException('Finance Project tidak valid (harus bertipe FTTT)');
-      }
-      if (fp.status !== 'ACTIVE') {
-        throw new BadRequestException('Finance Project tidak aktif');
-      }
-      linkedProjectName = dto.projectName?.trim() || fp.name;
+      const segment = await resolveSegmentFinanceProjectId(this.prisma, dto.financeProjectId);
+      resolvedFinanceProjectId = segment.id;
+      linkedProjectName = dto.projectName?.trim() || segment.name;
     }
 
     const phases = FTTT_PHASES_BY_COMPANY[dto.ftttCompany];
     const allPhases: FtttPhase[] = [
       FtttPhase.INITIATION,
+      FtttPhase.SITE_INITIATION,
       FtttPhase.SURVEY,
       FtttPhase.PREPARATION,
       FtttPhase.IMPLEMENTATION,
@@ -141,7 +187,10 @@ export class FtttProjectService {
         // switch to checked mode and then complain pm is missing. (#fttt-500-fix)
         pm:             { connect: { id: pmId } },
         cleanList:      dto.cleanListId ? { connect: { id: dto.cleanListId } } : undefined,
-        financeProject: dto.financeProjectId ? { connect: { id: dto.financeProjectId } } : undefined,
+        financeProject: resolvedFinanceProjectId ? { connect: { id: resolvedFinanceProjectId } } : undefined,
+        // Integra V1: projects created via this endpoint are always Bulky (parent);
+        // Sites are created underneath via addSite() once Site Initiation is active
+        hierarchyLevel: FtttHierarchyLevel.BULKY,
         projectName:    linkedProjectName,
         notes:          dto.notes ?? null,
         currentPhase:   FtttPhase.INITIATION,
@@ -173,7 +222,202 @@ export class FtttProjectService {
       pmId,
     });
 
+    await this.logActivity({
+      actorId: pmId,
+      scopeOfWork: 'Project Initiation',
+      ftttProjectId: project.id,
+      financeProjectId: project.financeProjectId,
+      siteName: project.projectName,
+      remarks: 'Bulky Project dibuat',
+    });
+
     return project;
+  }
+
+  // ─── Integra V1: Bulky Project → Site management ──────────────────────────
+  // Sites are added during/after Site Initiation and inherit company/lifecycle
+  // from the Bulky parent; each Site links to its own Finance Site.
+  private async assertBulky(bulkyId: string) {
+    const bulky = await this.prisma.ftttProject.findUniqueOrThrow({ where: { id: bulkyId } });
+    if (bulky.hierarchyLevel !== FtttHierarchyLevel.BULKY) {
+      throw new BadRequestException('Operasi ini hanya berlaku untuk Bulky Project');
+    }
+    return bulky;
+  }
+
+  // GET :id/available-finance-sites — Finance Sites under the Bulky's linked
+  // Segment that are not yet linked to another active FTTT Site
+  async listAvailableFinanceSites(bulkyId: string) {
+    const bulky = await this.assertBulky(bulkyId);
+    if (!bulky.financeProjectId) return [];
+
+    const linkedFinance = await this.prisma.financeProject.findUnique({ where: { id: bulky.financeProjectId } });
+    if (!linkedFinance) return [];
+    // The Bulky may itself be linked to a Segment or (back-compat) a STANDALONE project
+    const segmentId = linkedFinance.hierarchyLevel === 'SITE' && linkedFinance.parentId
+      ? linkedFinance.parentId
+      : linkedFinance.id;
+
+    const candidateSites = await this.prisma.financeProject.findMany({
+      where: { parentId: segmentId, hierarchyLevel: 'SITE', status: 'ACTIVE' },
+      orderBy: { name: 'asc' },
+    });
+    if (candidateSites.length === 0) return [];
+
+    const alreadyLinked = await this.prisma.ftttProject.findMany({
+      where: {
+        hierarchyLevel: FtttHierarchyLevel.SITE,
+        financeProjectId: { in: candidateSites.map((s) => s.id) },
+        status: { not: FtttProjectStatus.CANCELLED },
+      },
+      select: { financeProjectId: true },
+    });
+    const linkedIds = new Set(alreadyLinked.map((l) => l.financeProjectId));
+    return candidateSites.filter((s) => !linkedIds.has(s.id));
+  }
+
+  // POST :id/sites — PM adds a Site under the Bulky Project
+  async addSite(bulkyId: string, financeProjectId: string, actorId: string, actorRole: Role) {
+    const allowed: Role[] = [Role.PM_FTTT, Role.ADMIN, Role.GENERAL_MANAGER];
+    if (!allowed.includes(actorRole)) {
+      throw new ForbiddenException('Hanya PM FTTT yang dapat menambahkan Site');
+    }
+    const bulky = await this.assertBulky(bulkyId);
+
+    const lifecycle = FTTT_PHASES_BY_COMPANY[bulky.ftttCompany];
+    const siteInitIdx = lifecycle.indexOf(FtttPhase.SITE_INITIATION);
+    const currentIdx = lifecycle.indexOf(bulky.currentPhase);
+    if (siteInitIdx === -1 || currentIdx < siteInitIdx) {
+      throw new BadRequestException('Selesaikan fase Project Initiation terlebih dahulu sebelum menambahkan Site');
+    }
+
+    const financeSite = await this.prisma.financeProject.findUnique({ where: { id: financeProjectId } });
+    if (!financeSite) throw new BadRequestException('Finance Site tidak ditemukan');
+    if (financeSite.hierarchyLevel === 'SEGMENT') {
+      throw new BadRequestException('Finance Project yang dipilih adalah Segment, bukan Site');
+    }
+    if (financeSite.status !== 'ACTIVE') {
+      throw new BadRequestException('Finance Site tidak aktif');
+    }
+
+    const existingLink = await this.prisma.ftttProject.findFirst({
+      where: {
+        financeProjectId,
+        hierarchyLevel: FtttHierarchyLevel.SITE,
+        status: { not: FtttProjectStatus.CANCELLED },
+      },
+    });
+    if (existingLink) {
+      throw new BadRequestException('Finance Site ini sudah terhubung dengan FTTT Site lain');
+    }
+
+    const allPhases: FtttPhase[] = [
+      FtttPhase.INITIATION,
+      FtttPhase.SITE_INITIATION,
+      FtttPhase.SURVEY,
+      FtttPhase.PREPARATION,
+      FtttPhase.IMPLEMENTATION,
+      FtttPhase.DOCUMENTATION,
+      FtttPhase.RECONCILIATION,
+      FtttPhase.CLOSING,
+    ];
+    const now = new Date();
+
+    const site = await this.prisma.ftttProject.create({
+      data: {
+        ftttCompany:    bulky.ftttCompany,
+        // Site inherits the Bulky's trigger document — it does not collect its own
+        triggerDocUrl:  bulky.triggerDocUrl,
+        triggerDocType: bulky.triggerDocType,
+        pm:             { connect: { id: bulky.pmId } },
+        financeProject: { connect: { id: financeProjectId } },
+        hierarchyLevel: FtttHierarchyLevel.SITE,
+        parent:         { connect: { id: bulkyId } },
+        projectName:    financeSite.name,
+        currentPhase:   FtttPhase.SURVEY,
+        status:         FtttProjectStatus.ACTIVE,
+        phaseProgresses: {
+          createMany: {
+            data: allPhases.map((phase) => {
+              const inLifecycle = lifecycle.includes(phase);
+              if (!inLifecycle) return { phase, status: FtttPhaseStatus.SKIPPED };
+              if (phase === FtttPhase.INITIATION || phase === FtttPhase.SITE_INITIATION) {
+                return {
+                  phase,
+                  status: FtttPhaseStatus.COMPLETED,
+                  unlockedAt: now,
+                  completedAt: now,
+                  completedById: actorId,
+                };
+              }
+              if (phase === FtttPhase.SURVEY) {
+                return { phase, status: FtttPhaseStatus.ACTIVE, unlockedAt: now };
+              }
+              return { phase, status: FtttPhaseStatus.LOCKED };
+            }),
+          },
+        },
+      },
+      include: this.fullInclude(),
+    });
+
+    this.gateway.emitToAll('fttt:site_added', {
+      bulkyId,
+      siteId: site.id,
+      financeProjectId,
+    });
+
+    await this.logActivity({
+      actorId,
+      scopeOfWork: 'Site Initiation',
+      ftttProjectId: site.id,
+      financeProjectId,
+      siteName: site.projectName,
+      remarks: 'Site ditambahkan ke Bulky Project',
+    });
+
+    return site;
+  }
+
+  // GET :id/sites — list Sites under a Bulky Project
+  async listSites(bulkyId: string) {
+    await this.assertBulky(bulkyId);
+    return this.prisma.ftttProject.findMany({
+      where: { parentId: bulkyId },
+      orderBy: { createdAt: 'asc' },
+      include: {
+        pm: { select: { id: true, name: true } },
+        financeProject: { select: { id: true, code: true, name: true } },
+        phaseProgresses: { orderBy: { phase: 'asc' } },
+        _count: { select: { surveyUploads: true, transactions: true, spans: true } },
+      },
+    });
+  }
+
+  // DELETE sites/:siteId — only while the Site has no meaningful activity yet
+  async deleteSite(siteId: string, actorId: string, actorRole: Role) {
+    const allowed: Role[] = [Role.PM_FTTT, Role.ADMIN, Role.GENERAL_MANAGER];
+    if (!allowed.includes(actorRole)) {
+      throw new ForbiddenException('Hanya PM FTTT yang dapat menghapus Site');
+    }
+    const site = await this.prisma.ftttProject.findUniqueOrThrow({
+      where: { id: siteId },
+      include: {
+        _count: { select: { surveyUploads: true, implementationLogs: true, transactions: true, spans: true } },
+      },
+    });
+    if (site.hierarchyLevel !== FtttHierarchyLevel.SITE) {
+      throw new BadRequestException('Hanya Site yang dapat dihapus melalui operasi ini');
+    }
+    if (site.currentPhase !== FtttPhase.SURVEY) {
+      throw new BadRequestException('Site hanya dapat dihapus selagi masih pada fase Validation & Survey');
+    }
+    const { surveyUploads, implementationLogs, transactions, spans } = site._count;
+    if (surveyUploads > 0 || implementationLogs > 0 || transactions > 0 || spans > 0) {
+      throw new BadRequestException('Site tidak dapat dihapus karena sudah memiliki aktivitas (survey, log implementasi, transaksi, atau span)');
+    }
+    await this.prisma.ftttProject.delete({ where: { id: siteId } });
+    return { success: true };
   }
 
   // ─── Issue 13: Replace / delete triggering document (INITIATION phase only) ─
@@ -203,6 +447,9 @@ export class FtttProjectService {
     if (company) where.ftttCompany = company;
     if (phase)   where.currentPhase = phase;
     if (status && status !== 'all') where.status = status;
+    // Integra V1: the main list surfaces Bulky Projects only — Sites live under
+    // their Bulky and are reached via listSites()/findOne(), not this listing.
+    where.hierarchyLevel = FtttHierarchyLevel.BULKY;
 
     // PM_FTTT only sees their own projects; Admin/GM/Finance/Surveyor see all
     const managingRoles: Role[] = [
@@ -229,6 +476,7 @@ export class FtttProjectService {
               drmDocuments: true,
               sanggahs: true,
               documents: true,
+              children: true, // Integra V1: number of Sites under this Bulky Project
             },
           },
         },
@@ -260,7 +508,55 @@ export class FtttProjectService {
     // JLM: surface a maintenance reminder to Admins when the window is reached
     await this.maybeSendMaintenanceReminder(project);
 
+    // Integra V3: normalize legacy Bulky Parents that advanced past SITE_INITIATION
+    // into operational phases — rewind to monitoring mode so Child Sites stay accessible.
+    if (
+      project.hierarchyLevel === FtttHierarchyLevel.BULKY &&
+      project.currentPhase !== FtttPhase.INITIATION &&
+      project.currentPhase !== FtttPhase.SITE_INITIATION
+    ) {
+      return this.normalizeLegacyBulkyParent(project.id);
+    }
+
     return project;
+  }
+
+  /** Integra V3: rewind Bulky Parent stuck past Site Initiation back to monitoring mode */
+  private async normalizeLegacyBulkyParent(id: string) {
+    const operationalPhases: FtttPhase[] = [
+      FtttPhase.SURVEY,
+      FtttPhase.PREPARATION,
+      FtttPhase.PROCUREMENT,
+      FtttPhase.IMPLEMENTATION,
+      FtttPhase.DOCUMENTATION,
+      FtttPhase.RECONCILIATION,
+      FtttPhase.CLOSING,
+    ];
+    const now = new Date();
+    await this.prisma.$transaction(async (tx) => {
+      await tx.ftttProject.update({
+        where: { id },
+        data: { currentPhase: FtttPhase.SITE_INITIATION, status: FtttProjectStatus.ACTIVE },
+      });
+      await tx.ftttPhaseProgress.upsert({
+        where: { projectId_phase: { projectId: id, phase: FtttPhase.INITIATION } },
+        update: { status: FtttPhaseStatus.COMPLETED, completedAt: now },
+        create: { projectId: id, phase: FtttPhase.INITIATION, status: FtttPhaseStatus.COMPLETED, unlockedAt: now, completedAt: now },
+      });
+      await tx.ftttPhaseProgress.upsert({
+        where: { projectId_phase: { projectId: id, phase: FtttPhase.SITE_INITIATION } },
+        update: { status: FtttPhaseStatus.COMPLETED, completedAt: now },
+        create: { projectId: id, phase: FtttPhase.SITE_INITIATION, status: FtttPhaseStatus.COMPLETED, unlockedAt: now, completedAt: now },
+      });
+      for (const phase of operationalPhases) {
+        await tx.ftttPhaseProgress.upsert({
+          where: { projectId_phase: { projectId: id, phase } },
+          update: { status: FtttPhaseStatus.SKIPPED },
+          create: { projectId: id, phase, status: FtttPhaseStatus.SKIPPED },
+        });
+      }
+    });
+    return this.prisma.ftttProject.findUniqueOrThrow({ where: { id }, include: this.fullInclude() });
   }
 
   // ─── Phase gate check: can the current phase be completed? ───────────────
@@ -286,6 +582,20 @@ export class FtttProjectService {
 
     if (phase === FtttPhase.INITIATION) {
       // trigger doc is always uploaded at creation, so always ready
+    }
+
+    // Integra V3: Bulky Site Initiation requires ≥1 Child Site before completion
+    if (phase === FtttPhase.SITE_INITIATION && project.hierarchyLevel === FtttHierarchyLevel.BULKY) {
+      const siteCount = await this.prisma.ftttProject.count({
+        where: {
+          parentId: project.id,
+          hierarchyLevel: FtttHierarchyLevel.SITE,
+          status: { not: FtttProjectStatus.CANCELLED },
+        },
+      });
+      if (siteCount === 0) {
+        reasons.push('Minimal satu Site harus ditambahkan sebelum menyelesaikan Site Initiation');
+      }
     }
 
     if (phase === FtttPhase.SURVEY) {
@@ -322,12 +632,10 @@ export class FtttProjectService {
           reasons.push('Dokumen Monitoring belum diunggah oleh Admin');
         }
       }
-      // JLM: PST must choose an implementation type (Galian / KU) before completing Implementation
-      if (
-        company === FtttCompany.PST &&
-        !(project as typeof project & { implementationType: string | null }).implementationType
-      ) {
-        reasons.push('Jenis Implementasi (Galian / KU) belum dipilih');
+      // Integra V1: Metode Implementasi (Galian / KU) is now method-first for ALL
+      // companies (was PST-only) — must be chosen before completing Implementation
+      if (!(project as typeof project & { implementationType: string | null }).implementationType) {
+        reasons.push('Metode Implementasi (Galian / KU) belum dipilih');
       }
     }
 
@@ -596,7 +904,32 @@ export class FtttProjectService {
     const currentIdx = lifecycle.indexOf(project.currentPhase as FtttPhase);
     if (currentIdx === -1) throw new BadRequestException('Phase tidak valid');
 
-    const nextPhase = lifecycle[currentIdx + 1] ?? null;
+    // Integra V3: Parent (Bulky) stops after Site Initiation — operational lifecycle lives on Sites.
+    // Completing SITE_INITIATION marks Parent initiation done and skips remaining phases.
+    const isBulkyTerminal =
+      project.hierarchyLevel === FtttHierarchyLevel.BULKY &&
+      project.currentPhase === FtttPhase.SITE_INITIATION;
+
+    if (
+      project.hierarchyLevel === FtttHierarchyLevel.BULKY &&
+      project.currentPhase !== FtttPhase.INITIATION &&
+      project.currentPhase !== FtttPhase.SITE_INITIATION
+    ) {
+      throw new BadRequestException(
+        'Parent Project sudah melewati Initiation — lanjutkan lifecycle di masing-masing Child Site',
+      );
+    }
+
+    const nextPhase = isBulkyTerminal ? null : (lifecycle[currentIdx + 1] ?? null);
+    const operationalPhases: FtttPhase[] = [
+      FtttPhase.SURVEY,
+      FtttPhase.PREPARATION,
+      FtttPhase.PROCUREMENT,
+      FtttPhase.IMPLEMENTATION,
+      FtttPhase.DOCUMENTATION,
+      FtttPhase.RECONCILIATION,
+      FtttPhase.CLOSING,
+    ];
 
     await this.prisma.$transaction(async (tx) => {
       // Mark current phase complete
@@ -610,7 +943,18 @@ export class FtttProjectService {
         },
       });
 
-      if (nextPhase) {
+      if (isBulkyTerminal) {
+        // Skip all operational phases on Parent; keep currentPhase = SITE_INITIATION (completed)
+        for (const phase of operationalPhases) {
+          if (!lifecycle.includes(phase)) continue;
+          await tx.ftttPhaseProgress.upsert({
+            where: { projectId_phase: { projectId: id, phase } },
+            update: { status: FtttPhaseStatus.SKIPPED },
+            create: { projectId: id, phase, status: FtttPhaseStatus.SKIPPED },
+          });
+        }
+        // currentPhase stays SITE_INITIATION; project remains ACTIVE for Site monitoring
+      } else if (nextPhase) {
         // C7-PST4: upsert to handle old projects that may not have a phaseProgress row for new phases
         await tx.ftttPhaseProgress.upsert({
           where: { projectId_phase: { projectId: id, phase: nextPhase } },
@@ -658,6 +1002,44 @@ export class FtttProjectService {
         message:  `Project ${pName} (Telkom Infra) telah memasuki fase Project Preparation. Silakan upload dokumen Jaminan Uang Muka dan Jaminan Pelaksanaan.`,
         type:     'FTTT_JAMINAN_REQUIRED',
         link:     `/fttt-projects/${id}`,
+        entityId: id,
+      });
+    }
+
+    // Integra V1: Notify PM when the Bulky Project enters Site Initiation — Sites can now be added
+    if (
+      project.currentPhase === FtttPhase.INITIATION &&
+      updated.currentPhase === FtttPhase.SITE_INITIATION &&
+      pmId
+    ) {
+      await this.notifications.createForUser(pmId, {
+        title:   'FTTT — Fase Site Initiation Dimulai',
+        message: `Project ${pName} telah memasuki fase Site Initiation. Silakan tambahkan Site untuk melanjutkan.`,
+        type:    'FTTT_PHASE_CHANGE',
+        link:    `/fttt-projects/${id}`,
+        entityId: id,
+      });
+    }
+
+    // Integra V3: Parent Initiation complete — Sites continue operational lifecycle
+    if (
+      isBulkyTerminal &&
+      project.hierarchyLevel === FtttHierarchyLevel.BULKY
+    ) {
+      if (pmId) {
+        await this.notifications.createForUser(pmId, {
+          title:   'FTTT — Parent Initiation Selesai',
+          message: `Parent Project ${pName} selesai Site Initiation. Lanjutkan Validation & Survey pada masing-masing Child Site.`,
+          type:    'FTTT_PHASE_CHANGE',
+          link:    `/fttt-projects/${id}`,
+          entityId: id,
+        });
+      }
+      await this.notifications.notifyUsersByRole(Role.SURVEYOR_FTTT, {
+        title:   'FTTT — Child Sites Siap Survey',
+        message: `Sites di bawah ${pName} siap dikerjakan pada fase Validation & Survey.`,
+        type:    'FTTT_PHASE_CHANGE',
+        link:    `/fttt-projects/${id}`,
         entityId: id,
       });
     }
@@ -810,8 +1192,8 @@ export class FtttProjectService {
       throw new BadRequestException('Project tidak aktif — survey tidak dapat diunggah');
     }
     // Allow continuing survey after leaving SURVEY (parallel with Preparation+)
-    if (project.currentPhase === FtttPhase.INITIATION) {
-      throw new BadRequestException('Selesaikan Project Initiation terlebih dahulu');
+    if (project.currentPhase === FtttPhase.INITIATION || project.currentPhase === FtttPhase.SITE_INITIATION) {
+      throw new BadRequestException('Selesaikan Project/Site Initiation terlebih dahulu');
     }
     if (dto.siteId) {
       const site = await this.prisma.ftttSurveySite.findFirst({ where: { id: dto.siteId, projectId: id } });
@@ -827,6 +1209,8 @@ export class FtttProjectService {
         uploadedById: userId,
         fileUrl,
         fileType: dto.fileType,
+        // Integra V1: preserve the client's original filename for display purposes
+        originalFileName: file?.originalname ?? null,
         caption: dto.caption ?? null,
         siteId: dto.siteId ?? null,
       },
@@ -1280,18 +1664,40 @@ export class FtttProjectService {
       throw new ForbiddenException('Hanya Admin yang dapat menambahkan Span');
     }
     const project = await this.prisma.ftttProject.findUniqueOrThrow({ where: { id: projectId } });
-    // JLM: span-based log — Telkom Infra, PST (Galian), dan iFORTE (Daily Log Span
-    // adalah bagian dari business process Implementation iFORTE)
-    const spanAllowed =
-      project.ftttCompany === FtttCompany.TELKOM_INFRA ||
-      project.ftttCompany === FtttCompany.IFORTE ||
-      (project.ftttCompany === FtttCompany.PST && project.implementationType === 'GALIAN');
-    if (!spanAllowed) {
-      throw new BadRequestException('Span hanya tersedia untuk Telkom Infra, iFORTE, atau PST jenis implementasi Galian');
+    // Integra V2: Daily Log folders for both Galian (Span) and KU
+    if (project.implementationType !== 'GALIAN' && project.implementationType !== 'KU') {
+      throw new BadRequestException('Pilih Metode Implementasi (Galian atau KU) terlebih dahulu');
+    }
+    if (dto.lengthMeters == null || dto.lengthMeters <= 0) {
+      throw new BadRequestException('Panjang pekerjaan (meter) wajib diisi saat membuat Folder');
+    }
+    if (project.totalPanjangMeter != null) {
+      const existing = await this.prisma.ftttSpan.aggregate({
+        where: { projectId },
+        _sum: { lengthMeters: true },
+      });
+      const used = Number(existing._sum.lengthMeters ?? 0);
+      const total = Number(project.totalPanjangMeter);
+      if (used + dto.lengthMeters > total + 0.001) {
+        throw new BadRequestException(
+          `Akumulasi panjang Folder (${used + dto.lengthMeters} m) melebihi Total Panjang Pekerjaan (${total} m)`,
+        );
+      }
     }
     return this.prisma.ftttSpan.create({
-      data: { projectId, spanNumber: dto.spanNumber, createdById: userId },
-      include: { spanLogs: { include: { uploadedBy: { select: { id: true, name: true } } }, orderBy: { createdAt: 'asc' as const } }, createdBy: { select: { id: true, name: true } } },
+      data: {
+        projectId,
+        spanNumber: dto.spanNumber,
+        lengthMeters: dto.lengthMeters,
+        createdById: userId,
+      },
+      include: {
+        spanLogs: {
+          include: { uploadedBy: { select: { id: true, name: true } } },
+          orderBy: { createdAt: 'asc' as const },
+        },
+        createdBy: { select: { id: true, name: true } },
+      },
     });
   }
 
@@ -1304,27 +1710,25 @@ export class FtttProjectService {
 
   async addSpanLog(spanId: string, dto: AddSpanLogDtoType, file: Express.Multer.File, userId: string, userRole: Role) {
     const span = await this.prisma.ftttSpan.findUniqueOrThrow({ where: { id: spanId } });
-    // iFORTE: PM FTTT & Surveyor juga mengisi Daily Log; TI/PST tetap Admin-only
-    const project = await this.prisma.ftttProject.findUniqueOrThrow({ where: { id: span.projectId }, select: { ftttCompany: true } });
-    const allowed: Role[] =
-      project.ftttCompany === FtttCompany.IFORTE
-        ? [Role.ADMIN, Role.GENERAL_MANAGER, Role.PM_FTTT, Role.SURVEYOR_FTTT]
-        : [Role.ADMIN, Role.GENERAL_MANAGER];
+    // Integra V1: Daily Log is generalized — PM FTTT & Surveyor may also log for any
+    // company (was iFORTE-only widening; TI/PST were Admin-only)
+    const allowed: Role[] = [Role.ADMIN, Role.GENERAL_MANAGER, Role.PM_FTTT, Role.SURVEYOR_FTTT];
     if (!allowed.includes(userRole)) {
-      throw new ForbiddenException('Tidak memiliki akses untuk mengunggah dokumentasi Span');
+      throw new ForbiddenException('Tidak memiliki akses untuk mengunggah dokumentasi Daily Log');
     }
     const fileUrl = await this.storage.uploadMulterFile(file, 'fttt-span', span.projectId);
     const spanLog = await this.prisma.ftttSpanLog.create({
       data: {
         spanId, projectId: span.projectId, category: dto.category, fileUrl,
         caption: dto.caption ?? null, uploadedById: userId,
-        // iFORTE GENERAL: meter diakumulasi menjadi Progress (%)
+        // GENERAL: meter diakumulasi menjadi Progress (%)
         meterDone: dto.meterDone != null ? dto.meterDone : null,
       },
       include: { uploadedBy: { select: { id: true, name: true } } },
     });
-    // iFORTE: setiap Daily Log Span juga masuk ke Log Aktivitas (histori project)
-    if (project.ftttCompany === FtttCompany.IFORTE) {
+    // Integra V1: every Daily Log entry also appears in Log Aktivitas (project
+    // history), regardless of company — was iFORTE-only
+    {
       const catLabel = String(dto.category).replace(/_/g, ' ');
       await this.prisma.ftttImplementationLog.create({
         data: {
@@ -1332,7 +1736,7 @@ export class FtttProjectService {
           uploadedById: userId,
           logType: FtttImplLogType.PHOTO,
           fileUrl,
-          caption: dto.caption ?? `Daily Log Span — ${catLabel}`,
+          caption: dto.caption ?? `Daily Log — ${catLabel}`,
           notes: dto.meterDone != null ? `Meter selesai: ${dto.meterDone} m` : null,
           meterDone: dto.meterDone != null ? dto.meterDone : null,
         },
@@ -1407,8 +1811,19 @@ export class FtttProjectService {
         include: {
           createdBy: { select: { id: true, name: true } },
           disbursedBy: { select: { id: true, name: true } },
+          reviewedBy: { select: { id: true, name: true } },
         },
         orderBy: { createdAt: 'desc' as const },
+      },
+      // Integra V1: Bulky ↔ Site hierarchy context
+      parent:   { select: { id: true, projectName: true, ftttCompany: true, hierarchyLevel: true } },
+      children: {
+        select: {
+          id: true, projectName: true, currentPhase: true, status: true,
+          phaseProgresses: { select: { phase: true, status: true } },
+          financeProject: { select: { id: true, code: true, name: true } },
+        },
+        orderBy: { createdAt: 'asc' as const },
       },
     } as const;
   }
@@ -1420,6 +1835,7 @@ export class FtttProjectService {
       select: {
         id: true, code: true, name: true, totalBudget: true,
         budgetPerizinan: true, materialBudget: true, jasaBudget: true, budgetLainLain: true,
+        hierarchyLevel: true, parentId: true,
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -1427,24 +1843,53 @@ export class FtttProjectService {
 
   // ─── JLM: Implementation Transaction Log (PM FTTT) ───────────────────────────
   // Stage 1: PM creates plan/need — does NOT reduce Finance budget until disbursed
+  // Integra V1: this is now a Financial Request — PM records the need, Finance
+  // reviews (accept/decline) before the existing disburse (Tanggal Dana Keluar) step.
   async addTransaction(projectId: string, dto: AddFtttTransactionDtoType, userId: string, userRole: Role) {
     if (userRole !== Role.PM_FTTT && userRole !== Role.GENERAL_MANAGER) {
       throw new ForbiddenException('Hanya PM FTTT yang dapat mencatat Transaction Log');
     }
     const project = await this.prisma.ftttProject.findUniqueOrThrow({
       where: { id: projectId },
-      select: { id: true, currentPhase: true, financeProjectId: true },
+      select: { id: true, currentPhase: true, financeProjectId: true, projectName: true },
     });
     if (project.currentPhase !== FtttPhase.IMPLEMENTATION) {
       throw new BadRequestException('Transaction Log hanya dapat diisi pada fase Implementation');
     }
+    const expectedNeedDate = new Date(dto.expectedNeedDate);
+    if (Number.isNaN(expectedNeedDate.getTime())) {
+      throw new BadRequestException('Tanggal Kebutuhan tidak valid');
+    }
     const qty = Number(dto.qty);
     const price = Number(dto.price);
     const total = Math.round(qty * price * 100) / 100;
-    return this.prisma.ftttTransaction.create({
+
+    // Integra V1: LAIN_LAIN is funded from the Segment's budget; the other categories
+    // draw from the Site's own Finance Project (Segment owns budgetLainLain only —
+    // see FinanceProject schema comment).
+    let financeProjectId = project.financeProjectId ?? null;
+    if (dto.category === 'LAIN_LAIN' && financeProjectId) {
+      const fp = await this.prisma.financeProject.findUnique({
+        where: { id: financeProjectId },
+        select: { hierarchyLevel: true, parentId: true },
+      });
+      if (fp?.hierarchyLevel === 'SITE' && fp.parentId) {
+        financeProjectId = fp.parentId;
+      }
+    }
+
+    // Priority derived from how many days remain until the need date
+    const msPerDay = 24 * 60 * 60 * 1000;
+    const daysUntilNeed = Math.ceil((expectedNeedDate.getTime() - Date.now()) / msPerDay);
+    const priority: FtttRequestPriority =
+      daysUntilNeed <= 3 ? FtttRequestPriority.HIGH
+      : daysUntilNeed <= 7 ? FtttRequestPriority.MEDIUM
+      : FtttRequestPriority.LOW;
+
+    const tx = await this.prisma.ftttTransaction.create({
       data: {
         ftttProjectId:    projectId,
-        financeProjectId: project.financeProjectId ?? null,
+        financeProjectId,
         category:         dto.category,
         aktivitas:        dto.aktivitas.trim(),
         uom:              dto.uom?.trim() || null,
@@ -1453,13 +1898,121 @@ export class FtttProjectService {
         total:            total.toString(),
         remarks:          dto.remarks.trim(),
         createdById:      userId,
+        expectedNeedDate,
+        reason:           dto.reason.trim(),
+        priority,
+        requestStatus:    FtttRequestStatus.PENDING_REVIEW,
         // disbursedAt left null — budget not affected until Finance confirms
       },
       include: {
         createdBy: { select: { id: true, name: true } },
         disbursedBy: { select: { id: true, name: true } },
+        reviewedBy: { select: { id: true, name: true } },
       },
     });
+
+    await this.notifications.notifyUsersByRole(Role.FINANCE, {
+      title:   'FTTT — Financial Request Baru',
+      message: `PM FTTT mengajukan Financial Request "${tx.aktivitas}" (${dto.category}, prioritas ${priority}) untuk project ${project.projectName ?? projectId.slice(-6)}.`,
+      type:    'FTTT_FINANCIAL_REQUEST',
+      link:    `/fttt-projects/${projectId}`,
+      entityId: projectId,
+    });
+
+    await this.logActivity({
+      actorId: userId,
+      scopeOfWork: 'Finance Transaction',
+      ftttProjectId: projectId,
+      financeProjectId,
+      siteName: project.projectName,
+      remarks: `Financial Request: ${tx.aktivitas}`,
+    });
+
+    return tx;
+  }
+
+  // Integra V1: Finance accepts a Financial Request and schedules the release date
+  async acceptFinancialRequest(txId: string, scheduledReleaseAtIso: string, userId: string, userRole: Role) {
+    if (userRole !== Role.FINANCE && userRole !== Role.GENERAL_MANAGER) {
+      throw new ForbiddenException('Hanya Finance yang dapat menyetujui Financial Request');
+    }
+    const tx = await this.prisma.ftttTransaction.findUniqueOrThrow({
+      where: { id: txId },
+      include: { ftttProject: { select: { id: true, projectName: true, pmId: true } } },
+    });
+    if (tx.requestStatus !== FtttRequestStatus.PENDING_REVIEW) {
+      throw new BadRequestException('Financial Request ini sudah diproses sebelumnya');
+    }
+    const scheduledReleaseAt = new Date(scheduledReleaseAtIso);
+    if (Number.isNaN(scheduledReleaseAt.getTime())) {
+      throw new BadRequestException('Rencana Tanggal Pencairan tidak valid');
+    }
+    const updated = await this.prisma.ftttTransaction.update({
+      where: { id: txId },
+      data: {
+        requestStatus:  FtttRequestStatus.ACCEPTED,
+        scheduledReleaseAt,
+        reviewedById:   userId,
+        reviewedAt:     new Date(),
+        declinedReason: null,
+      },
+      include: {
+        createdBy: { select: { id: true, name: true } },
+        disbursedBy: { select: { id: true, name: true } },
+        reviewedBy: { select: { id: true, name: true } },
+      },
+    });
+    if (tx.ftttProject.pmId) {
+      await this.notifications.createForUser(tx.ftttProject.pmId, {
+        title:   'FTTT — Financial Request Disetujui',
+        message: `Financial Request "${tx.aktivitas}" untuk project ${tx.ftttProject.projectName ?? tx.ftttProject.id.slice(-6)} telah disetujui Finance. Rencana pencairan: ${scheduledReleaseAt.toLocaleDateString('id-ID')}.`,
+        type:    'FTTT_FINANCIAL_REQUEST_ACCEPTED',
+        link:    `/fttt-projects/${tx.ftttProject.id}`,
+        entityId: tx.ftttProject.id,
+      });
+    }
+    return updated;
+  }
+
+  // Integra V1: Finance declines a Financial Request with a reason
+  async declineFinancialRequest(txId: string, declinedReason: string, userId: string, userRole: Role) {
+    if (userRole !== Role.FINANCE && userRole !== Role.GENERAL_MANAGER) {
+      throw new ForbiddenException('Hanya Finance yang dapat menolak Financial Request');
+    }
+    if (!declinedReason?.trim()) {
+      throw new BadRequestException('Alasan penolakan wajib diisi');
+    }
+    const tx = await this.prisma.ftttTransaction.findUniqueOrThrow({
+      where: { id: txId },
+      include: { ftttProject: { select: { id: true, projectName: true, pmId: true } } },
+    });
+    if (tx.requestStatus !== FtttRequestStatus.PENDING_REVIEW) {
+      throw new BadRequestException('Financial Request ini sudah diproses sebelumnya');
+    }
+    const updated = await this.prisma.ftttTransaction.update({
+      where: { id: txId },
+      data: {
+        requestStatus:  FtttRequestStatus.DECLINED,
+        declinedReason: declinedReason.trim(),
+        reviewedById:   userId,
+        reviewedAt:     new Date(),
+      },
+      include: {
+        createdBy: { select: { id: true, name: true } },
+        disbursedBy: { select: { id: true, name: true } },
+        reviewedBy: { select: { id: true, name: true } },
+      },
+    });
+    if (tx.ftttProject.pmId) {
+      await this.notifications.createForUser(tx.ftttProject.pmId, {
+        title:   'FTTT — Financial Request Ditolak',
+        message: `Financial Request "${tx.aktivitas}" untuk project ${tx.ftttProject.projectName ?? tx.ftttProject.id.slice(-6)} ditolak Finance. Alasan: ${declinedReason.trim()}`,
+        type:    'FTTT_FINANCIAL_REQUEST_DECLINED',
+        link:    `/fttt-projects/${tx.ftttProject.id}`,
+        entityId: tx.ftttProject.id,
+      });
+    }
+    return updated;
   }
 
   // Stage 2: Finance sets Tanggal Dana Keluar → only then counts toward budget / S-curve Actual
@@ -1470,6 +2023,12 @@ export class FtttProjectService {
     const tx = await this.prisma.ftttTransaction.findUniqueOrThrow({ where: { id: txId } });
     if (tx.disbursedAt) {
       throw new BadRequestException('Transaksi ini sudah memiliki Tanggal Dana Keluar');
+    }
+    // Integra V1: the Financial Request must be Accepted by Finance before dana can
+    // be released. Legacy transactions created before this workflow existed (no
+    // `reason` captured) bypass this gate for backward compatibility.
+    if (tx.reason && tx.requestStatus !== FtttRequestStatus.ACCEPTED) {
+      throw new BadRequestException('Financial Request harus disetujui (Accepted) oleh Finance sebelum dana dapat dikeluarkan');
     }
     const d = new Date(disbursedAtIso);
     if (Number.isNaN(d.getTime())) {
@@ -1489,6 +2048,7 @@ export class FtttProjectService {
       include: {
         createdBy: { select: { id: true, name: true } },
         disbursedBy: { select: { id: true, name: true } },
+        reviewedBy: { select: { id: true, name: true } },
       },
     });
   }
@@ -1509,9 +2069,19 @@ export class FtttProjectService {
     const project = await this.prisma.ftttProject.findUniqueOrThrow({
       where: { id: projectId },
       include: {
-        financeProject: { select: { id: true, code: true, name: true, totalBudget: true, budgetPerizinan: true, materialBudget: true, jasaBudget: true, budgetLainLain: true, createdAt: true, endDate: true } },
+        financeProject: {
+          select: {
+            id: true, code: true, name: true, totalBudget: true,
+            budgetPerizinan: true, materialBudget: true, jasaBudget: true, budgetLainLain: true,
+            createdAt: true, endDate: true,
+            hierarchyLevel: true, parentId: true,
+          },
+        },
         transactions: { orderBy: { createdAt: 'asc' }, include: { createdBy: { select: { id: true, name: true } }, disbursedBy: { select: { id: true, name: true } } } },
         phaseProgresses: true,
+        // Integra V6: Actual Progress from implementation meters (Daily Log / Log Aktivitas)
+        implementationLogs: { select: { meterDone: true, createdAt: true }, orderBy: { createdAt: 'asc' } },
+        spans: { select: { lengthMeters: true, createdAt: true }, orderBy: { createdAt: 'asc' } },
       },
     });
 
@@ -1523,6 +2093,22 @@ export class FtttProjectService {
       JASA:      num(fp?.jasaBudget),
       LAIN_LAIN: num(fp?.budgetLainLain),
     };
+
+    // Integra V4: Lain-Lain (Overhead) is owned by Segment (Parent) — Sites inherit live budget + pool spent
+    let segmentLainLainId: string | null = null;
+    if (fp?.hierarchyLevel === 'SITE' && fp.parentId) {
+      const parent = await this.prisma.financeProject.findUnique({
+        where: { id: fp.parentId },
+        select: { id: true, budgetLainLain: true },
+      });
+      if (parent) {
+        budgets.LAIN_LAIN = num(parent.budgetLainLain);
+        segmentLainLainId = parent.id;
+      }
+    } else if (fp?.hierarchyLevel === 'SEGMENT') {
+      segmentLainLainId = fp.id;
+    }
+
     const totalBudget = num(fp?.totalBudget) || (budgets.PERIZINAN + budgets.MATERIAL + budgets.JASA + budgets.LAIN_LAIN);
 
     // Only disbursed transactions whose Dana Keluar date has arrived count as spent / Actual.
@@ -1532,7 +2118,21 @@ export class FtttProjectService {
       (t) => t.disbursedAt != null && new Date(t.disbursedAt).getTime() <= nowMs,
     );
     const spent = { PERIZINAN: 0, MATERIAL: 0, JASA: 0, LAIN_LAIN: 0 } as Record<string, number>;
-    for (const t of realized) spent[t.category] += num(t.total);
+    for (const t of realized) {
+      if (t.category === 'LAIN_LAIN' && segmentLainLainId) continue; // filled from segment pool below
+      spent[t.category] += num(t.total);
+    }
+    if (segmentLainLainId) {
+      const lainAgg = await this.prisma.ftttTransaction.aggregate({
+        where: {
+          financeProjectId: segmentLainLainId,
+          category: 'LAIN_LAIN',
+          disbursedAt: { not: null, lte: new Date(nowMs) },
+        },
+        _sum: { total: true },
+      });
+      spent.LAIN_LAIN = num(lainAgg._sum.total);
+    }
     const totalSpent = spent.PERIZINAN + spent.MATERIAL + spent.JASA + spent.LAIN_LAIN;
 
     // Finance-owned milestones: BASELINE (Planning Awal) + CURRENT (Perubahan Planning)
@@ -1563,7 +2163,13 @@ export class FtttProjectService {
     const lastTx = realized.length
       ? new Date(realized[realized.length - 1].disbursedAt ?? realized[realized.length - 1].createdAt)
       : null;
-    const start = new Date(fp?.createdAt ?? project.createdAt);
+    // Integra V1: the S-Curve now starts at the earliest planning milestone (BASELINE
+    // or CURRENT) instead of the project's createdAt, so the curve reflects the actual
+    // planned start of work; falls back to createdAt when no milestones exist yet.
+    const earliestMilestoneT = allMilestones.length ? new Date(allMilestones[0].targetDate).getTime() : null;
+    const start = earliestMilestoneT != null
+      ? new Date(earliestMilestoneT)
+      : new Date(fp?.createdAt ?? project.createdAt);
     const endCandidates = [
       lastMsT,
       lastTx?.getTime() ?? 0,
@@ -1620,10 +2226,39 @@ export class FtttProjectService {
         .map(({ name, end: weekEnd }) => ({ name, end: weekEnd }));
     });
 
-    // Actual uses disbursedAt (or createdAt fallback for legacy rows already counted)
-    const txPoints = realized
-      .map((t) => ({ t: new Date(t.disbursedAt ?? t.createdAt).getTime(), v: num(t.total) }))
+    // Integra V6: Actual Cost from disbursed Transaction Log (Tanggal Dana Keluar).
+    // Exclude Site-owned LAIN_LAIN when Segment owns the Lain-Lain pool (avoid double-count).
+    const siteTxPoints = realized
+      .filter((t) => !(t.category === 'LAIN_LAIN' && segmentLainLainId))
+      .map((t) => ({ t: new Date(t.disbursedAt ?? t.createdAt).getTime(), v: num(t.total) }));
+    let segmentLainPoints: { t: number; v: number }[] = [];
+    if (segmentLainLainId) {
+      const lainRows = await this.prisma.ftttTransaction.findMany({
+        where: {
+          financeProjectId: segmentLainLainId,
+          category: 'LAIN_LAIN',
+          disbursedAt: { not: null, lte: new Date(nowMs) },
+        },
+        select: { disbursedAt: true, createdAt: true, total: true },
+      });
+      segmentLainPoints = lainRows.map((t) => ({
+        t: new Date(t.disbursedAt ?? t.createdAt).getTime(),
+        v: num(t.total),
+      }));
+    }
+    const txPoints = [...siteTxPoints, ...segmentLainPoints].sort((a, b) => a.t - b.t);
+
+    // Integra V6: Actual Progress from implementation meters (same source as Overview Progress %)
+    const totalPanjang = num(project.totalPanjangMeter);
+    const meterFromActivity = (project.implementationLogs ?? [])
+      .map((l) => ({ t: new Date(l.createdAt).getTime(), v: num(l.meterDone) }))
+      .filter((p) => p.v > 0);
+    const meterFromSpans = (project.spans ?? [])
+      .map((s) => ({ t: new Date(s.createdAt).getTime(), v: num(s.lengthMeters) }))
+      .filter((p) => p.v > 0);
+    const meterPoints = (meterFromActivity.length > 0 ? meterFromActivity : meterFromSpans)
       .sort((a, b) => a.t - b.t);
+    const useMeterProgress = totalPanjang > 0 && meterPoints.length > 0;
     const now = Date.now();
 
     const buildCurves = (buckets: Bucket[]) => {
@@ -1642,6 +2277,8 @@ export class FtttProjectService {
       const n = Math.max(1, buckets.length);
       let cumActual = 0;
       let ptr = 0;
+      let cumMeters = 0;
+      let meterPtr = 0;
       let lastActualCost = 0;
       let lastActualProg = 0;
       for (let i = 0; i < buckets.length; i++) {
@@ -1652,14 +2289,25 @@ export class FtttProjectService {
         const baselineCost = hasBaseline ? interp(baselineMs, b.end, 'budget') : (totalBudget * baselineProgress) / 100;
         const plannedCost = hasRevised ? interp(revisedMs, b.end, 'budget') : baselineCost;
 
-        // Actual: only for periods that have already ended (or are current); future = null
-        if (b.end <= now) {
-          while (ptr < txPoints.length && txPoints[ptr].t <= b.end) {
+        // Integra V6: include the current incomplete period (bucket end may still be in the future).
+        // Only omit Actual for periods that have not started yet.
+        const periodStart = i === 0 ? start.getTime() : buckets[i - 1].end;
+        if (periodStart <= now) {
+          const cutoff = Math.min(b.end, now);
+          while (ptr < txPoints.length && txPoints[ptr].t <= cutoff) {
             cumActual += txPoints[ptr].v;
             ptr++;
           }
           lastActualCost = cumActual;
-          lastActualProg = planPhases.filter((p) => p.completedAt && new Date(p.completedAt).getTime() <= b.end).length * phaseW;
+          if (useMeterProgress) {
+            while (meterPtr < meterPoints.length && meterPoints[meterPtr].t <= cutoff) {
+              cumMeters += meterPoints[meterPtr].v;
+              meterPtr++;
+            }
+            lastActualProg = Math.min(100, (cumMeters / totalPanjang) * 100);
+          } else {
+            lastActualProg = planPhases.filter((p) => p.completedAt && new Date(p.completedAt).getTime() <= cutoff).length * phaseW;
+          }
           cost.push({
             name: b.name,
             baselineCost: Math.round(baselineCost),
@@ -2014,17 +2662,16 @@ export class FtttProjectService {
     });
   }
 
-  // ─── JLM: PST — choose Implementation type (Galian → span-based; KU → existing) ──
+  // ─── Integra V1: choose Metode Implementasi (Galian → span-based Daily Log; KU → existing) — all companies ──
   async setImplementationType(id: string, type: 'GALIAN' | 'KU', userId: string, userRole: Role) {
     if (userRole !== Role.ADMIN && userRole !== Role.GENERAL_MANAGER) {
-      throw new ForbiddenException('Hanya Admin Project yang dapat menentukan jenis implementasi');
+      throw new ForbiddenException('Hanya Admin Project yang dapat menentukan metode implementasi');
     }
     const project = await this.prisma.ftttProject.findUniqueOrThrow({ where: { id } });
-    if (project.ftttCompany !== FtttCompany.PST) {
-      throw new BadRequestException('Jenis implementasi hanya berlaku untuk project PST');
-    }
+    // Integra V1: Metode Implementasi (Galian / KU) generalized for ALL companies
+    // (was PST-only) — method-first daily logging
     if (project.currentPhase !== FtttPhase.IMPLEMENTATION) {
-      throw new BadRequestException('Jenis implementasi hanya dapat dipilih pada fase Implementation');
+      throw new BadRequestException('Metode implementasi hanya dapat dipilih pada fase Implementation');
     }
     return this.prisma.ftttProject.update({
       where: { id },

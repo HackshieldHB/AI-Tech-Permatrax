@@ -7,6 +7,7 @@ import { FtttPhase } from '@prisma/client';
 export const FTTT_PHASES_BY_COMPANY: Record<FtttCompany, FtttPhase[]> = {
   TELKOM_INFRA: [
     FtttPhase.INITIATION,
+    FtttPhase.SITE_INITIATION, // Integra V1: Bulky Project → add Sites (parallel with Survey+)
     FtttPhase.SURVEY,     // C7-TI4: Validation & Survey restored for Telkom Infra
     FtttPhase.PREPARATION,
     FtttPhase.IMPLEMENTATION,
@@ -16,6 +17,7 @@ export const FTTT_PHASES_BY_COMPANY: Record<FtttCompany, FtttPhase[]> = {
   ],
   IFORTE: [
     FtttPhase.INITIATION,
+    FtttPhase.SITE_INITIATION,
     FtttPhase.SURVEY,
     FtttPhase.PREPARATION,
     FtttPhase.IMPLEMENTATION,
@@ -25,6 +27,7 @@ export const FTTT_PHASES_BY_COMPANY: Record<FtttCompany, FtttPhase[]> = {
   ],
   PST: [
     FtttPhase.INITIATION,
+    FtttPhase.SITE_INITIATION,
     FtttPhase.SURVEY,
     FtttPhase.PREPARATION,
     FtttPhase.PROCUREMENT,   // PST: PM uploads PO after Preparation
@@ -36,14 +39,15 @@ export const FTTT_PHASES_BY_COMPANY: Record<FtttCompany, FtttPhase[]> = {
 };
 
 export const PHASE_LABELS: Record<FtttPhase, string> = {
-  INITIATION:     'Project Initiation',
-  SURVEY:         'Validation & Survey',
-  PREPARATION:    'Project Preparation',
-  PROCUREMENT:    'Procurement',
-  IMPLEMENTATION: 'Implementation',
-  DOCUMENTATION:  'Documentation & Acceptance',
-  RECONCILIATION: 'Reconciliation & Billing',
-  CLOSING:        'Project Closing',
+  INITIATION:      'Project Initiation',
+  SITE_INITIATION: 'Site Initiation',
+  SURVEY:          'Validation & Survey',
+  PREPARATION:     'Project Preparation',
+  PROCUREMENT:     'Procurement',
+  IMPLEMENTATION:  'Implementation',
+  DOCUMENTATION:   'Documentation & Acceptance',
+  RECONCILIATION:  'Reconciliation & Billing',
+  CLOSING:         'Project Closing',
 };
 
 export const COMPANY_LABELS: Record<FtttCompany, string> = {
@@ -61,6 +65,9 @@ export const CreateFtttProjectDto = z.object({
   projectName:   z.string().min(1).max(200).optional(),
   // JLM: link to a Finance Project (Project Type = FTTT) — mandatory so budget &
   // monitoring always follow a Finance Project (no more random/unlinked projects)
+  // Integra V1: every FTTT project created here is a Bulky Project, and this field
+  // must resolve to a Finance SEGMENT (a Finance SITE is auto-resolved to its parent
+  // Segment). The field name is kept for backward compatibility with existing callers.
   financeProjectId: z
     .string({ required_error: 'Nama Project (dari Finance Project) harus diisi' })
     .min(1, 'Nama Project (dari Finance Project) harus diisi'),
@@ -68,7 +75,27 @@ export const CreateFtttProjectDto = z.object({
 });
 export type CreateFtttProjectDtoType = z.infer<typeof CreateFtttProjectDto>;
 
+// Integra V1: PM adds a Site (operational unit) under a Bulky Project during Site Initiation
+export const AddSiteToBulkyDto = z.object({
+  financeProjectId: z
+    .string({ required_error: 'Finance Site harus dipilih' })
+    .min(1, 'Finance Site harus dipilih'),
+});
+export type AddSiteToBulkyDtoType = z.infer<typeof AddSiteToBulkyDto>;
+
+// Integra V1: Financial Request review (Finance)
+export const AcceptFinancialRequestDto = z.object({
+  scheduledReleaseAt: z.string().min(1, 'Rencana Tanggal Pencairan wajib diisi'),
+});
+export type AcceptFinancialRequestDtoType = z.infer<typeof AcceptFinancialRequestDto>;
+
+export const DeclineFinancialRequestDto = z.object({
+  declinedReason: z.string().min(1, 'Alasan penolakan wajib diisi').max(1000),
+});
+export type DeclineFinancialRequestDtoType = z.infer<typeof DeclineFinancialRequestDto>;
+
 // JLM: Implementation Transaction Log entry (PM FTTT)
+// Integra V1: Financial Request fields — expectedNeedDate + reason drive priority/routing
 export const AddFtttTransactionDto = z.object({
   category:  z.enum(['PERIZINAN', 'MATERIAL', 'JASA', 'LAIN_LAIN']),
   aktivitas: z.string().min(1).max(300),
@@ -76,6 +103,8 @@ export const AddFtttTransactionDto = z.object({
   qty:       z.coerce.number().positive(),
   price:     z.coerce.number().nonnegative(),
   remarks:   z.string().min(1).max(1000),  // mandatory
+  expectedNeedDate: z.string().min(1, 'Tanggal Kebutuhan wajib diisi'),
+  reason:           z.string().min(1, 'Alasan/justifikasi wajib diisi').max(1000),
 });
 export type AddFtttTransactionDtoType = z.infer<typeof AddFtttTransactionDto>;
 
@@ -204,14 +233,15 @@ export type AddClosingLogDtoType = z.infer<typeof AddClosingLogDto>;
 // Span-based Implementation Log (Telkom Infra)
 export const AddSpanDto = z.object({
   spanNumber: z.string().min(1).max(100),
+  // Integra V2: panjang folder (meter) — diisi sekali saat buat Span/KU
+  lengthMeters: z.coerce.number().positive().optional(),
 });
 export type AddSpanDtoType = z.infer<typeof AddSpanDto>;
 
 export const AddSpanLogDto = z.object({
   category: z.nativeEnum(FtttSpanLogCategory),
   caption:  z.string().max(500).optional(),
-  // iFORTE GENERAL: meter pekerjaan yang diselesaikan pada log ini (frontend
-  // mengirimkannya sekali per submit — file kedua dst tidak membawa meter)
+  // Legacy — Integra V2: panjang meter dipindah ke FtttSpan.lengthMeters; field tetap optional for back-compat
   meterDone: z.coerce.number().nonnegative().optional(),
 });
 export type AddSpanLogDtoType = z.infer<typeof AddSpanLogDto>;
