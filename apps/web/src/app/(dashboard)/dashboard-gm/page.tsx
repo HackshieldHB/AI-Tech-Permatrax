@@ -209,9 +209,25 @@ function timeAgo(dateStr?: string | Date | null): string {
 
 const cardStyle: CSSProperties = {
   background: 'var(--color-background-primary)',
-  border: '0.5px solid var(--color-border-tertiary)',
-  borderRadius: 12,
-  padding: 16,
+  border: '1px solid var(--color-border-tertiary)',
+  borderRadius: 14,
+  padding: 18,
+  boxShadow: '0 1px 3px rgba(15, 27, 45, 0.07), 0 1px 2px rgba(15, 27, 45, 0.04)',
+};
+
+const sectionTitleStyle: CSSProperties = {
+  fontSize: 13,
+  fontWeight: 800,
+  marginBottom: 12,
+  color: 'var(--color-text-primary)',
+  letterSpacing: 0.2,
+};
+
+const sectionGridStyle: CSSProperties = {
+  display: 'grid',
+  gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+  gap: 14,
+  marginBottom: 16,
 };
 
 export default function GmDashboard() {
@@ -906,9 +922,9 @@ export default function GmDashboard() {
       </div>
 
       {/* Project + Financial summary */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 12, marginBottom: 16 }}>
+      <div style={sectionGridStyle}>
         <div style={cardStyle}>
-          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>📊 PROJECT SUMMARY</div>
+          <div style={{ ...sectionTitleStyle }}>📊 PROJECT SUMMARY</div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, fontSize: 13 }}>
             <div>Total Project: <b>{projectSummary.total}</b></div>
             <div>On Progress: <b>{projectSummary.onGoing}</b></div>
@@ -927,7 +943,7 @@ export default function GmDashboard() {
           </div>
         </div>
         <div style={cardStyle}>
-          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>💰 FINANCIAL SUMMARY</div>
+          <div style={{ ...sectionTitleStyle }}>💰 FINANCIAL SUMMARY</div>
           <div style={{ fontSize: 13, display: 'grid', gap: 6 }}>
             <div>Total Budget: <b>{formatRupiah(budgetSummary.totalBudget)}</b></div>
             <div>Budget Terpakai: <b>{formatRupiah(budgetSummary.spent)}</b></div>
@@ -940,9 +956,9 @@ export default function GmDashboard() {
       </div>
 
       {/* Charts */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 12, marginBottom: 16 }}>
+      <div style={sectionGridStyle}>
         <div style={cardStyle}>
-          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>Distribusi Status Project</div>
+          <div style={{ ...sectionTitleStyle, marginBottom: 8 }}>Distribusi Status Project</div>
           <div style={{ height: 200 }}>
             {statusChartData.length === 0 ? (
               <div style={{ color: 'var(--color-text-secondary)', fontSize: 12, paddingTop: 60, textAlign: 'center' }}>Belum ada data</div>
@@ -960,7 +976,7 @@ export default function GmDashboard() {
           </div>
         </div>
         <div style={cardStyle}>
-          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>Distribusi FTTH vs FTTT</div>
+          <div style={{ ...sectionTitleStyle, marginBottom: 8 }}>Distribusi FTTH vs FTTT</div>
           <div style={{ height: 200 }}>
             {kindChartData.length === 0 ? (
               <div style={{ color: 'var(--color-text-secondary)', fontSize: 12, paddingTop: 60, textAlign: 'center' }}>Belum ada data</div>
@@ -978,7 +994,7 @@ export default function GmDashboard() {
           </div>
         </div>
         <div style={cardStyle}>
-          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>Komposisi Budget</div>
+          <div style={{ ...sectionTitleStyle, marginBottom: 8 }}>Komposisi Budget</div>
           <div style={{ height: 200 }}>
             {budgetCompositionChartData.length === 0 ? (
               <div style={{ color: 'var(--color-text-secondary)', fontSize: 12, paddingTop: 60, textAlign: 'center' }}>Belum ada data</div>
@@ -999,7 +1015,7 @@ export default function GmDashboard() {
 
       {/* Pipeline & Approval */}
       <div style={{ ...cardStyle, marginBottom: 16 }}>
-        <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>Pipeline & Approval Summary</div>
+        <div style={{ ...sectionTitleStyle }}>Pipeline & Approval Summary</div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10 }}>
           {[
             { label: 'Visit Request Pending', value: s.pendingVisitRequests ?? 0, href: '/visit-requests' },
@@ -1026,9 +1042,9 @@ export default function GmDashboard() {
       </div>
 
       {/* Permit / Budget Health / Operational summaries */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 12, marginBottom: 16 }}>
+      <div style={sectionGridStyle}>
         <div style={cardStyle}>
-          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>🗂️ PERMIT PIPELINE</div>
+          <div style={{ ...sectionTitleStyle }}>🗂️ PERMIT PIPELINE</div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, fontSize: 13 }}>
             <div>Total: <b>{permitPipelineSummary?.total ?? 0}</b></div>
             <div>Pending: <b>{permitPipelineSummary?.pending ?? 0}</b></div>
@@ -1039,7 +1055,7 @@ export default function GmDashboard() {
         </div>
 
         <div style={cardStyle}>
-          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>💊 BUDGET HEALTH</div>
+          <div style={{ ...sectionTitleStyle }}>💊 BUDGET HEALTH</div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, fontSize: 13 }}>
             <div>Sehat: <b style={{ color: '#22C55E' }}>{budgetHealth?.healthy ?? 0}</b></div>
             <div>Warning: <b style={{ color: '#F59E0B' }}>{budgetHealth?.warning ?? 0}</b></div>
@@ -1050,7 +1066,7 @@ export default function GmDashboard() {
         </div>
 
         <div style={cardStyle}>
-          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>💵 CASH OPERATION</div>
+          <div style={{ ...sectionTitleStyle }}>💵 CASH OPERATION</div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, fontSize: 13 }}>
             <div>Total Request: <b>{cashOperationSummary?.totalRequest ?? 0}</b></div>
             <div>Approved: <b style={{ color: '#22C55E' }}>{cashOperationSummary?.approved ?? 0}</b></div>
@@ -1061,7 +1077,7 @@ export default function GmDashboard() {
         </div>
 
         <div style={cardStyle}>
-          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>🛒 PURCHASING</div>
+          <div style={{ ...sectionTitleStyle }}>🛒 PURCHASING</div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, fontSize: 13 }}>
             <div>Total PR: <b>{purchasingSummary?.totalPr ?? 0}</b></div>
             <div>Total PO: <b>{purchasingSummary?.totalPo ?? 0}</b></div>
@@ -1072,7 +1088,7 @@ export default function GmDashboard() {
         </div>
 
         <div style={cardStyle}>
-          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>📦 INVENTORY</div>
+          <div style={{ ...sectionTitleStyle }}>📦 INVENTORY</div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, fontSize: 13 }}>
             <div>Order Barang Pending: <b>{inventorySummary?.orderBarangPending ?? 0}</b></div>
             <div>Surat Jalan Pending: <b>{inventorySummary?.suratJalanPending ?? 0}</b></div>
@@ -1082,7 +1098,7 @@ export default function GmDashboard() {
         </div>
 
         <div style={cardStyle}>
-          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>🧾 SUPPLIER BILLING</div>
+          <div style={{ ...sectionTitleStyle }}>🧾 SUPPLIER BILLING</div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, fontSize: 13 }}>
             <div>Invoice Pending: <b style={{ color: '#F59E0B' }}>{supplierBilling?.invoicePending ?? 0}</b></div>
             <div>Invoice Approved: <b style={{ color: '#22C55E' }}>{supplierBilling?.invoiceApproved ?? 0}</b></div>
@@ -1092,7 +1108,7 @@ export default function GmDashboard() {
         </div>
 
         <div style={cardStyle}>
-          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>📅 DAILY ACTIVITY SUMMARY</div>
+          <div style={{ ...sectionTitleStyle }}>📅 DAILY ACTIVITY SUMMARY</div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, fontSize: 13 }}>
             <div>Aktivitas Hari Ini: <b>{dailyActivitySummary?.activityToday ?? 0}</b></div>
             <div>Progress Diupdate: <b>{dailyActivitySummary?.progressUpdated ?? 0}</b></div>
@@ -1103,9 +1119,9 @@ export default function GmDashboard() {
       </div>
 
       {/* Bottleneck & Phase Distribution */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 12, marginBottom: 16 }}>
+      <div style={sectionGridStyle}>
         <div style={cardStyle}>
-          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>🚧 BOTTLENECK ANALYSIS</div>
+          <div style={{ ...sectionTitleStyle }}>🚧 BOTTLENECK ANALYSIS</div>
           {Object.keys(bottlenecks).length === 0 ? (
             <div style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>Tidak ada bottleneck terdeteksi.</div>
           ) : (
@@ -1121,7 +1137,7 @@ export default function GmDashboard() {
         </div>
 
         <div style={cardStyle}>
-          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>🧭 PHASE DISTRIBUTION</div>
+          <div style={{ ...sectionTitleStyle }}>🧭 PHASE DISTRIBUTION</div>
           {phaseDistribution.length === 0 ? (
             <div style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>Belum ada data distribusi fase.</div>
           ) : (
@@ -1138,9 +1154,9 @@ export default function GmDashboard() {
       </div>
 
       {/* Top Budget Consumption & Top Over Budget */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 12, marginBottom: 16 }}>
+      <div style={sectionGridStyle}>
         <div style={cardStyle}>
-          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>🏆 TOP BUDGET CONSUMPTION</div>
+          <div style={{ ...sectionTitleStyle }}>🏆 TOP BUDGET CONSUMPTION</div>
           {topBudgetConsumption.length === 0 ? (
             <div style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>Belum ada data.</div>
           ) : (
@@ -1173,7 +1189,7 @@ export default function GmDashboard() {
         </div>
 
         <div style={cardStyle}>
-          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>⚠️ TOP OVER BUDGET</div>
+          <div style={{ ...sectionTitleStyle }}>⚠️ TOP OVER BUDGET</div>
           {topOverBudget.length === 0 ? (
             <div style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>Tidak ada project over budget.</div>
           ) : (
@@ -1207,9 +1223,9 @@ export default function GmDashboard() {
       </div>
 
       {/* Running + Attention */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 12, marginBottom: 16 }}>
+      <div style={sectionGridStyle}>
         <div style={cardStyle}>
-          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>Running Project Summary</div>
+          <div style={{ ...sectionTitleStyle }}>Running Project Summary</div>
           {onProgressProjects.length === 0 ? (
             <div style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>Tidak ada project berjalan.</div>
           ) : (
@@ -1246,7 +1262,7 @@ export default function GmDashboard() {
         </div>
 
         <div style={cardStyle}>
-          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>Project Requiring Attention</div>
+          <div style={{ ...sectionTitleStyle }}>Project Requiring Attention</div>
           {attentionProjects.length === 0 ? (
             <div style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>Tidak ada isu yang perlu perhatian.</div>
           ) : (
@@ -1280,9 +1296,9 @@ export default function GmDashboard() {
       </div>
 
       {/* Recent Activity + Quick Insight */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 12 }}>
+      <div style={sectionGridStyle}>
         <div style={cardStyle}>
-          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>📌 RECENT ACTIVITY</div>
+          <div style={{ ...sectionTitleStyle }}>📌 RECENT ACTIVITY</div>
           {dailyRecent.length > 0 ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {dailyRecent.map((a) => (
@@ -1315,7 +1331,7 @@ export default function GmDashboard() {
         </div>
 
         <div style={cardStyle}>
-          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>📌 Quick Insight</div>
+          <div style={{ ...sectionTitleStyle }}>📌 Quick Insight</div>
           <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: 'var(--color-text-primary)', lineHeight: 1.6 }}>
             {quickInsights.map((q, i) => <li key={i}>{q}</li>)}
           </ul>
