@@ -1,6 +1,6 @@
 'use client';
 
-// Integra Enhancement V3 — Executive Dashboard for General Manager
+// Integra Enhancement V7 — Executive Dashboard for General Manager
 import { useEffect, useState, useCallback, useMemo, type CSSProperties } from 'react';
 import { useRouter } from 'next/navigation';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from 'recharts';
@@ -18,6 +18,8 @@ type ProjectSummary = {
   pending: number;
   overdue: number;
   cancelled?: number;
+  totalFtth?: number;
+  totalFttt?: number;
 };
 type BudgetSummary = {
   totalBudget: number;
@@ -32,6 +34,10 @@ type ProjectListItem = {
   status: string;
   progressPct: number;
   budgetRemaining: number | null;
+  pmName?: string | null;
+  budget?: number | null;
+  budgetUsed?: number | null;
+  lastActivityAt?: string | null;
 };
 type AttentionProjectItem = {
   id: string;
@@ -49,6 +55,31 @@ type DailyActivityItem = {
   actorName: string;
   timestamp: string;
   overdue?: boolean;
+};
+type CountMap = Record<string, number>;
+type PipelineApproval = {
+  visitRequestPending: number;
+  baOpenPending: number;
+  cashOperationPending: number;
+  purchaseOrderPending: number;
+  supplierInvoicePending: number;
+};
+type BudgetComposition = { material: number; jasa: number; perizinan: number; lainLain: number };
+type BudgetHealth = {
+  healthy: number;
+  warning: number;
+  overBudget: number;
+  averageUtilizationPct: number;
+  highestUtilizationPct: number;
+};
+type TopBudgetRow = {
+  id: string;
+  name: string;
+  kind: 'FTTH' | 'FTTT';
+  budget: number;
+  spent: number;
+  utilizationPct: number;
+  overAmount?: number;
 };
 
 type GmStats = {
@@ -93,12 +124,60 @@ type GmStats = {
   dailyActivityRecent?: DailyActivityItem[];
   dailyActivityOverdueCount?: number;
   quickInsights?: string[];
+  // Integra V7
+  pipelineApproval?: PipelineApproval;
+  permitPipelineSummary?: CountMap & { total?: number; pending?: number; approved?: number; rejected?: number; expired?: number };
+  budgetComposition?: BudgetComposition;
+  budgetHealth?: BudgetHealth;
+  phaseDistribution?: { phase: string; label: string; count: number }[];
+  cashOperationSummary?: {
+    totalRequest: number;
+    approved: number;
+    rejected: number;
+    pending: number;
+    totalNominal: number;
+  };
+  approvalPerformance?: Record<string, CountMap>;
+  purchasingSummary?: CountMap & {
+    totalPr?: number;
+    totalPo?: number;
+    pendingApproval?: number;
+    approved?: number;
+    rejected?: number;
+  };
+  inventorySummary?: {
+    orderBarangPending: number;
+    suratJalanPending: number;
+    lowStockItem: number;
+    totalStockItem: number;
+  };
+  supplierBilling?: {
+    invoicePending: number;
+    invoiceApproved: number;
+    invoiceRejected: number;
+    outstandingInvoice: number;
+  };
+  topBudgetConsumption?: TopBudgetRow[];
+  topOverBudget?: TopBudgetRow[];
+  bottlenecks?: CountMap;
+  dailyActivitySummary?: {
+    activityToday: number;
+    progressUpdated: number;
+    documentUploaded: number;
+    projectNoActivityOver3Days: number;
+  };
 };
 
 const ATTENTION_REASON_LABELS: Record<string, string> = {
   overdue: 'Terlambat',
   budget_util_high: 'Budget > 90%',
-  no_recent_activity: 'Tidak ada aktivitas',
+  no_recent_activity: 'No Activity > 3 Hari',
+};
+
+const ATTENTION_SEVERITY: Record<string, { label: string; color: string }> = {
+  overdue: { label: 'Tinggi', color: '#EF4444' },
+  budget_util_high: { label: 'Sedang', color: '#F59E0B' },
+  no_recent_activity: { label: 'Rendah', color: '#EAB308' },
 };
 
 const PROJECT_STATUS_LABELS: Record<string, string> = {
@@ -111,6 +190,7 @@ const PROJECT_STATUS_LABELS: Record<string, string> = {
 
 const STATUS_COLORS = ['#3B82F6', '#22C55E', '#F59E0B', '#EF4444', '#6B7280', '#00D4B4'];
 const KIND_COLORS = ['#00D4B4', '#3B82F6'];
+const BUDGET_COMPOSITION_COLORS = ['#00D4B4', '#3B82F6', '#F59E0B', '#6B7280'];
 
 function timeAgo(dateStr?: string | Date | null): string {
   if (!dateStr) return '';
@@ -129,9 +209,25 @@ function timeAgo(dateStr?: string | Date | null): string {
 
 const cardStyle: CSSProperties = {
   background: 'var(--color-background-primary)',
-  border: '0.5px solid var(--color-border-tertiary)',
-  borderRadius: 12,
-  padding: 16,
+  border: '1px solid var(--color-border-tertiary)',
+  borderRadius: 14,
+  padding: 18,
+  boxShadow: '0 1px 3px rgba(15, 27, 45, 0.07), 0 1px 2px rgba(15, 27, 45, 0.04)',
+};
+
+const sectionTitleStyle: CSSProperties = {
+  fontSize: 13,
+  fontWeight: 800,
+  marginBottom: 12,
+  color: 'var(--color-text-primary)',
+  letterSpacing: 0.2,
+};
+
+const sectionGridStyle: CSSProperties = {
+  display: 'grid',
+  gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+  gap: 14,
+  marginBottom: 16,
 };
 
 export default function GmDashboard() {
@@ -171,6 +267,21 @@ export default function GmDashboard() {
   const dailyRecent = stats?.dailyActivityRecent ?? [];
   const quickInsights = stats?.quickInsights ?? [];
 
+  // Integra V7
+  const pipelineApproval = stats?.pipelineApproval;
+  const permitPipelineSummary = stats?.permitPipelineSummary;
+  const budgetComposition = stats?.budgetComposition;
+  const budgetHealth = stats?.budgetHealth;
+  const phaseDistribution = stats?.phaseDistribution ?? [];
+  const cashOperationSummary = stats?.cashOperationSummary;
+  const purchasingSummary = stats?.purchasingSummary;
+  const inventorySummary = stats?.inventorySummary;
+  const supplierBilling = stats?.supplierBilling;
+  const topBudgetConsumption = stats?.topBudgetConsumption ?? [];
+  const topOverBudget = stats?.topOverBudget ?? [];
+  const bottlenecks = stats?.bottlenecks ?? {};
+  const dailyActivitySummary = stats?.dailyActivitySummary;
+
   const statusChartData = useMemo(
     () => statusDistribution.map((d) => ({
       name: PROJECT_STATUS_LABELS[d.status] ?? d.status,
@@ -184,6 +295,18 @@ export default function GmDashboard() {
       { name: 'FTTT', value: ftthVsFttt.fttt },
     ].filter((d) => d.value > 0),
     [ftthVsFttt],
+  );
+  const budgetCompositionChartData = useMemo(
+    () => {
+      if (!budgetComposition) return [];
+      return [
+        { name: 'Material', value: budgetComposition.material },
+        { name: 'Jasa', value: budgetComposition.jasa },
+        { name: 'Perizinan', value: budgetComposition.perizinan },
+        { name: 'Lain-lain', value: budgetComposition.lainLain },
+      ].filter((d) => d.value > 0);
+    },
+    [budgetComposition],
   );
 
   const downloadPdf = () => {
@@ -276,17 +399,23 @@ export default function GmDashboard() {
         y += 8;
       };
 
-      // Header banner
+      // Header banner — Integra V7 Executive Report title follows filter
+      const reportTitle =
+        projectKind === 'ALL'
+          ? 'Executive Report - Semua Project'
+          : projectKind === 'FTTH'
+            ? 'Executive Report - FTTH'
+            : 'Executive Report - FTTT';
       doc.setFillColor(15, 27, 45);
       doc.rect(0, 0, pageW, 64, 'F');
       doc.setTextColor(255, 255, 255);
       doc.setFont('helvetica', 'bold');
-      doc.setFontSize(16);
-      doc.text('EXECUTIVE DASHBOARD – GENERAL MANAGER', margin, 28);
+      doc.setFontSize(15);
+      doc.text(reportTitle, margin, 28);
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(9);
       doc.text(
-        `Filter: ${projectKind === 'ALL' ? 'Semua' : projectKind}  ·  Generated: ${new Date().toLocaleString('id-ID')}`,
+        `General Manager  ·  Filter: ${projectKind === 'ALL' ? 'Semua' : projectKind}  ·  Generated: ${new Date().toLocaleString('id-ID')}`,
         margin,
         46,
       );
@@ -427,25 +556,156 @@ export default function GmDashboard() {
       );
       y = chartTop + 145;
 
-      sectionTitle('4. Running Project Summary (max 10)');
+      // 4. Pipeline & Perizinan
+      sectionTitle('4. Pipeline & Perizinan');
+      drawKpiGrid([
+        { label: 'Visit Request Pending', value: String(pipelineApproval?.visitRequestPending ?? 0) },
+        { label: 'BA Open Pending', value: String(pipelineApproval?.baOpenPending ?? 0) },
+        { label: 'Cash Operation Pending', value: String(pipelineApproval?.cashOperationPending ?? 0) },
+        { label: 'PO Pending', value: String(pipelineApproval?.purchaseOrderPending ?? 0) },
+        { label: 'Supplier Invoice Pending', value: String(pipelineApproval?.supplierInvoicePending ?? 0) },
+      ]);
+      drawTable(
+        ['Perizinan', 'Value', 'Perizinan', 'Value'],
+        [
+          ['Total Permit', String(permitPipelineSummary?.total ?? 0), 'Pending', String(permitPipelineSummary?.pending ?? 0)],
+          ['Approved', String(permitPipelineSummary?.approved ?? 0), 'Rejected', String(permitPipelineSummary?.rejected ?? 0)],
+          ['Expired', String(permitPipelineSummary?.expired ?? 0), '', ''],
+        ],
+        [1.2, 1, 1.2, 1.4],
+      );
+
+      // 5. Budget Composition & Health
+      sectionTitle('5. Budget Composition & Health');
+      drawTable(
+        ['Komponen', 'Nominal', 'Komponen', 'Nominal'],
+        [
+          ['Material', formatRupiah(budgetComposition?.material ?? 0), 'Jasa', formatRupiah(budgetComposition?.jasa ?? 0)],
+          ['Perizinan', formatRupiah(budgetComposition?.perizinan ?? 0), 'Lain-lain', formatRupiah(budgetComposition?.lainLain ?? 0)],
+        ],
+        [1.2, 1.4, 1.2, 1.4],
+      );
+      drawKpiGrid([
+        { label: 'Budget Sehat', value: String(budgetHealth?.healthy ?? 0) },
+        { label: 'Budget Warning', value: String(budgetHealth?.warning ?? 0) },
+        { label: 'Over Budget', value: String(budgetHealth?.overBudget ?? 0) },
+        { label: 'Avg Utilisasi', value: `${budgetHealth?.averageUtilizationPct ?? 0}%` },
+        { label: 'Utilisasi Tertinggi', value: `${budgetHealth?.highestUtilizationPct ?? 0}%` },
+      ]);
+
+      // 6. Cash / Purchasing / Inventory / Supplier
+      sectionTitle('6. Cash Operation, Purchasing, Inventory & Supplier');
+      drawTable(
+        ['Metric', 'Value', 'Metric', 'Value'],
+        [
+          ['Cash Op - Total Request', String(cashOperationSummary?.totalRequest ?? 0), 'Cash Op - Approved', String(cashOperationSummary?.approved ?? 0)],
+          ['Cash Op - Rejected', String(cashOperationSummary?.rejected ?? 0), 'Cash Op - Pending', String(cashOperationSummary?.pending ?? 0)],
+          ['Cash Op - Total Nominal', formatRupiah(cashOperationSummary?.totalNominal ?? 0), 'Purchasing - Total PR', String(purchasingSummary?.totalPr ?? 0)],
+          ['Purchasing - Total PO', String(purchasingSummary?.totalPo ?? 0), 'Purchasing - Pending Approval', String(purchasingSummary?.pendingApproval ?? 0)],
+          ['Purchasing - Approved', String(purchasingSummary?.approved ?? 0), 'Purchasing - Rejected', String(purchasingSummary?.rejected ?? 0)],
+          ['Inventory - Order Barang Pending', String(inventorySummary?.orderBarangPending ?? 0), 'Inventory - Surat Jalan Pending', String(inventorySummary?.suratJalanPending ?? 0)],
+          ['Inventory - Low Stock Item', String(inventorySummary?.lowStockItem ?? 0), 'Inventory - Total Stock Item', String(inventorySummary?.totalStockItem ?? 0)],
+          ['Supplier - Invoice Pending', String(supplierBilling?.invoicePending ?? 0), 'Supplier - Invoice Approved', String(supplierBilling?.invoiceApproved ?? 0)],
+          ['Supplier - Invoice Rejected', String(supplierBilling?.invoiceRejected ?? 0), 'Supplier - Outstanding Invoice', String(supplierBilling?.outstandingInvoice ?? 0)],
+        ],
+        [1.6, 1, 1.6, 1],
+      );
+
+      // 7. Phase Distribution
+      sectionTitle('7. Distribusi Fase Project');
+      if (phaseDistribution.length === 0) {
+        doc.setFontSize(9);
+        doc.text('Tidak ada data distribusi fase.', margin, y + 10);
+        y += 24;
+      } else {
+        drawTable(
+          ['Fase', 'Jumlah'],
+          phaseDistribution.map((p) => [p.label, String(p.count)]),
+          [3, 1],
+        );
+      }
+
+      // 8. Bottleneck & Daily Activity
+      sectionTitle('8. Bottleneck & Aktivitas Harian');
+      const bottleneckEntries = Object.entries(bottlenecks);
+      if (bottleneckEntries.length === 0) {
+        doc.setFontSize(9);
+        doc.text('Tidak ada bottleneck terdeteksi.', margin, y + 10);
+        y += 24;
+      } else {
+        drawTable(
+          ['Bottleneck', 'Jumlah'],
+          bottleneckEntries.map(([k, v]) => [k, String(v)]),
+          [3, 1],
+        );
+      }
+      drawKpiGrid([
+        { label: 'Aktivitas Hari Ini', value: String(dailyActivitySummary?.activityToday ?? 0) },
+        { label: 'Progress Diupdate', value: String(dailyActivitySummary?.progressUpdated ?? 0) },
+        { label: 'Dokumen Diupload', value: String(dailyActivitySummary?.documentUploaded ?? 0) },
+        { label: 'No Activity > 3 Hari', value: String(dailyActivitySummary?.projectNoActivityOver3Days ?? 0) },
+      ]);
+
+      // 9. Top Budget Consumption
+      sectionTitle('9. Top Budget Consumption');
+      if (topBudgetConsumption.length === 0) {
+        doc.setFontSize(9);
+        doc.text('Tidak ada data.', margin, y + 10);
+        y += 24;
+      } else {
+        drawTable(
+          ['Project', 'Kind', 'Budget', 'Terpakai', 'Utilisasi'],
+          topBudgetConsumption.slice(0, 10).map((p) => [
+            p.name,
+            p.kind,
+            formatRupiah(p.budget),
+            formatRupiah(p.spent),
+            `${p.utilizationPct}%`,
+          ]),
+          [2.2, 0.7, 1.3, 1.3, 0.9],
+        );
+      }
+
+      // 10. Top Over Budget
+      sectionTitle('10. Top Over Budget');
+      if (topOverBudget.length === 0) {
+        doc.setFontSize(9);
+        doc.text('Tidak ada project over budget.', margin, y + 10);
+        y += 24;
+      } else {
+        drawTable(
+          ['Project', 'Kind', 'Budget', 'Terpakai', 'Over'],
+          topOverBudget.slice(0, 10).map((p) => [
+            p.name,
+            p.kind,
+            formatRupiah(p.budget),
+            formatRupiah(p.spent),
+            formatRupiah(p.overAmount ?? p.spent - p.budget),
+          ]),
+          [2.2, 0.7, 1.3, 1.3, 1.3],
+        );
+      }
+
+      sectionTitle('11. Running Project Summary (max 10)');
       if (onProgressProjects.length === 0) {
         doc.setFontSize(9);
         doc.text('Tidak ada project berjalan.', margin, y + 10);
         y += 24;
       } else {
         drawTable(
-          ['Project', 'Kind', 'Progress', 'Status'],
+          ['Project', 'PM', 'Progress', 'Budget', 'Used'],
           onProgressProjects.map((p) => [
-            p.name,
-            p.kind,
+            `${p.name} (${p.kind})`,
+            p.pmName ?? '-',
             `${p.progressPct}%`,
-            PROJECT_STATUS_LABELS[p.status] ?? p.status,
+            formatRupiah(p.budget ?? 0),
+            formatRupiah(p.budgetUsed ?? 0),
           ]),
-          [3, 0.8, 0.8, 1.2],
+          [2, 1.2, 0.8, 1.3, 1.3],
         );
       }
 
-      sectionTitle('5. Project Requiring Attention');
+      sectionTitle('12. Project Requiring Attention');
       if (attentionProjects.length === 0) {
         doc.setFontSize(9);
         doc.text('Tidak ada project yang membutuhkan perhatian.', margin, y + 10);
@@ -464,7 +724,7 @@ export default function GmDashboard() {
 
       // Recent Activity (if available)
       if (dailyRecent.length > 0) {
-        sectionTitle('6. Recent Activity');
+        sectionTitle('13. Recent Activity');
         drawTable(
           ['Site', 'Aktivitas', 'Status', 'User'],
           dailyRecent.slice(0, 8).map((a) => [
@@ -477,7 +737,7 @@ export default function GmDashboard() {
         );
       }
 
-      sectionTitle(dailyRecent.length > 0 ? '7. Quick Insight' : '6. Quick Insight');
+      sectionTitle(dailyRecent.length > 0 ? '14. Quick Insight' : '13. Quick Insight');
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(9);
       quickInsights.forEach((q) => {
@@ -493,10 +753,10 @@ export default function GmDashboard() {
         doc.setPage(i);
         doc.setFontSize(8);
         doc.setTextColor(120, 120, 120);
-        doc.text(`PermaTrax Executive Report · Halaman ${i}/${pages}`, margin, 820);
+        doc.text(`${reportTitle} · Halaman ${i}/${pages}`, margin, 820);
       }
 
-      doc.save(`executive-dashboard-${projectKind.toLowerCase()}-${Date.now()}.pdf`);
+      doc.save(`executive-report-${projectKind.toLowerCase()}-${Date.now()}.pdf`);
     } finally {
       setExporting(false);
     }
@@ -511,29 +771,55 @@ export default function GmDashboard() {
         ['Metric', 'Value'],
         ['Filter', projectKind],
         ['Total Project', projectSummary.total],
+        ['Total FTTH', projectSummary.totalFtth ?? ftthVsFttt.ftth],
+        ['Total FTTT', projectSummary.totalFttt ?? ftthVsFttt.fttt],
         ['Berjalan', projectSummary.onGoing],
         ['Selesai', projectSummary.completed],
         ['On Hold', projectSummary.pending],
         ['Cancel', projectSummary.cancelled ?? 0],
-        ['Cash Operation Pending', s.pendingCashOperations ?? 0],
+        ['Visit Request Pending', pipelineApproval?.visitRequestPending ?? 0],
+        ['BA Open Pending', pipelineApproval?.baOpenPending ?? 0],
+        ['Cash Operation Pending', pipelineApproval?.cashOperationPending ?? s.pendingCashOperations ?? 0],
+        ['PO Pending', pipelineApproval?.purchaseOrderPending ?? 0],
+        ['Supplier Invoice Pending', pipelineApproval?.supplierInvoicePending ?? 0],
         ['SLA Terlewat', s.slaBreached ?? 0],
         ['User Aktif', s.activeUsers ?? 0],
         ['Total Budget', budgetSummary.totalBudget],
         ['Budget Terpakai', budgetSummary.spent],
         ['Sisa Budget', budgetSummary.remaining],
         ['Utilisasi %', budgetSummary.utilizationPct],
-        ['Over Budget', stats.overBudgetCount ?? 0],
+        ['Budget Sehat', budgetHealth?.healthy ?? 0],
+        ['Budget Warning', budgetHealth?.warning ?? 0],
+        ['Over Budget', stats.overBudgetCount ?? budgetHealth?.overBudget ?? 0],
         ['Project Profit', stats.profitCount ?? 0],
         ['Project Loss', stats.lossCount ?? 0],
       ];
       XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(kpi), 'KPI');
+
+      const budgetCompositionSheet = [
+        ['Komponen', 'Nominal'],
+        ['Material', budgetComposition?.material ?? 0],
+        ['Jasa', budgetComposition?.jasa ?? 0],
+        ['Perizinan', budgetComposition?.perizinan ?? 0],
+        ['Lain-lain', budgetComposition?.lainLain ?? 0],
+      ];
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(budgetCompositionSheet), 'Budget Composition');
+
       const running = [
-        ['Project', 'Kind', 'Status', 'Progress %', 'Budget Remaining'],
+        ['Project', 'Kind', 'PM', 'Status', 'Progress %', 'Budget', 'Budget Used', 'Budget Remaining'],
         ...onProgressProjects.map((p) => [
-          p.name, p.kind, PROJECT_STATUS_LABELS[p.status] ?? p.status, p.progressPct, p.budgetRemaining ?? '',
+          p.name,
+          p.kind,
+          p.pmName ?? '-',
+          PROJECT_STATUS_LABELS[p.status] ?? p.status,
+          p.progressPct,
+          p.budget ?? 0,
+          p.budgetUsed ?? 0,
+          p.budgetRemaining ?? '',
         ]),
       ];
       XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(running), 'Running');
+
       const attn = [
         ['Project', 'Kind', 'Status', 'Reasons'],
         ...attentionProjects.map((p) => [
@@ -541,7 +827,20 @@ export default function GmDashboard() {
         ]),
       ];
       XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(attn), 'Attention');
-      XLSX.writeFile(wb, `executive-dashboard-${projectKind.toLowerCase()}-${Date.now()}.xlsx`);
+
+      const topBudgetSheet = [
+        ['Project', 'Kind', 'Budget', 'Spent', 'Utilization %'],
+        ...topBudgetConsumption.map((p) => [p.name, p.kind, p.budget, p.spent, p.utilizationPct]),
+      ];
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(topBudgetSheet), 'Top Budget');
+
+      const topOverBudgetSheet = [
+        ['Project', 'Kind', 'Budget', 'Spent', 'Over Amount'],
+        ...topOverBudget.map((p) => [p.name, p.kind, p.budget, p.spent, p.overAmount ?? p.spent - p.budget]),
+      ];
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(topOverBudgetSheet), 'Top Over Budget');
+
+      XLSX.writeFile(wb, `executive-report-${projectKind.toLowerCase()}-${Date.now()}.xlsx`);
     } finally {
       setExporting(false);
     }
@@ -604,7 +903,7 @@ export default function GmDashboard() {
             🔄 Refresh
           </button>
           <button type="button" disabled={exporting} onClick={downloadPdf} style={{ padding: '8px 12px', borderRadius: 8, border: 'none', background: '#0F1B2D', color: '#fff', cursor: 'pointer', fontSize: 12, fontWeight: 700 }}>
-            Download PDF
+            Download Report PDF
           </button>
           <button type="button" disabled={exporting} onClick={downloadExcel} style={{ padding: '8px 12px', borderRadius: 8, border: '0.5px solid var(--color-border-tertiary)', background: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>
             Excel
@@ -623,22 +922,28 @@ export default function GmDashboard() {
       </div>
 
       {/* Project + Financial summary */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 12, marginBottom: 16 }}>
+      <div style={sectionGridStyle}>
         <div style={cardStyle}>
-          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>📊 PROJECT SUMMARY</div>
+          <div style={{ ...sectionTitleStyle }}>📊 PROJECT SUMMARY</div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, fontSize: 13 }}>
             <div>Total Project: <b>{projectSummary.total}</b></div>
             <div>On Progress: <b>{projectSummary.onGoing}</b></div>
             <div>Done: <b>{projectSummary.completed}</b></div>
             <div>On Hold: <b>{projectSummary.pending}</b></div>
             <div>Cancel: <b>{projectSummary.cancelled ?? 0}</b></div>
+            <div>Terlambat: <b style={{ color: projectSummary.overdue ? '#EF4444' : undefined }}>{projectSummary.overdue}</b></div>
             <div>Total Site: <b>{stats?.totalSites ?? 0}</b></div>
             <div>Total Segment: <b>{stats?.totalSegments ?? 0}</b></div>
-            <div>Terlambat: <b style={{ color: projectSummary.overdue ? '#EF4444' : undefined }}>{projectSummary.overdue}</b></div>
+            {projectKind === 'ALL' ? (
+              <>
+                <div>Total FTTH: <b>{projectSummary.totalFtth ?? ftthVsFttt.ftth}</b></div>
+                <div>Total FTTT: <b>{projectSummary.totalFttt ?? ftthVsFttt.fttt}</b></div>
+              </>
+            ) : null}
           </div>
         </div>
         <div style={cardStyle}>
-          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>💰 FINANCIAL SUMMARY</div>
+          <div style={{ ...sectionTitleStyle }}>💰 FINANCIAL SUMMARY</div>
           <div style={{ fontSize: 13, display: 'grid', gap: 6 }}>
             <div>Total Budget: <b>{formatRupiah(budgetSummary.totalBudget)}</b></div>
             <div>Budget Terpakai: <b>{formatRupiah(budgetSummary.spent)}</b></div>
@@ -651,9 +956,9 @@ export default function GmDashboard() {
       </div>
 
       {/* Charts */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 12, marginBottom: 16 }}>
+      <div style={sectionGridStyle}>
         <div style={cardStyle}>
-          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>Distribusi Status Project</div>
+          <div style={{ ...sectionTitleStyle, marginBottom: 8 }}>Distribusi Status Project</div>
           <div style={{ height: 200 }}>
             {statusChartData.length === 0 ? (
               <div style={{ color: 'var(--color-text-secondary)', fontSize: 12, paddingTop: 60, textAlign: 'center' }}>Belum ada data</div>
@@ -671,7 +976,7 @@ export default function GmDashboard() {
           </div>
         </div>
         <div style={cardStyle}>
-          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>Distribusi FTTH vs FTTT</div>
+          <div style={{ ...sectionTitleStyle, marginBottom: 8 }}>Distribusi FTTH vs FTTT</div>
           <div style={{ height: 200 }}>
             {kindChartData.length === 0 ? (
               <div style={{ color: 'var(--color-text-secondary)', fontSize: 12, paddingTop: 60, textAlign: 'center' }}>Belum ada data</div>
@@ -688,15 +993,36 @@ export default function GmDashboard() {
             )}
           </div>
         </div>
+        <div style={cardStyle}>
+          <div style={{ ...sectionTitleStyle, marginBottom: 8 }}>Komposisi Budget</div>
+          <div style={{ height: 200 }}>
+            {budgetCompositionChartData.length === 0 ? (
+              <div style={{ color: 'var(--color-text-secondary)', fontSize: 12, paddingTop: 60, textAlign: 'center' }}>Belum ada data</div>
+            ) : (
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie data={budgetCompositionChartData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={45} outerRadius={70}>
+                    {budgetCompositionChartData.map((_, i) => <Cell key={i} fill={BUDGET_COMPOSITION_COLORS[i % BUDGET_COMPOSITION_COLORS.length]} />)}
+                  </Pie>
+                  <Tooltip formatter={(value: number) => formatRupiah(value)} />
+                  <Legend />
+                </PieChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+        </div>
       </div>
 
       {/* Pipeline & Approval */}
       <div style={{ ...cardStyle, marginBottom: 16 }}>
-        <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>Pipeline & Approval Summary</div>
+        <div style={{ ...sectionTitleStyle }}>Pipeline & Approval Summary</div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10 }}>
           {[
             { label: 'Visit Request Pending', value: s.pendingVisitRequests ?? 0, href: '/visit-requests' },
+            { label: 'BA Open Pending', value: stats?.pipelineApproval?.baOpenPending ?? 0, href: '/ba-open' },
             { label: 'Cash Operation Pending', value: s.pendingCashOperations ?? 0, href: '/cash-operation' },
+            { label: 'PO Pending', value: stats?.pipelineApproval?.purchaseOrderPending ?? 0, href: '/purchasing' },
+            { label: 'Supplier Invoice Pending', value: stats?.pipelineApproval?.supplierInvoicePending ?? 0, href: '/supplier-invoices' },
             { label: 'Approval Menunggu Review', value: s.pendingApprovals ?? 0, href: '/finance-projects' },
             { label: 'SLA Terlewat', value: s.slaBreached ?? 0, href: '/permit-clusters' },
             { label: 'Daily Activity Overdue', value: stats?.dailyActivityOverdueCount ?? 0, href: '/daily-activity' },
@@ -715,31 +1041,145 @@ export default function GmDashboard() {
         </div>
       </div>
 
-      {/* Running + Attention */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 12, marginBottom: 16 }}>
+      {/* Permit / Budget Health / Operational summaries */}
+      <div style={sectionGridStyle}>
         <div style={cardStyle}>
-          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>Running Project Summary</div>
-          {onProgressProjects.length === 0 ? (
-            <div style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>Tidak ada project berjalan.</div>
+          <div style={{ ...sectionTitleStyle }}>🗂️ PERMIT PIPELINE</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, fontSize: 13 }}>
+            <div>Total: <b>{permitPipelineSummary?.total ?? 0}</b></div>
+            <div>Pending: <b>{permitPipelineSummary?.pending ?? 0}</b></div>
+            <div>Approved: <b style={{ color: '#22C55E' }}>{permitPipelineSummary?.approved ?? 0}</b></div>
+            <div>Rejected: <b style={{ color: '#EF4444' }}>{permitPipelineSummary?.rejected ?? 0}</b></div>
+            <div>Expired: <b style={{ color: '#F59E0B' }}>{permitPipelineSummary?.expired ?? 0}</b></div>
+          </div>
+        </div>
+
+        <div style={cardStyle}>
+          <div style={{ ...sectionTitleStyle }}>💊 BUDGET HEALTH</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, fontSize: 13 }}>
+            <div>Sehat: <b style={{ color: '#22C55E' }}>{budgetHealth?.healthy ?? 0}</b></div>
+            <div>Warning: <b style={{ color: '#F59E0B' }}>{budgetHealth?.warning ?? 0}</b></div>
+            <div>Over Budget: <b style={{ color: '#EF4444' }}>{budgetHealth?.overBudget ?? 0}</b></div>
+            <div>Avg Utilisasi: <b>{budgetHealth?.averageUtilizationPct ?? 0}%</b></div>
+            <div>Utilisasi Tertinggi: <b>{budgetHealth?.highestUtilizationPct ?? 0}%</b></div>
+          </div>
+        </div>
+
+        <div style={cardStyle}>
+          <div style={{ ...sectionTitleStyle }}>💵 CASH OPERATION</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, fontSize: 13 }}>
+            <div>Total Request: <b>{cashOperationSummary?.totalRequest ?? 0}</b></div>
+            <div>Approved: <b style={{ color: '#22C55E' }}>{cashOperationSummary?.approved ?? 0}</b></div>
+            <div>Rejected: <b style={{ color: '#EF4444' }}>{cashOperationSummary?.rejected ?? 0}</b></div>
+            <div>Pending: <b style={{ color: '#F59E0B' }}>{cashOperationSummary?.pending ?? 0}</b></div>
+            <div style={{ gridColumn: '1 / -1' }}>Total Nominal: <b>{formatRupiah(cashOperationSummary?.totalNominal ?? 0)}</b></div>
+          </div>
+        </div>
+
+        <div style={cardStyle}>
+          <div style={{ ...sectionTitleStyle }}>🛒 PURCHASING</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, fontSize: 13 }}>
+            <div>Total PR: <b>{purchasingSummary?.totalPr ?? 0}</b></div>
+            <div>Total PO: <b>{purchasingSummary?.totalPo ?? 0}</b></div>
+            <div>Pending Approval: <b style={{ color: '#F59E0B' }}>{purchasingSummary?.pendingApproval ?? 0}</b></div>
+            <div>Approved: <b style={{ color: '#22C55E' }}>{purchasingSummary?.approved ?? 0}</b></div>
+            <div>Rejected: <b style={{ color: '#EF4444' }}>{purchasingSummary?.rejected ?? 0}</b></div>
+          </div>
+        </div>
+
+        <div style={cardStyle}>
+          <div style={{ ...sectionTitleStyle }}>📦 INVENTORY</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, fontSize: 13 }}>
+            <div>Order Barang Pending: <b>{inventorySummary?.orderBarangPending ?? 0}</b></div>
+            <div>Surat Jalan Pending: <b>{inventorySummary?.suratJalanPending ?? 0}</b></div>
+            <div>Low Stock Item: <b style={{ color: '#EF4444' }}>{inventorySummary?.lowStockItem ?? 0}</b></div>
+            <div>Total Stock Item: <b>{inventorySummary?.totalStockItem ?? 0}</b></div>
+          </div>
+        </div>
+
+        <div style={cardStyle}>
+          <div style={{ ...sectionTitleStyle }}>🧾 SUPPLIER BILLING</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, fontSize: 13 }}>
+            <div>Invoice Pending: <b style={{ color: '#F59E0B' }}>{supplierBilling?.invoicePending ?? 0}</b></div>
+            <div>Invoice Approved: <b style={{ color: '#22C55E' }}>{supplierBilling?.invoiceApproved ?? 0}</b></div>
+            <div>Invoice Rejected: <b style={{ color: '#EF4444' }}>{supplierBilling?.invoiceRejected ?? 0}</b></div>
+            <div>Outstanding Invoice: <b>{supplierBilling?.outstandingInvoice ?? 0}</b></div>
+          </div>
+        </div>
+
+        <div style={cardStyle}>
+          <div style={{ ...sectionTitleStyle }}>📅 DAILY ACTIVITY SUMMARY</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, fontSize: 13 }}>
+            <div>Aktivitas Hari Ini: <b>{dailyActivitySummary?.activityToday ?? 0}</b></div>
+            <div>Progress Diupdate: <b>{dailyActivitySummary?.progressUpdated ?? 0}</b></div>
+            <div>Dokumen Diupload: <b>{dailyActivitySummary?.documentUploaded ?? 0}</b></div>
+            <div>No Activity &gt; 3 Hari: <b style={{ color: '#EF4444' }}>{dailyActivitySummary?.projectNoActivityOver3Days ?? 0}</b></div>
+          </div>
+        </div>
+      </div>
+
+      {/* Bottleneck & Phase Distribution */}
+      <div style={sectionGridStyle}>
+        <div style={cardStyle}>
+          <div style={{ ...sectionTitleStyle }}>🚧 BOTTLENECK ANALYSIS</div>
+          {Object.keys(bottlenecks).length === 0 ? (
+            <div style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>Tidak ada bottleneck terdeteksi.</div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {Object.entries(bottlenecks).map(([label, count]) => (
+                <div key={label} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '6px 0', borderBottom: '0.5px solid var(--color-border-tertiary)' }}>
+                  <span>{label}</span>
+                  <b>{count}</b>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div style={cardStyle}>
+          <div style={{ ...sectionTitleStyle }}>🧭 PHASE DISTRIBUTION</div>
+          {phaseDistribution.length === 0 ? (
+            <div style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>Belum ada data distribusi fase.</div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {phaseDistribution.map((p) => (
+                <div key={p.phase} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '6px 0', borderBottom: '0.5px solid var(--color-border-tertiary)' }}>
+                  <span>{p.label}</span>
+                  <b>{p.count}</b>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Top Budget Consumption & Top Over Budget */}
+      <div style={sectionGridStyle}>
+        <div style={cardStyle}>
+          <div style={{ ...sectionTitleStyle }}>🏆 TOP BUDGET CONSUMPTION</div>
+          {topBudgetConsumption.length === 0 ? (
+            <div style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>Belum ada data.</div>
           ) : (
             <div style={{ overflowX: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
                 <thead>
                   <tr style={{ textAlign: 'left', color: 'var(--color-text-secondary)' }}>
                     <th style={{ padding: '6px 4px' }}>Project</th>
-                    <th style={{ padding: '6px 4px' }}>Progress</th>
-                    <th style={{ padding: '6px 4px' }}>Status</th>
+                    <th style={{ padding: '6px 4px' }}>Budget</th>
+                    <th style={{ padding: '6px 4px' }}>Terpakai</th>
+                    <th style={{ padding: '6px 4px' }}>Util.</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {onProgressProjects.map((p) => (
+                  {topBudgetConsumption.slice(0, 10).map((p) => (
                     <tr key={p.id} style={{ borderTop: '0.5px solid var(--color-border-tertiary)', cursor: 'pointer' }} onClick={() => router.push(p.kind === 'FTTT' ? `/fttt-projects/${p.id}` : `/permit-clusters/${p.id}`)}>
                       <td style={{ padding: '8px 4px' }}>
                         <div style={{ fontWeight: 600 }}>{p.name}</div>
                         <div style={{ fontSize: 10, color: 'var(--color-text-secondary)' }}>{p.kind}</div>
                       </td>
-                      <td style={{ padding: '8px 4px' }}>{p.progressPct}%</td>
-                      <td style={{ padding: '8px 4px' }}>{PROJECT_STATUS_LABELS[p.status] ?? p.status}</td>
+                      <td style={{ padding: '8px 4px' }}>{formatRupiah(p.budget)}</td>
+                      <td style={{ padding: '8px 4px' }}>{formatRupiah(p.spent)}</td>
+                      <td style={{ padding: '8px 4px' }}>{p.utilizationPct}%</td>
                     </tr>
                   ))}
                 </tbody>
@@ -749,7 +1189,80 @@ export default function GmDashboard() {
         </div>
 
         <div style={cardStyle}>
-          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>Project Requiring Attention</div>
+          <div style={{ ...sectionTitleStyle }}>⚠️ TOP OVER BUDGET</div>
+          {topOverBudget.length === 0 ? (
+            <div style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>Tidak ada project over budget.</div>
+          ) : (
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                <thead>
+                  <tr style={{ textAlign: 'left', color: 'var(--color-text-secondary)' }}>
+                    <th style={{ padding: '6px 4px' }}>Project</th>
+                    <th style={{ padding: '6px 4px' }}>Budget</th>
+                    <th style={{ padding: '6px 4px' }}>Terpakai</th>
+                    <th style={{ padding: '6px 4px' }}>Over</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {topOverBudget.slice(0, 10).map((p) => (
+                    <tr key={p.id} style={{ borderTop: '0.5px solid var(--color-border-tertiary)', cursor: 'pointer' }} onClick={() => router.push(p.kind === 'FTTT' ? `/fttt-projects/${p.id}` : `/permit-clusters/${p.id}`)}>
+                      <td style={{ padding: '8px 4px' }}>
+                        <div style={{ fontWeight: 600 }}>{p.name}</div>
+                        <div style={{ fontSize: 10, color: 'var(--color-text-secondary)' }}>{p.kind}</div>
+                      </td>
+                      <td style={{ padding: '8px 4px' }}>{formatRupiah(p.budget)}</td>
+                      <td style={{ padding: '8px 4px' }}>{formatRupiah(p.spent)}</td>
+                      <td style={{ padding: '8px 4px', color: '#EF4444', fontWeight: 700 }}>{formatRupiah(p.overAmount ?? p.spent - p.budget)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Running + Attention */}
+      <div style={sectionGridStyle}>
+        <div style={cardStyle}>
+          <div style={{ ...sectionTitleStyle }}>Running Project Summary</div>
+          {onProgressProjects.length === 0 ? (
+            <div style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>Tidak ada project berjalan.</div>
+          ) : (
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                <thead>
+                  <tr style={{ textAlign: 'left', color: 'var(--color-text-secondary)' }}>
+                    <th style={{ padding: '6px 4px' }}>Project</th>
+                    <th style={{ padding: '6px 4px' }}>PM</th>
+                    <th style={{ padding: '6px 4px' }}>Progress</th>
+                    <th style={{ padding: '6px 4px' }}>Budget</th>
+                    <th style={{ padding: '6px 4px' }}>Used</th>
+                    <th style={{ padding: '6px 4px' }}>Last Activity</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {onProgressProjects.map((p) => (
+                    <tr key={p.id} style={{ borderTop: '0.5px solid var(--color-border-tertiary)', cursor: 'pointer' }} onClick={() => router.push(p.kind === 'FTTT' ? `/fttt-projects/${p.id}` : `/permit-clusters/${p.id}`)}>
+                      <td style={{ padding: '8px 4px' }}>
+                        <div style={{ fontWeight: 600 }}>{p.name}</div>
+                        <div style={{ fontSize: 10, color: 'var(--color-text-secondary)' }}>{p.kind}</div>
+                      </td>
+                      <td style={{ padding: '8px 4px' }}>{p.pmName ?? '-'}</td>
+                      <td style={{ padding: '8px 4px' }}>{p.progressPct}%</td>
+                      <td style={{ padding: '8px 4px' }}>{formatRupiah(p.budget ?? 0)}</td>
+                      <td style={{ padding: '8px 4px' }}>{formatRupiah(p.budgetUsed ?? 0)}</td>
+                      <td style={{ padding: '8px 4px', fontSize: 11, color: 'var(--color-text-secondary)' }}>{timeAgo(p.lastActivityAt) || '-'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        <div style={cardStyle}>
+          <div style={{ ...sectionTitleStyle }}>Project Requiring Attention</div>
           {attentionProjects.length === 0 ? (
             <div style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>Tidak ada isu yang perlu perhatian.</div>
           ) : (
@@ -762,8 +1275,18 @@ export default function GmDashboard() {
                   style={{ textAlign: 'left', padding: 10, borderRadius: 8, border: '0.5px solid #FECACA', background: '#FEF2F2', cursor: 'pointer' }}
                 >
                   <div style={{ fontWeight: 700, fontSize: 12 }}>{p.name} · {p.kind}</div>
-                  <div style={{ fontSize: 11, color: '#B91C1C', marginTop: 2 }}>
-                    {(p.reasons ?? []).map((r) => ATTENTION_REASON_LABELS[r] ?? r).join(' · ')}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 4 }}>
+                    {(p.reasons ?? []).map((r) => {
+                      const severity = ATTENTION_SEVERITY[r] ?? { label: 'Info', color: '#6B7280' };
+                      return (
+                        <div key={r} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11 }}>
+                          <span style={{ padding: '1px 6px', borderRadius: 6, background: severity.color, color: '#fff', fontWeight: 700, fontSize: 10 }}>
+                            {severity.label}
+                          </span>
+                          <span style={{ color: '#B91C1C' }}>{ATTENTION_REASON_LABELS[r] ?? r}</span>
+                        </div>
+                      );
+                    })}
                   </div>
                 </button>
               ))}
@@ -773,9 +1296,9 @@ export default function GmDashboard() {
       </div>
 
       {/* Recent Activity + Quick Insight */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 12 }}>
+      <div style={sectionGridStyle}>
         <div style={cardStyle}>
-          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>📌 RECENT ACTIVITY</div>
+          <div style={{ ...sectionTitleStyle }}>📌 RECENT ACTIVITY</div>
           {dailyRecent.length > 0 ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {dailyRecent.map((a) => (
@@ -808,7 +1331,7 @@ export default function GmDashboard() {
         </div>
 
         <div style={cardStyle}>
-          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>📌 Quick Insight</div>
+          <div style={{ ...sectionTitleStyle }}>📌 Quick Insight</div>
           <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: 'var(--color-text-primary)', lineHeight: 1.6 }}>
             {quickInsights.map((q, i) => <li key={i}>{q}</li>)}
           </ul>

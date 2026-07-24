@@ -15,7 +15,8 @@ export type ProjectKind = 'ALL' | 'FTTH' | 'FTTT';
 
 // NEW: threshold shared by overdue / attention checks below (kept consistent with SLA_DAYS elsewhere)
 const STALE_DAYS = 14;
-const NO_ACTIVITY_DAYS = 7;
+/** Integra V7: bottleneck / attention “no activity” threshold */
+const NO_ACTIVITY_DAYS = 3;
 const BUDGET_ATTENTION_UTIL = 0.9;
 
 const PHASES: PermitPhase[] = [
@@ -404,6 +405,7 @@ export class DashboardService {
       ftthVsFttt,
       dailyActivityExtras,
       pendingPoApprovals,
+      executiveV7,
     ] =
       await Promise.all([
         this.buildProjectSummary(projectKind),
@@ -415,31 +417,42 @@ export class DashboardService {
         this.buildFtthVsFttt(),
         this.buildDailyActivityRecent(),
         this.prisma.financePoChangeRequest.count({ where: { status: 'PENDING' } }),
+        this.buildExecutiveV7Extras(projectKind),
       ]);
 
-    // NEW: Integra Enhancement V3 — GM-facing quick insights, computed server-side from the stats above
-    const noActivityCount = attentionProjects.filter((p) => p.reasons.includes('no_recent_activity')).length;
+    // NEW: Integra Enhancement V3/V7 — GM-facing quick insights
+    const noActivityCount = executiveV7.bottlenecks.noActivityOver3Days
+      || attentionProjects.filter((p) => p.reasons.includes('no_recent_activity')).length;
     const quickInsights: string[] = [];
+    if (executiveV7.bottlenecks.waitingPermit > 0) {
+      quickInsights.push(`${executiveV7.bottlenecks.waitingPermit} Project masih Waiting Permit.`);
+    }
+    if (executiveV7.pipelineApproval.purchaseOrderPending > 0) {
+      quickInsights.push(`${executiveV7.pipelineApproval.purchaseOrderPending} Purchase Order masih Pending.`);
+    }
+    if (financialExtras.overBudgetCount > 0) {
+      quickInsights.push(`${financialExtras.overBudgetCount} Project Over Budget.`);
+    }
+    if (noActivityCount > 0) {
+      quickInsights.push(`${noActivityCount} Project tidak memiliki aktivitas lebih dari ${NO_ACTIVITY_DAYS} hari.`);
+    }
+    if (budgetSummary.utilizationPct > 0) {
+      quickInsights.push(`Budget Utilization telah mencapai ${budgetSummary.utilizationPct}%.`);
+    }
     if (slaBreached > 0) {
       quickInsights.push(`${slaBreached} cluster melewati SLA HLD — perlu tindakan segera.`);
     }
-    if (financialExtras.overBudgetCount > 0) {
-      quickInsights.push(`${financialExtras.overBudgetCount} proyek melebihi budget yang direncanakan.`);
-    }
-    if (financialExtras.lossCount > 0) {
-      quickInsights.push(`${financialExtras.lossCount} proyek berpotensi rugi (actual cost > PO Customer).`);
-    }
-    if (noActivityCount > 0) {
-      quickInsights.push(`${noActivityCount} proyek FTTT tidak ada aktivitas dalam ${NO_ACTIVITY_DAYS} hari terakhir.`);
-    }
-    if (dailyActivityExtras.overdueCount > 0) {
-      quickInsights.push(`${dailyActivityExtras.overdueCount} daily activity melewati target selesai.`);
+    if (executiveV7.pipelineApproval.baOpenPending > 0) {
+      quickInsights.push(`${executiveV7.pipelineApproval.baOpenPending} BA Open masih pending.`);
     }
     if (cashOpPending > 0) {
       quickInsights.push(`${cashOpPending} pengajuan cash operation menunggu approval.`);
     }
     if (pendingPoApprovals > 0) {
       quickInsights.push(`${pendingPoApprovals} pengajuan PO Customer menunggu approval GM.`);
+    }
+    if (dailyActivityExtras.overdueCount > 0) {
+      quickInsights.push(`${dailyActivityExtras.overdueCount} daily activity melewati target selesai.`);
     }
     if (quickInsights.length === 0) {
       quickInsights.push('Semua indikator utama dalam kondisi baik — tidak ada isu mendesak saat ini.');
@@ -459,7 +472,10 @@ export class DashboardService {
         // NEW: Integra Enhancement V3 — additional executive KPI fields
         onHold: projectSummary.pending, // FIX: buildProjectSummary's "pending" bucket == ON_HOLD status
         cancelled: projectSummary.cancelled,
-        pendingApprovals: pendingVR + pendingPoApprovals,
+        pendingApprovals: pendingVR + pendingPoApprovals
+          + executiveV7.pipelineApproval.baOpenPending
+          + executiveV7.pipelineApproval.purchaseOrderPending
+          + executiveV7.pipelineApproval.supplierInvoicePending,
       },
       pipeline: {
         byPhase: byPhaseFormatted,
@@ -470,7 +486,11 @@ export class DashboardService {
       },
       recentActivity: recentActivityFormatted,
       projectKind,
-      projectSummary,
+      projectSummary: {
+        ...projectSummary,
+        totalFtth: executiveV7.ftthCount,
+        totalFttt: executiveV7.ftttCount,
+      },
       budgetSummary,
       onProgressProjects,
       attentionProjects,
@@ -485,6 +505,8 @@ export class DashboardService {
       dailyActivityRecent: dailyActivityExtras.items,
       dailyActivityOverdueCount: dailyActivityExtras.overdueCount,
       quickInsights,
+      // Integra Enhancement V7 — Executive Report sections
+      ...executiveV7,
     };
   }
 
@@ -703,6 +725,10 @@ export class DashboardService {
       status: string;
       progressPct: number;
       budgetRemaining: number | null;
+      pmName: string | null;
+      budget: number | null;
+      budgetUsed: number | null;
+      lastActivityAt: string | null;
       _updatedAt: Date;
     };
     const rows: Row[] = [];
@@ -712,7 +738,10 @@ export class DashboardService {
         where: { fiberType: FiberType.FTTH, status: 'IN_PROGRESS' },
         orderBy: { updatedAt: 'desc' },
         take: 20,
-        include: { visitRequest: { include: { cleanList: { select: { siteName: true, rwCode: true } } } } },
+        include: {
+          assignedPm: { select: { name: true } },
+          visitRequest: { include: { cleanList: { select: { siteName: true, rwCode: true } } } },
+        },
       });
       const phaseIdx = Object.fromEntries(PHASES.map((p, i) => [p, i]));
       for (const c of clusters) {
@@ -723,7 +752,11 @@ export class DashboardService {
           kind: 'FTTH',
           status: c.status,
           progressPct: pct,
-          budgetRemaining: null, // FTTH clusters aren't linked 1:1 to a FinanceProject in the current schema
+          budgetRemaining: null,
+          pmName: c.assignedPm?.name ?? null,
+          budget: null,
+          budgetUsed: null,
+          lastActivityAt: c.updatedAt.toISOString(),
           _updatedAt: c.updatedAt,
         });
       }
@@ -736,17 +769,34 @@ export class DashboardService {
         orderBy: { updatedAt: 'desc' },
         take: 20,
         include: {
+          pm: { select: { name: true } },
           phaseProgresses: true,
-          financeProject: { select: { totalBudget: true, materialSpent: true, jasaSpent: true } },
+          financeProject: { select: { id: true, totalBudget: true, materialSpent: true, jasaSpent: true } },
+          dailyActivities: { orderBy: { timestamp: 'desc' }, take: 1, select: { timestamp: true } },
         },
       });
+      const fpIds = projects.map((p) => p.financeProject?.id).filter(Boolean) as string[];
+      let disbursedMap: Record<string, number> = {};
+      if (fpIds.length > 0) {
+        const disbursed = await this.prisma.ftttTransaction.groupBy({
+          by: ['financeProjectId'],
+          where: { financeProjectId: { in: fpIds }, disbursedAt: { not: null } },
+          _sum: { total: true },
+        });
+        disbursedMap = Object.fromEntries(
+          disbursed.filter((r) => r.financeProjectId).map((r) => [r.financeProjectId as string, Number(r._sum.total ?? 0)]),
+        );
+      }
       for (const p of projects) {
         const relevant = p.phaseProgresses.filter((pp) => pp.status !== 'SKIPPED');
         const done = relevant.filter((pp) => pp.status === 'COMPLETED').length;
         const pct = relevant.length > 0 ? Math.round((done / relevant.length) * 1000) / 10 : 0;
-        const budgetRemaining = p.financeProject
-          ? Number(p.financeProject.totalBudget) - Number(p.financeProject.materialSpent) - Number(p.financeProject.jasaSpent)
+        const budget = p.financeProject ? Number(p.financeProject.totalBudget) : null;
+        const spent = p.financeProject
+          ? Number(p.financeProject.materialSpent) + Number(p.financeProject.jasaSpent) + (disbursedMap[p.financeProject.id] ?? 0)
           : null;
+        const budgetRemaining = budget != null && spent != null ? budget - spent : null;
+        const lastAct = p.dailyActivities[0]?.timestamp ?? p.updatedAt;
         rows.push({
           id: p.id,
           name: p.projectName || p.id,
@@ -754,6 +804,10 @@ export class DashboardService {
           status: p.status,
           progressPct: pct,
           budgetRemaining,
+          pmName: p.pm?.name ?? null,
+          budget,
+          budgetUsed: spent,
+          lastActivityAt: lastAct.toISOString(),
           _updatedAt: p.updatedAt,
         });
       }
@@ -870,6 +924,395 @@ export class DashboardService {
     }
 
     return Object.entries(buckets).map(([status, count]) => ({ status, count }));
+  }
+
+  /** Integra V7 — operational/finance aggregates for Executive Dashboard + Report */
+  private async buildExecutiveV7Extras(kind: ProjectKind) {
+    const now = new Date();
+    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const noActivityBefore = new Date(now.getTime() - NO_ACTIVITY_DAYS * 24 * 60 * 60 * 1000);
+    const hierarchyLevel = await this.resolveFtttHierarchyLevel();
+    const financeWhere: Prisma.FinanceProjectWhereInput = {
+      status: 'ACTIVE',
+      isDefaultUncategorized: false,
+      ...(kind !== 'ALL' ? { projectType: kind } : {}),
+      hierarchyLevel: { not: 'SEGMENT' },
+    };
+
+    const [
+      baOpenPending,
+      poPending,
+      invoicePending,
+      invoiceApproved,
+      invoiceRejected,
+      invoiceOutstanding,
+      visitPending,
+      cashGrouped,
+      cashAgg,
+      prGrouped,
+      orderPendingApproval,
+      orderApproved,
+      orderRejected,
+      permitTotal,
+      permitPending,
+      permitApproved,
+      permitRejected,
+      budgetAgg,
+      lowStockRows,
+      stockTotal,
+      orderBarangPending,
+      suratJalanPending,
+      phaseFttt,
+      phaseFtth,
+      ftthCount,
+      ftttCount,
+      activityToday,
+      progressUpdatedToday,
+      docsUploadedToday,
+      noActivityFttt,
+      waitingPermit,
+      waitingVisit,
+      waitingBa,
+      waitingCash,
+      waitingPurchasing,
+      waitingInvoice,
+    ] = await Promise.all([
+      this.prisma.baOpen.count({ where: { status: 'GENERATED' } }),
+      this.prisma.order.count({
+        where: {
+          status: {
+            in: [
+              OrderStatus.PENDING_PURCHASING_INPUT,
+              OrderStatus.PENDING_OPS_APPROVAL,
+              OrderStatus.PENDING_GM_APPROVAL,
+            ],
+          },
+        },
+      }),
+      this.prisma.supplierInvoice.count({
+        where: { status: { in: ['DRAFT', 'SENT_TO_SUPPLIER'] } },
+      }),
+      this.prisma.supplierInvoice.count({ where: { status: 'APPROVED_BY_SUPPLIER' } }),
+      this.prisma.supplierInvoice.count({ where: { status: 'REJECTED_BY_SUPPLIER' } }),
+      this.prisma.supplierInvoice.count({
+        where: { status: { in: ['DRAFT', 'SENT_TO_SUPPLIER'] } },
+      }),
+      this.prisma.visitRequest.count({
+        where: {
+          status: { in: ['PM_REVIEW_VISIT', 'PM_REVIEW_SURVEY', 'PM_SENIOR_REVIEW', 'ADMIN_REVIEW'] },
+        },
+      }),
+      this.prisma.cashOperationRequest.groupBy({ by: ['status'], _count: { id: true } }),
+      this.prisma.cashOperationRequest.aggregate({ _sum: { amount: true }, _count: { id: true } }),
+      this.prisma.purchaseRequest.groupBy({ by: ['status'], _count: { id: true } }),
+      this.prisma.order.count({
+        where: {
+          status: {
+            in: [
+              OrderStatus.PENDING_OPS_APPROVAL,
+              OrderStatus.PENDING_GM_APPROVAL,
+              OrderStatus.PENDING_PURCHASING_INPUT,
+            ],
+          },
+        },
+      }),
+      this.prisma.order.count({
+        where: { status: { in: [OrderStatus.PURCHASED, OrderStatus.PENDING_VERIFICATION, OrderStatus.PENDING_PAYMENT_RECEIPT] } },
+      }),
+      this.prisma.order.count({
+        where: { status: { in: [OrderStatus.REJECTED_BY_OPS, OrderStatus.REJECTED_BY_GM] } },
+      }),
+      this.prisma.permitCluster.count(kind === 'FTTT' ? { where: { id: '__none__' } } : undefined),
+      this.prisma.permitCluster.count({
+        where: {
+          status: { in: ['IN_PROGRESS', 'ON_HOLD'] },
+          ...(kind === 'FTTT' ? { id: '__none__' } : {}),
+        },
+      }),
+      this.prisma.permitCluster.count({
+        where: { status: 'COMPLETED', ...(kind === 'FTTT' ? { id: '__none__' } : {}) },
+      }),
+      this.prisma.permitCluster.count({
+        where: { status: 'CANCELLED', ...(kind === 'FTTT' ? { id: '__none__' } : {}) },
+      }),
+      this.prisma.financeProject.aggregate({
+        where: financeWhere,
+        _sum: {
+          materialBudget: true,
+          jasaBudget: true,
+          budgetPerizinan: true,
+          budgetLainLain: true,
+          totalBudget: true,
+          materialSpent: true,
+          jasaSpent: true,
+        },
+      }),
+      this.prisma.$queryRaw<{ n: bigint }[]>`
+        SELECT COUNT(*)::bigint AS n
+        FROM "StockItem"
+        WHERE "isActive" = true
+          AND ("currentQty" <= "minStockQty" OR "currentQty" <= 10)
+      `,
+      this.prisma.stockItem.count({ where: { isActive: true } }),
+      this.prisma.order.count({
+        where: {
+          status: {
+            in: [
+              OrderStatus.DRAFT,
+              OrderStatus.SUBMITTED,
+              OrderStatus.PENDING_ADMIN_STOCK,
+              OrderStatus.STOCK_AVAILABLE,
+              OrderStatus.PARTIAL_STOCK,
+              OrderStatus.NO_STOCK,
+            ],
+          },
+        },
+      }),
+      this.prisma.suratJalan.count({ where: { status: 'GENERATED' } }),
+      kind === 'FTTH'
+        ? Promise.resolve([] as { currentPhase: string; _count: { id: number } }[])
+        : this.prisma.ftttProject.groupBy({
+            by: ['currentPhase'],
+            where: { hierarchyLevel },
+            _count: { id: true },
+          }),
+      kind === 'FTTT'
+        ? Promise.resolve([] as { currentPhase: string; _count: { id: number } }[])
+        : this.prisma.permitCluster.groupBy({
+            by: ['currentPhase'],
+            where: { status: { not: 'COMPLETED' } },
+            _count: { id: true },
+          }),
+      this.prisma.permitCluster.count(),
+      this.prisma.ftttProject.count({ where: { hierarchyLevel } }),
+      this.prisma.dailyActivity.count({ where: { timestamp: { gte: startOfDay } } }),
+      this.prisma.dailyActivity.count({
+        where: { timestamp: { gte: startOfDay }, workStatus: { in: ['ON_PROGRESS', 'DONE'] } },
+      }),
+      this.prisma.dailyActivityEvidence.count({ where: { createdAt: { gte: startOfDay } } }),
+      this.prisma.ftttProject.count({
+        where: {
+          hierarchyLevel,
+          status: 'ACTIVE',
+          updatedAt: { lt: noActivityBefore },
+          ...(kind === 'FTTH' ? { id: '__none__' } : {}),
+        },
+      }),
+      this.prisma.permitCluster.count({
+        where: {
+          status: { in: ['IN_PROGRESS', 'ON_HOLD'] },
+          currentPhase: { in: ['SIP_REQUEST', 'CLUSTER_INTAKE', 'VISIT_REQUEST', 'BA_OPEN', 'SITE_VISIT'] },
+          ...(kind === 'FTTT' ? { id: '__none__' } : {}),
+        },
+      }),
+      this.prisma.visitRequest.count({
+        where: {
+          status: { in: ['PM_REVIEW_VISIT', 'PM_REVIEW_SURVEY', 'PM_SENIOR_REVIEW', 'ADMIN_REVIEW'] },
+        },
+      }),
+      this.prisma.baOpen.count({ where: { status: 'GENERATED' } }),
+      this.prisma.cashOperationRequest.count({ where: { status: { in: ['SUBMITTED', 'IN_REVIEW'] } } }),
+      this.prisma.order.count({
+        where: {
+          status: {
+            in: [
+              OrderStatus.PENDING_PURCHASING_INPUT,
+              OrderStatus.PENDING_OPS_APPROVAL,
+              OrderStatus.PENDING_GM_APPROVAL,
+            ],
+          },
+        },
+      }),
+      this.prisma.supplierInvoice.count({
+        where: { status: { in: ['DRAFT', 'SENT_TO_SUPPLIER'] } },
+      }),
+    ]);
+
+    const cashMap = Object.fromEntries(cashGrouped.map((r) => [r.status, r._count.id]));
+    const cashApproved = (cashMap['APPROVED'] ?? 0) + (cashMap['DISBURSED'] ?? 0);
+    const cashRejected = cashMap['REJECTED'] ?? 0;
+    const cashPending =
+      (cashMap['SUBMITTED'] ?? 0) + (cashMap['IN_REVIEW'] ?? 0) + (cashMap['DRAFT'] ?? 0);
+
+    const prMap = Object.fromEntries(prGrouped.map((r) => [r.status, r._count.id]));
+    const totalPr = prGrouped.reduce((s, r) => s + r._count.id, 0);
+
+    // Prefer FTTT enum labels when present
+    const phaseDistribution = [
+      ...[...(phaseFttt as { currentPhase: string; _count: { id: number } }[])].map((p) => ({
+        phase: String(p.currentPhase),
+        label: String(p.currentPhase).replace(/_/g, ' '),
+        count: p._count.id,
+      })),
+      ...[...(phaseFtth as { currentPhase: string; _count: { id: number } }[])].map((p) => ({
+        phase: String(p.currentPhase),
+        label: PHASE_LABELS[p.currentPhase] || String(p.currentPhase).replace(/_/g, ' '),
+        count: p._count.id,
+      })),
+    ];
+
+    // Budget composition + health from finance projects
+    const projects = await this.prisma.financeProject.findMany({
+      where: financeWhere,
+      select: {
+        id: true,
+        name: true,
+        code: true,
+        totalBudget: true,
+        materialSpent: true,
+        jasaSpent: true,
+        projectType: true,
+      },
+      take: 500,
+    });
+    const fpIds = projects.map((p) => p.id);
+    let disbursedMap: Record<string, number> = {};
+    if (fpIds.length > 0 && kind !== 'FTTH') {
+      const disbursed = await this.prisma.ftttTransaction.groupBy({
+        by: ['financeProjectId'],
+        where: { financeProjectId: { in: fpIds }, disbursedAt: { not: null } },
+        _sum: { total: true },
+      });
+      disbursedMap = Object.fromEntries(
+        disbursed.filter((r) => r.financeProjectId).map((r) => [r.financeProjectId as string, Number(r._sum.total ?? 0)]),
+      );
+    }
+
+    let healthy = 0;
+    let warning = 0;
+    let over = 0;
+    let utilSum = 0;
+    let utilCount = 0;
+    let highestUtil = 0;
+    const scored = projects.map((p) => {
+      const budget = Number(p.totalBudget);
+      const spent =
+        Number(p.materialSpent) + Number(p.jasaSpent) + (disbursedMap[p.id] ?? 0);
+      const util = budget > 0 ? spent / budget : 0;
+      if (budget > 0) {
+        utilSum += util;
+        utilCount += 1;
+        if (util > highestUtil) highestUtil = util;
+        if (util > 1) over += 1;
+        else if (util >= 0.8) warning += 1;
+        else healthy += 1;
+      }
+      return {
+        id: p.id,
+        name: `${p.code} · ${p.name}`,
+        kind: (p.projectType === 'FTTT' ? 'FTTT' : 'FTTH') as 'FTTH' | 'FTTT',
+        budget,
+        spent,
+        overAmount: Math.max(0, spent - budget),
+        utilizationPct: Math.round(util * 1000) / 10,
+      };
+    });
+
+    const topBudgetConsumption = [...scored]
+      .sort((a, b) => b.budget - a.budget)
+      .slice(0, 10)
+      .map(({ id, name, kind, budget, spent, utilizationPct }) => ({
+        id, name, kind, budget, spent, utilizationPct,
+      }));
+    const topOverBudget = [...scored]
+      .filter((p) => p.overAmount > 0)
+      .sort((a, b) => b.overAmount - a.overAmount)
+      .slice(0, 10)
+      .map(({ id, name, kind, budget, spent, overAmount, utilizationPct }) => ({
+        id, name, kind, budget, spent, overAmount, utilizationPct,
+      }));
+
+    const budgetComposition = {
+      material: Number(budgetAgg._sum.materialBudget ?? 0),
+      jasa: Number(budgetAgg._sum.jasaBudget ?? 0),
+      perizinan: Number(budgetAgg._sum.budgetPerizinan ?? 0),
+      lainLain: Number(budgetAgg._sum.budgetLainLain ?? 0),
+    };
+
+    return {
+      ftthCount,
+      ftttCount,
+      pipelineApproval: {
+        visitRequestPending: visitPending,
+        baOpenPending,
+        cashOperationPending: cashPending,
+        purchaseOrderPending: poPending,
+        supplierInvoicePending: invoicePending,
+      },
+      permitPipelineSummary: {
+        total: permitTotal,
+        pending: permitPending,
+        approved: permitApproved,
+        rejected: permitRejected,
+        expired: 0,
+      },
+      budgetComposition,
+      budgetHealth: {
+        healthy,
+        warning,
+        overBudget: over,
+        averageUtilizationPct: utilCount > 0 ? Math.round((utilSum / utilCount) * 1000) / 10 : 0,
+        highestUtilizationPct: Math.round(highestUtil * 1000) / 10,
+      },
+      phaseDistribution,
+      cashOperationSummary: {
+        totalRequest: cashAgg._count.id,
+        approved: cashApproved,
+        rejected: cashRejected,
+        pending: cashPending,
+        totalNominal: Number(cashAgg._sum.amount ?? 0),
+      },
+      approvalPerformance: {
+        visitRequest: { pending: visitPending },
+        baOpen: { pending: baOpenPending },
+        cashOperation: { pending: cashPending, approved: cashApproved, rejected: cashRejected },
+        purchasing: { pending: orderPendingApproval, approved: orderApproved, rejected: orderRejected },
+        supplierInvoice: {
+          pending: invoicePending,
+          approved: invoiceApproved,
+          rejected: invoiceRejected,
+        },
+      },
+      purchasingSummary: {
+        totalPr,
+        totalPo: orderApproved + orderPendingApproval + orderRejected,
+        pendingApproval: orderPendingApproval,
+        approved: orderApproved,
+        rejected: orderRejected,
+        prPending: (prMap['PENDING'] ?? 0) + (prMap['IN_REVIEW'] ?? 0),
+        prApproved: prMap['APPROVED'] ?? 0,
+        prRejected: prMap['REJECTED'] ?? 0,
+      },
+      inventorySummary: {
+        orderBarangPending,
+        suratJalanPending,
+        lowStockItem: Number(lowStockRows[0]?.n ?? 0),
+        totalStockItem: stockTotal,
+      },
+      supplierBilling: {
+        invoicePending,
+        invoiceApproved,
+        invoiceRejected,
+        outstandingInvoice: invoiceOutstanding,
+      },
+      topBudgetConsumption,
+      topOverBudget,
+      bottlenecks: {
+        waitingPermit,
+        waitingVisitRequest: waitingVisit,
+        waitingBaOpen: waitingBa,
+        waitingCashOperation: waitingCash,
+        waitingPurchasing,
+        waitingSupplierInvoice: waitingInvoice,
+        noActivityOver3Days: noActivityFttt,
+      },
+      dailyActivitySummary: {
+        activityToday,
+        progressUpdated: progressUpdatedToday,
+        documentUploaded: docsUploadedToday,
+        projectNoActivityOver3Days: noActivityFttt,
+      },
+    };
   }
 
   async getSlaReport() {
