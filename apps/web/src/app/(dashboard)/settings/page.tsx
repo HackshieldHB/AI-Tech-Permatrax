@@ -383,7 +383,7 @@ function SettingsPageContent() {
         apiFetch('/clean-list/summary/isp', {}, currentUser?.id),
         apiFetch('/stock/summary', {}, currentUser?.id),
         apiFetch('/purchase-requests/inbox-count', {}, currentUser?.id),
-        apiFetch('/audit-log?limit=20', {}, currentUser?.id),
+        apiFetch('/audit-log?limit=50', {}, currentUser?.id),
         apiFetch('/visit-requests?page=1&limit=1', {}, currentUser?.id),
         apiFetch('/ba-open?page=1&limit=100', {}, currentUser?.id),
         apiFetch('/orders?page=1&limit=1&status=SUBMITTED,PARTIAL_STOCK,NO_STOCK', {}, currentUser?.id),

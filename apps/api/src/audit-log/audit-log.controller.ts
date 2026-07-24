@@ -13,7 +13,7 @@ export class AuditLogController {
   @Roles(Role.GENERAL_MANAGER)
   @ApiOperation({ summary: 'Aktivitas sistem terbaru (agregat)' })
   async findAll(@Query('limit') limit?: string) {
-    const n = Math.min(100, Math.max(1, parseInt(limit || '20', 10) || 20));
+    const n = Math.min(100, Math.max(1, parseInt(limit || '50', 10) || 50));
     return this.auditLogService.findRecent(n);
   }
 }

@@ -10,14 +10,21 @@ export type AuditLogRow = {
   module: string;
 };
 
-/** Integra V7: System Overview / Audit Trail — merge latest events across modules (not create-only). */
+/**
+ * Integra V7/V8: System Overview Recent Activity — merge true actor events across modules.
+ * Prefer events with a real acting user (not entity-owner PM attribution) so all users appear.
+ */
 @Injectable()
 export class AuditLogService {
   constructor(private readonly prisma: PrismaService) {}
 
   async findRecent(limit: number): Promise<AuditLogRow[]> {
-    const takeEach = Math.max(10, Math.ceil(limit / 2));
-    const rows: AuditLogRow[] = [];
+    const takeEach = Math.max(25, Math.ceil(limit * 1.5));
+    const buckets: AuditLogRow[][] = [];
+
+    const pushBucket = (rows: AuditLogRow[]) => {
+      if (rows.length) buckets.push(rows);
+    };
 
     const [
       visits,
@@ -26,10 +33,13 @@ export class AuditLogService {
       prs,
       daily,
       cashOps,
-      clusters,
       supplierInvoices,
       baOpens,
-      ftttProjects,
+      ftttTx,
+      poChanges,
+      implLogs,
+      visitRequests,
+      cashSteps,
     ] = await Promise.all([
       this.prisma.visitApprovalLog.findMany({
         take: takeEach,
@@ -68,14 +78,6 @@ export class AuditLogService {
         orderBy: { updatedAt: 'desc' },
         include: { requester: { select: { name: true, role: true } } },
       }),
-      this.prisma.permitCluster.findMany({
-        take: takeEach,
-        orderBy: { updatedAt: 'desc' },
-        include: {
-          assignedPm: { select: { name: true, role: true } },
-          visitRequest: { include: { cleanList: { select: { siteName: true, rwCode: true } } } },
-        },
-      }),
       this.prisma.supplierInvoice.findMany({
         take: takeEach,
         orderBy: { updatedAt: 'desc' },
@@ -83,132 +85,249 @@ export class AuditLogService {
       }),
       this.prisma.baOpen.findMany({
         take: takeEach,
-        orderBy: { generatedAt: 'desc' },
+        orderBy: { updatedAt: 'desc' },
         include: { generator: { select: { name: true, role: true } } },
       }),
-      this.prisma.ftttProject.findMany({
+      this.prisma.ftttTransaction.findMany({
+        take: takeEach,
+        orderBy: { createdAt: 'desc' },
+        include: { createdBy: { select: { name: true, role: true } } },
+      }),
+      this.prisma.financePoChangeRequest.findMany({
+        take: takeEach,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          submittedBy: { select: { name: true, role: true } },
+          reviewedBy: { select: { name: true, role: true } },
+        },
+      }),
+      this.prisma.ftttImplementationLog.findMany({
+        take: takeEach,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          uploadedBy: { select: { name: true, role: true } },
+          project: { select: { projectName: true } },
+        },
+      }),
+      this.prisma.visitRequest.findMany({
         take: takeEach,
         orderBy: { updatedAt: 'desc' },
-        include: { pm: { select: { name: true, role: true } } },
+        include: {
+          requester: { select: { name: true, role: true } },
+          cleanList: { select: { siteName: true, rwCode: true } },
+        },
+      }),
+      this.prisma.cashOpApprovalStep.findMany({
+        take: takeEach,
+        orderBy: { decidedAt: 'desc' },
+        where: { decidedAt: { not: null }, status: { not: 'PENDING' } },
+        include: {
+          approver: { select: { name: true, role: true } },
+          request: { select: { requestNumber: true } },
+        },
       }),
     ]);
 
-    for (const v of visits) {
-      rows.push({
+    pushBucket(
+      visits.map((v) => ({
         timestamp: v.createdAt.toISOString(),
         actorName: v.actor.name,
         actorRole: v.actor.role,
         action: v.action,
         detail: `Visit ${v.visitRequestId}: ${v.fromStatus} → ${v.toStatus}`,
         module: 'VISIT',
-      });
-    }
+      })),
+    );
 
-    for (const s of stock) {
-      rows.push({
+    pushBucket(
+      stock.map((s) => ({
         timestamp: s.createdAt.toISOString(),
         actorName: s.actor.name,
         actorRole: s.actor.role,
         action: s.type,
         detail: `${s.stockItem.name}: ${s.qtyChange > 0 ? '+' : ''}${s.qtyChange}${s.reference ? ` — ${s.reference}` : ''}`,
         module: 'STOCK',
-      });
-    }
+      })),
+    );
 
-    for (const o of orders) {
-      rows.push({
+    pushBucket(
+      orders.map((o) => ({
         timestamp: o.updatedAt.toISOString(),
         actorName: o.creator.name,
         actorRole: o.creator.role,
         action: 'ORDER_UPDATE',
         detail: `${o.orderNumber} — ${o.status}`,
         module: 'ORDER',
-      });
-    }
+      })),
+    );
 
-    for (const p of prs) {
-      rows.push({
+    pushBucket(
+      prs.map((p) => ({
         timestamp: p.updatedAt.toISOString(),
         actorName: p.requester.name,
         actorRole: p.requester.role,
         action: 'PURCHASE_REQUEST',
         detail: `${p.requestNumber} — ${p.status}`,
         module: 'PURCHASE',
-      });
-    }
+      })),
+    );
 
-    for (const a of daily) {
-      const site = a.siteName || a.ftttProject?.projectName || a.financeProject?.name || 'Daily Activity';
-      rows.push({
-        timestamp: a.timestamp.toISOString(),
-        actorName: a.actor?.name || 'System',
-        actorRole: a.actor?.role || '',
-        action: a.workStatus,
-        detail: `${site}: ${a.scopeOfWork}`,
-        module: 'DAILY_ACTIVITY',
-      });
-    }
+    pushBucket(
+      daily.map((a) => {
+        const site = a.siteName || a.ftttProject?.projectName || a.financeProject?.name || 'Daily Activity';
+        return {
+          timestamp: a.timestamp.toISOString(),
+          actorName: a.actor?.name || 'System',
+          actorRole: a.actor?.role || '',
+          action: a.workStatus,
+          detail: `${site}: ${a.scopeOfWork}`,
+          module: 'DAILY_ACTIVITY',
+        };
+      }),
+    );
 
-    for (const c of cashOps) {
-      rows.push({
+    pushBucket(
+      cashOps.map((c) => ({
         timestamp: c.updatedAt.toISOString(),
         actorName: c.requester?.name || 'System',
         actorRole: c.requester?.role || '',
         action: c.status,
-        detail: `${c.requestNumber} · ${c.type} · ${c.description?.slice(0, 80) || ''}`,
+        detail: `${c.requestNumber} · ${c.type} · ${(c.description ?? '').slice(0, 80)}`,
         module: 'CASH_OPERATION',
-      });
-    }
+      })),
+    );
 
-    for (const cl of clusters) {
-      const name =
-        cl.visitRequest?.cleanList?.siteName ||
-        cl.visitRequest?.cleanList?.rwCode ||
-        cl.clusterCode;
-      rows.push({
-        timestamp: cl.updatedAt.toISOString(),
-        actorName: cl.assignedPm?.name || 'System',
-        actorRole: cl.assignedPm?.role || '',
-        action: cl.currentPhase,
-        detail: `${name} — ${cl.status}`,
-        module: 'PERMIT',
-      });
-    }
-
-    for (const inv of supplierInvoices) {
-      rows.push({
+    pushBucket(
+      supplierInvoices.map((inv) => ({
         timestamp: inv.updatedAt.toISOString(),
         actorName: inv.uploadedBy?.name || 'System',
         actorRole: inv.uploadedBy?.role || '',
         action: inv.status,
         detail: `Invoice ${inv.invoiceNumber} — ${inv.status}`,
         module: 'SUPPLIER_INVOICE',
-      });
-    }
+      })),
+    );
 
-    for (const ba of baOpens) {
-      rows.push({
-        timestamp: ba.generatedAt.toISOString(),
+    pushBucket(
+      baOpens.map((ba) => ({
+        timestamp: ba.updatedAt.toISOString(),
         actorName: ba.generator?.name || 'System',
         actorRole: ba.generator?.role || '',
         action: ba.status,
         detail: `BA Open ${ba.documentNumber} — ${ba.status}`,
         module: 'BA_OPEN',
+      })),
+    );
+
+    pushBucket(
+      ftttTx.map((t) => ({
+        timestamp: t.createdAt.toISOString(),
+        actorName: t.createdBy?.name || 'System',
+        actorRole: t.createdBy?.role || '',
+        action: t.disbursedAt ? 'DISBURSED' : 'TX_CREATED',
+        detail: `${t.category} · ${t.aktivitas} · ${Number(t.total).toLocaleString('id-ID')}`,
+        module: 'FTTT_TX',
+      })),
+    );
+
+    const poRows: AuditLogRow[] = [];
+    for (const po of poChanges) {
+      poRows.push({
+        timestamp: po.createdAt.toISOString(),
+        actorName: po.submittedBy?.name || 'System',
+        actorRole: po.submittedBy?.role || '',
+        action: 'PO_SUBMIT',
+        detail: `PO change ${po.status} · ${Number(po.proposedAmount).toLocaleString('id-ID')}`,
+        module: 'FINANCE_PO',
       });
+      if (po.reviewedAt && po.reviewedBy) {
+        poRows.push({
+          timestamp: po.reviewedAt.toISOString(),
+          actorName: po.reviewedBy.name,
+          actorRole: po.reviewedBy.role,
+          action: po.status === 'APPROVED' ? 'PO_APPROVE' : po.status === 'REJECTED' ? 'PO_REJECT' : 'PO_REVIEW',
+          detail: `PO change ${po.status}${po.reviewNote ? ` — ${po.reviewNote}` : ''}`,
+          module: 'FINANCE_PO',
+        });
+      }
+    }
+    pushBucket(poRows);
+
+    pushBucket(
+      implLogs.map((l) => ({
+        timestamp: l.createdAt.toISOString(),
+        actorName: l.uploadedBy?.name || 'System',
+        actorRole: l.uploadedBy?.role || '',
+        action: l.logType,
+        detail: `${l.project?.projectName || 'FTTT'} · ${l.caption || l.notes || l.logType}`,
+        module: 'FTTT_IMPL',
+      })),
+    );
+
+    pushBucket(
+      visitRequests.map((vr) => ({
+        timestamp: vr.updatedAt.toISOString(),
+        actorName: vr.requester?.name || 'System',
+        actorRole: vr.requester?.role || '',
+        action: vr.status,
+        detail: `${vr.cleanList?.siteName || vr.cleanList?.rwCode || vr.id} — Visit Request`,
+        module: 'VISIT_REQUEST',
+      })),
+    );
+
+    if (cashSteps.length > 0) {
+      pushBucket(
+        cashSteps.map((st) => ({
+          timestamp: (st.decidedAt ?? st.createdAt).toISOString(),
+          actorName: st.approver?.name || st.approverRole || 'System',
+          actorRole: st.approver?.role || st.approverRole || '',
+          action: st.status,
+          detail: `Cash Op ${st.request?.requestNumber || ''} · step ${st.stepOrder}`.trim(),
+          module: 'CASH_APPROVAL',
+        })),
+      );
     }
 
-    for (const fp of ftttProjects) {
-      rows.push({
-        timestamp: fp.updatedAt.toISOString(),
-        actorName: fp.pm?.name || 'System',
-        actorRole: fp.pm?.role || '',
-        action: fp.currentPhase,
-        detail: `${fp.projectName} — ${fp.status}`,
-        module: 'FTTT',
-      });
+    // Round-robin across modules so one busy user/module cannot dominate the list
+    const pointers = buckets.map(() => 0);
+    const mixed: AuditLogRow[] = [];
+    let added = true;
+    while (mixed.length < limit * 3 && added) {
+      added = false;
+      for (let i = 0; i < buckets.length; i++) {
+        const idx = pointers[i];
+        if (idx < buckets[i].length) {
+          mixed.push(buckets[i][idx]);
+          pointers[i] = idx + 1;
+          added = true;
+        }
+      }
     }
 
-    rows.sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1));
-    return rows.slice(0, limit);
+    mixed.sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1));
+
+    // Prefer diversity of actor names in the final window while keeping time order
+    const final: AuditLogRow[] = [];
+    const seenActor = new Set<string>();
+    const deferred: AuditLogRow[] = [];
+    for (const row of mixed) {
+      const key = `${row.actorName}|${row.module}|${row.action}|${row.detail}`;
+      if (seenActor.has(key)) continue;
+      seenActor.add(key);
+      const actorKey = row.actorName.toLowerCase();
+      const actorCount = final.filter((r) => r.actorName.toLowerCase() === actorKey).length;
+      if (actorCount >= Math.max(3, Math.ceil(limit / 6)) && final.length < limit) {
+        deferred.push(row);
+        continue;
+      }
+      final.push(row);
+      if (final.length >= limit) break;
+    }
+    for (const row of deferred) {
+      if (final.length >= limit) break;
+      final.push(row);
+    }
+    final.sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1));
+    return final.slice(0, limit);
   }
 }
