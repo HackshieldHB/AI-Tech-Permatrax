@@ -87,6 +87,11 @@ export class DailyActivityService implements OnModuleInit, OnModuleDestroy {
         this.logger.error(`Reminder sweep gagal: ${err?.message}`, err?.stack),
       );
     }, REMINDER_SWEEP_INTERVAL_MS);
+
+    // Backfill project events already captured in SystemActivityLog (multi-user) into Daily Activity.
+    void this.seedFromSystemActivityLog().catch((e) =>
+      this.logger.warn(`Daily Activity seed skipped: ${e instanceof Error ? e.message : e}`),
+    );
   }
 
   onModuleDestroy() {
@@ -193,8 +198,7 @@ export class DailyActivityService implements OnModuleInit, OnModuleDestroy {
     }
 
     const data: Prisma.DailyActivityUpdateInput = {
-      // Integra V9: bump list timestamp + record who last updated status
-      timestamp: new Date(),
+      // Keep monitoring row in sync; feed entry is appended below so Actor history is visible
       updatedBy: { connect: { id: user.userId } },
     };
     if (dto.workStatus) data.workStatus = dto.workStatus;
@@ -224,6 +228,27 @@ export class DailyActivityService implements OnModuleInit, OnModuleDestroy {
         include: includeRelations,
       }),
     ]);
+
+    // Integra V10: append a new list row so Update Status appears in the feed like System Overview
+    // (Actor = the user who submitted the form), without relying on original-creator attribution.
+    // targetDoneAt left null on the feed row so overdue reminders stay on the original monitoring row.
+    try {
+      await this.createAuto({
+        actorId: user.userId,
+        scopeOfWork: `Update Status — ${existing.scopeOfWork}`.slice(0, 200),
+        financeProjectId: existing.financeProjectId,
+        ftttProjectId: existing.ftttProjectId,
+        siteName: existing.siteName,
+        workStatus: nextStatus,
+        targetDoneAt: null,
+        remarks: nextRemarks ?? `Status → ${nextStatus}`,
+        evidenceUrl: dto.evidenceUrl !== undefined ? dto.evidenceUrl : existing.evidenceUrl,
+      });
+    } catch (err) {
+      this.logger.warn(
+        `Failed to append Daily Activity feed row after status update: ${err instanceof Error ? err.message : err}`,
+      );
+    }
 
     return updated;
   }
@@ -345,5 +370,60 @@ export class DailyActivityService implements OnModuleInit, OnModuleDestroy {
       where: { id: activity.id },
       data: { lastReminderAt: now },
     });
+  }
+
+  /**
+   * One-shot backfill: copy project-scoped SystemActivityLog rows into DailyActivity
+   * so existing multi-user project actions appear immediately after deploy.
+   */
+  private seeded = false;
+  private async seedFromSystemActivityLog(): Promise<void> {
+    if (this.seeded) return;
+    this.seeded = true;
+
+    const projectModules = ['FTTT_PROJECTS', 'FINANCE_PROJECTS'];
+    const recent = await this.prisma.systemActivityLog.findMany({
+      where: { module: { in: projectModules } },
+      orderBy: { createdAt: 'desc' },
+      take: 200,
+      select: {
+        actorId: true,
+        action: true,
+        detail: true,
+        module: true,
+        path: true,
+        createdAt: true,
+      },
+    });
+    if (recent.length === 0) return;
+
+    // Skip if we already have a comparable volume of feed rows (avoid re-seed spam on every restart)
+    const existingFeed = await this.prisma.dailyActivity.count({
+      where: {
+        OR: [
+          { remarks: { startsWith: 'POST /api/fttt-projects' } },
+          { remarks: { startsWith: 'PUT /api/fttt-projects' } },
+          { remarks: { startsWith: 'PATCH /api/fttt-projects' } },
+          { remarks: { startsWith: 'DELETE /api/fttt-projects' } },
+          { remarks: { startsWith: 'POST /api/finance-projects' } },
+          { remarks: { startsWith: 'PUT /api/finance-projects' } },
+          { remarks: { startsWith: 'PATCH /api/finance-projects' } },
+          { remarks: { startsWith: 'SEED ·' } },
+        ],
+      },
+    });
+    if (existingFeed >= Math.min(50, recent.length)) return;
+
+    const data = recent.map((r) => ({
+      actorId: r.actorId,
+      scopeOfWork: `${r.module.replace(/_/g, ' ')} · ${r.action}`.slice(0, 200),
+      workStatus: DailyActivityWorkStatus.DONE,
+      remarks: `SEED · ${(r.detail || r.path || '').slice(0, 400)}`,
+      timestamp: r.createdAt,
+      updatedById: r.actorId,
+    }));
+
+    await this.prisma.dailyActivity.createMany({ data });
+    this.logger.log(`Seeded ${data.length} Daily Activity rows from SystemActivityLog (project modules)`);
   }
 }
