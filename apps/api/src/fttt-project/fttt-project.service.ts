@@ -68,7 +68,6 @@ import { PrismaService } from '../prisma/prisma.service';
 import { StorageService } from '../storage/storage.service';
 import { NotificationsGateway } from '../notifications/notifications.gateway';
 import { NotificationsService } from '../notifications/notifications.service';
-import { DailyActivityService } from '../daily-activity/daily-activity.service';
 import { paginate } from '../common/dto/pagination.dto';
 import {
   AddClosingLogDtoType,
@@ -127,23 +126,7 @@ export class FtttProjectService {
     private readonly storage: StorageService,
     private readonly gateway: NotificationsGateway,
     private readonly notifications: NotificationsService,
-    private readonly dailyActivity: DailyActivityService,
   ) {}
-
-  private async logActivity(params: {
-    actorId: string;
-    scopeOfWork: string;
-    ftttProjectId?: string | null;
-    financeProjectId?: string | null;
-    siteName?: string | null;
-    remarks?: string | null;
-  }) {
-    try {
-      await this.dailyActivity.createAuto(params);
-    } catch {
-      // non-blocking
-    }
-  }
 
   // ─── Create project (PM_FTTT only — Issue #5) ─────────────────────────────
   async create(dto: CreateFtttProjectDtoType, triggerDocFile: Express.Multer.File, pmId: string, userRole: Role) {
@@ -222,14 +205,7 @@ export class FtttProjectService {
       pmId,
     });
 
-    await this.logActivity({
-      actorId: pmId,
-      scopeOfWork: 'Project Initiation',
-      ftttProjectId: project.id,
-      financeProjectId: project.financeProjectId,
-      siteName: project.projectName,
-      remarks: 'Bulky Project dibuat',
-    });
+    // Daily Activity auto-log handled globally by ProjectDailyActivityInterceptor (all users)
 
     return project;
   }
@@ -367,14 +343,7 @@ export class FtttProjectService {
       financeProjectId,
     });
 
-    await this.logActivity({
-      actorId,
-      scopeOfWork: 'Site Initiation',
-      ftttProjectId: site.id,
-      financeProjectId,
-      siteName: site.projectName,
-      remarks: 'Site ditambahkan ke Bulky Project',
-    });
+    // Daily Activity auto-log handled globally by ProjectDailyActivityInterceptor (all users)
 
     return site;
   }
@@ -1919,14 +1888,7 @@ export class FtttProjectService {
       entityId: projectId,
     });
 
-    await this.logActivity({
-      actorId: userId,
-      scopeOfWork: 'Finance Transaction',
-      ftttProjectId: projectId,
-      financeProjectId,
-      siteName: project.projectName,
-      remarks: `Financial Request: ${tx.aktivitas}`,
-    });
+    // Daily Activity auto-log handled globally by ProjectDailyActivityInterceptor (all users)
 
     return tx;
   }
