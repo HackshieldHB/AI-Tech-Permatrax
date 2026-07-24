@@ -181,7 +181,10 @@ export default function DailyActivityDetailPage() {
             <h2 className="text-sm font-black text-slate-900 mb-4">Informasi Umum</h2>
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
               <InfoRow label="Waktu" value={formatDateTimeID(detail.timestamp)} />
-              <InfoRow label="Actor" value={`${detail.actor?.name ?? '-'} (${detail.actor?.email ?? '-'})`} />
+              <InfoRow
+                label="Actor"
+                value={`${(detail.updatedBy ?? detail.actor)?.name ?? '-'} (${(detail.updatedBy ?? detail.actor)?.email ?? '-'})`}
+              />
               <InfoRow
                 label="Proyek"
                 value={detail.financeProject?.name || detail.ftttProject?.projectName || '—'}

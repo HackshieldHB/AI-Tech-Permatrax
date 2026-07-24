@@ -238,9 +238,10 @@ export default function DailyActivityPage() {
     void load();
   }, [load]);
 
-  const canManage = (activity: DailyActivity) => {
-    const elevated = ['GENERAL_MANAGER', 'ADMIN', 'PM_SENIOR', 'PM_FTTT'];
-    return !!user && (elevated.includes(user.role) || activity.actor.id === user.id);
+  const canManage = (_activity: DailyActivity) => {
+    // Integra V9: match DAILY_ACTIVITY_MANAGE — all project team roles can Update Status
+    const manageRoles = ['GENERAL_MANAGER', 'ADMIN', 'PM_SENIOR', 'PM_FTTT', 'FINANCE', 'SURVEYOR_FTTT'];
+    return !!user && manageRoles.includes(user.role);
   };
 
   return (
@@ -322,14 +323,16 @@ export default function DailyActivityPage() {
             <tbody>
               {activities.map((a) => {
                 const overdue = isOverdue(a);
+                // Integra V9: Actor = last status updater when present (not only original creator)
+                const displayActor = a.updatedBy ?? a.actor;
                 return (
                   <tr key={a.id} className="border-t border-slate-100 align-top">
                     <td className="px-4 py-3 whitespace-nowrap text-xs text-slate-500">
                       {formatDateTimeID(a.timestamp)}
                     </td>
                     <td className="px-4 py-3">
-                      <div className="font-bold text-slate-800">{a.actor?.name}</div>
-                      <div className="text-xs text-slate-400">{a.actor?.email}</div>
+                      <div className="font-bold text-slate-800">{displayActor?.name}</div>
+                      <div className="text-xs text-slate-400">{displayActor?.email}</div>
                     </td>
                     <td className="px-4 py-3">
                       <div className="font-semibold text-slate-800">{a.siteName || '-'}</div>

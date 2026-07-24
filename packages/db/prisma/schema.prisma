@@ -362,6 +362,24 @@ model User {
   dailyActivitiesUpdated    DailyActivity[]       @relation("DailyActivityUpdater")
   dailyActivityEvidencesUploaded DailyActivityEvidence[] @relation("DailyActivityEvidenceUploader")
   dailyActivityHistoryActions    DailyActivityHistory[]  @relation("DailyActivityHistoryActor")
+  systemActivityLogs             SystemActivityLog[]     @relation("SystemActivityActor")
+}
+
+/// Integra V9 — durable global activity log for System Overview (all users / all modules)
+model SystemActivityLog {
+  id        String   @id @default(cuid())
+  actorId   String
+  actor     User     @relation("SystemActivityActor", fields: [actorId], references: [id], onDelete: Cascade)
+  action    String
+  detail    String
+  module    String
+  method    String?
+  path      String?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([actorId])
+  @@index([module])
 }
 
 // Phase 4 — GM-controlled feature visibility per role

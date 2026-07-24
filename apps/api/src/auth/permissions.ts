@@ -291,8 +291,8 @@ export const PERMISSIONS = {
     Role.GENERAL_MANAGER, Role.FINANCE, Role.PM_FTTT, Role.PM_SENIOR,
     Role.ADMIN, Role.SURVEYOR_FTTT,
   ],
-  /** Service layer additionally restricts mutation to the record's own actor unless the
-   * caller holds an elevated role (GM/ADMIN/PM_SENIOR/PM_FTTT). */
+  /** Service layer: Integra V9 — all manage roles may Update Status on any activity
+   * (project progress is shared; not limited to the original creator). */
   DAILY_ACTIVITY_MANAGE: [
     Role.GENERAL_MANAGER, Role.FINANCE, Role.PM_FTTT, Role.PM_SENIOR,
     Role.ADMIN, Role.SURVEYOR_FTTT,
