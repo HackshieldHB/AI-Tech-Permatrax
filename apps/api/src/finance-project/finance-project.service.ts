@@ -298,6 +298,35 @@ export class FinanceProjectService {
       }
     }
 
+    // Integra V10: closing a Segment also closes its ACTIVE Sites so none remain in "Aktif"
+    if (
+      dto.status === FinanceProjectStatus.CLOSED &&
+      cur.hierarchyLevel === 'SEGMENT'
+    ) {
+      await this.prisma.$transaction([
+        this.prisma.financeProject.updateMany({
+          where: {
+            parentId: id,
+            status: FinanceProjectStatus.ACTIVE,
+          },
+          data: { status: FinanceProjectStatus.CLOSED, updatedById: actorId },
+        }),
+        this.prisma.financeProject.update({
+          where: { id },
+          data: {
+            ...(dto.name != null ? { name: dto.name.trim() } : {}),
+            ...(dto.description !== undefined ? { description: dto.description } : {}),
+            ...(dto.endDate !== undefined
+              ? { endDate: dto.endDate ? new Date(dto.endDate) : null }
+              : {}),
+            status: FinanceProjectStatus.CLOSED,
+            updatedById: actorId,
+          },
+        }),
+      ]);
+      return this.prisma.financeProject.findUniqueOrThrow({ where: { id } });
+    }
+
     return this.prisma.financeProject.update({
       where: { id },
       data: {
