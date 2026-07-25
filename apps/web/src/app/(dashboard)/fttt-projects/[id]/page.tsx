@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { ArrowLeft, CheckCircle, Circle, Lock, SkipForward, ChevronRight, Upload, FileText, ExternalLink } from 'lucide-react';
@@ -587,8 +587,18 @@ function SiteInitiationSection({
   const [available, setAvailable] = useState<FinanceSiteOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedFinanceSiteId, setSelectedFinanceSiteId] = useState('');
+  const [financeSiteSearch, setFinanceSiteSearch] = useState('');
   const [adding, setAdding] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  const filteredAvailable = useMemo(() => {
+    const q = financeSiteSearch.trim().toLowerCase();
+    if (!q) return available;
+    return available.filter((fs) => {
+      const hay = `${fs.code} ${fs.name} ${Number(fs.totalBudget)}`.toLowerCase();
+      return hay.includes(q);
+    });
+  }, [available, financeSiteSearch]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -649,10 +659,30 @@ function SiteInitiationSection({
 
       {canManage && (
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 14, flexWrap: 'wrap' }}>
+          {/* Integra: Search filters the existing Finance Site dropdown without replacing it */}
+          <input
+            type="search"
+            value={financeSiteSearch}
+            onChange={(e) => {
+              const q = e.target.value;
+              setFinanceSiteSearch(q);
+              // Clear selection if it no longer matches the filtered list
+              if (selectedFinanceSiteId) {
+                const stillVisible = available.some((fs) => {
+                  if (fs.id !== selectedFinanceSiteId) return false;
+                  const hay = `${fs.code} ${fs.name}`.toLowerCase();
+                  return !q.trim() || hay.includes(q.trim().toLowerCase());
+                });
+                if (!stillVisible) setSelectedFinanceSiteId('');
+              }
+            }}
+            placeholder="Cari Site Code / Nama…"
+            style={{ flex: '0 1 200px', minWidth: 160, padding: '7px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12 }}
+          />
           <select value={selectedFinanceSiteId} onChange={(e) => setSelectedFinanceSiteId(e.target.value)}
             style={{ flex: 1, minWidth: 220, padding: '7px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12 }}>
             <option value="">— Pilih Finance Site —</option>
-            {available.map((fs) => (
+            {filteredAvailable.map((fs) => (
               <option key={fs.id} value={fs.id}>{fs.code} · {fs.name} ({fmtIDR(Number(fs.totalBudget))})</option>
             ))}
           </select>
@@ -664,6 +694,9 @@ function SiteInitiationSection({
       )}
       {canManage && available.length === 0 && !loading && (
         <p style={{ fontSize: 11, color: '#8c959f', marginTop: -8, marginBottom: 12 }}>Tidak ada Finance Site yang tersedia untuk ditambahkan.</p>
+      )}
+      {canManage && available.length > 0 && filteredAvailable.length === 0 && (
+        <p style={{ fontSize: 11, color: '#8c959f', marginTop: -8, marginBottom: 12 }}>Tidak ada Finance Site yang cocok dengan pencarian.</p>
       )}
 
       {loading ? (

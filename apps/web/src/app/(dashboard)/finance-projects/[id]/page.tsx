@@ -385,6 +385,10 @@ export default function FinanceProjectDetailPage() {
   const isSegment = detail.hierarchyLevel === 'SEGMENT';
   const isSite = detail.hierarchyLevel === 'SITE';
   const sites: FinanceProjectListItem[] = detail.sites ?? [];
+  const isClosed = detail.status === 'CLOSED';
+  const isArchived = detail.status === 'ARCHIVED';
+  const isLocked = isClosed || isArchived;
+  const canMutate = manage && !isLocked && !isGen;
 
   return (
     <div className="max-w-6xl mx-auto px-3 pb-12 space-y-6">
@@ -395,6 +399,19 @@ export default function FinanceProjectDetailPage() {
         <ArrowLeft className="w-4 h-4" />
         Kembali
       </Link>
+
+      {isClosed ? (
+        <div className="rounded-xl border border-slate-300 bg-slate-100 px-4 py-3 text-sm text-slate-800">
+          <span className="font-bold">Project sudah di Close.</span>{' '}
+          Data bersifat read-only — perubahan informasi, budget, dan pengaturan dinonaktifkan.
+        </div>
+      ) : null}
+      {isArchived ? (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          <span className="font-bold">Project diarsipkan (Archived).</span>{' '}
+          Data bersifat read-only. Gunakan <b>Unarchive</b> di Pengaturan untuk mengaktifkan kembali.
+        </div>
+      ) : null}
 
       <header className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between border-b border-slate-100 pb-4">
         <div>
@@ -410,6 +427,16 @@ export default function FinanceProjectDetailPage() {
             {isSite ? (
               <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-sky-100 text-sky-700 uppercase">
                 Site
+              </span>
+            ) : null}
+            {isClosed ? (
+              <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-slate-200 text-slate-700 uppercase">
+                Closed
+              </span>
+            ) : null}
+            {isArchived ? (
+              <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-amber-200 text-amber-900 uppercase">
+                Archived
               </span>
             ) : null}
           </div>
@@ -473,7 +500,7 @@ export default function FinanceProjectDetailPage() {
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           {/* JLM: Finance sets the S-Curve Planning baseline (milestones) for linked FTTT projects */}
-          {isFttt && canEditTimeline ? (
+          {isFttt && canEditTimeline && !isLocked ? (
             <button
               type="button"
               onClick={() => void openTimeline()}
@@ -494,7 +521,7 @@ export default function FinanceProjectDetailPage() {
               >
                 <Download className="w-4 h-4" /> Template Set Plan Awal
               </button>
-              {!hasBaselinePlan ? (
+              {!hasBaselinePlan && !isLocked ? (
                 <label className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-bold text-slate-700 cursor-pointer">
                   <Upload className="w-4 h-4" /> {uploadingPlan ? 'Mengunggah…' : 'Upload Set Plan Awal'}
                   <input
@@ -562,7 +589,7 @@ export default function FinanceProjectDetailPage() {
               </table>
             </div>
           )}
-          {manage ? (
+          {canMutate ? (
             <div className="rounded-xl border border-dashed border-slate-200 p-4 space-y-3">
               <p className="text-xs font-bold text-slate-500 uppercase">Tambah Site</p>
               <input
@@ -638,7 +665,7 @@ export default function FinanceProjectDetailPage() {
       {canManageFinance(user?.role) && tab === 'overview' ? (
         <FinancialPerformance
           detail={detail}
-          canEdit={user?.role === 'FINANCE'}
+          canEdit={user?.role === 'FINANCE' && !isLocked}
           isGm={user?.role === 'GENERAL_MANAGER'}
           onRefresh={() => void loadDetail()}
         />
@@ -946,135 +973,207 @@ export default function FinanceProjectDetailPage() {
               </>
             ) : (
               <>
+                {isLocked ? (
+                  <p className="text-sm text-slate-700 bg-slate-50 rounded-lg p-3 border border-slate-200">
+                    {isClosed
+                      ? 'Project sudah di Close — semua perubahan data dinonaktifkan (read-only).'
+                      : 'Project Archived — semua perubahan data dinonaktifkan. Gunakan Unarchive untuk mengaktifkan kembali.'}
+                  </p>
+                ) : null}
                 <div>
                   <label className="text-xs font-bold text-slate-500">Nama</label>
                   <input
-                    className="mt-1 w-full rounded-lg border px-3 py-2 text-sm"
+                    className="mt-1 w-full rounded-lg border px-3 py-2 text-sm disabled:bg-slate-50 disabled:text-slate-500"
                     value={editName}
                     onChange={(e) => setEditName(e.target.value)}
+                    disabled={isLocked}
+                    readOnly={isLocked}
                   />
                 </div>
                 <div>
                   <label className="text-xs font-bold text-slate-500">Deskripsi</label>
                   <textarea
-                    className="mt-1 w-full rounded-lg border px-3 py-2 text-sm min-h-[60px]"
+                    className="mt-1 w-full rounded-lg border px-3 py-2 text-sm min-h-[60px] disabled:bg-slate-50 disabled:text-slate-500"
                     value={editDesc}
                     onChange={(e) => setEditDesc(e.target.value)}
+                    disabled={isLocked}
+                    readOnly={isLocked}
                   />
                 </div>
-                <div className="border-t pt-3 space-y-2">
-                  <div className="font-bold text-sm">Budget</div>
-                  <input
-                    className="w-full rounded-lg border px-3 py-2 text-sm"
-                    placeholder="Total"
-                    value={budgetTotal}
-                    onChange={(e) => setBudgetTotal(e.target.value.replace(/\D/g, ''))}
-                  />
-                  {budgetTotalBelowSpent ? (
-                    <p className="text-xs text-red-600">
-                      Total budget tidak boleh lebih kecil dari realisasi ({formatRupiah(spentTotal)}).
-                    </p>
-                  ) : null}
-                  <input
-                    className="w-full rounded-lg border px-3 py-2 text-sm"
-                    placeholder="Material"
-                    value={budgetMat}
-                    onChange={(e) => setBudgetMat(e.target.value.replace(/\D/g, ''))}
-                  />
-                  <input
-                    className="w-full rounded-lg border px-3 py-2 text-sm"
-                    placeholder="Jasa"
-                    value={budgetJas}
-                    onChange={(e) => setBudgetJas(e.target.value.replace(/\D/g, ''))}
-                  />
-                  <input
-                    className="w-full rounded-lg border px-3 py-2 text-sm"
-                    placeholder="Alasan penyesuaian"
-                    value={budgetReason}
-                    onChange={(e) => setBudgetReason(e.target.value)}
-                  />
-                </div>
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    className="flex-1 rounded-xl border py-2 text-sm font-bold"
-                    onClick={async () => {
-                      if (budgetTotalBelowSpent) return;
-                      setSaving(true);
-                      try {
-                        await apiPatch(`/finance-projects/${id}/budget`, {
-                          totalBudget: Number(budgetTotal) || 0,
-                          materialBudget: budgetMat ? Number(budgetMat) : null,
-                          jasaBudget: budgetJas ? Number(budgetJas) : null,
-                          reason: budgetReason || undefined,
-                        });
-                        toast.success('Budget diperbarui');
-                        await loadDetail({ silent: true });
-                      } catch (e) {
-                        toast.error(e instanceof Error ? e.message : 'Gagal');
-                      } finally {
-                        setSaving(false);
-                      }
-                    }}
-                    disabled={saving || budgetTotalBelowSpent}
-                  >
-                    Simpan budget
-                  </button>
-                </div>
+                {!isLocked ? (
+                  <>
+                    <div className="border-t pt-3 space-y-2">
+                      <div className="font-bold text-sm">Budget</div>
+                      <input
+                        className="w-full rounded-lg border px-3 py-2 text-sm"
+                        placeholder="Total"
+                        value={budgetTotal}
+                        onChange={(e) => setBudgetTotal(e.target.value.replace(/\D/g, ''))}
+                      />
+                      {budgetTotalBelowSpent ? (
+                        <p className="text-xs text-red-600">
+                          Total budget tidak boleh lebih kecil dari realisasi ({formatRupiah(spentTotal)}).
+                        </p>
+                      ) : null}
+                      <input
+                        className="w-full rounded-lg border px-3 py-2 text-sm"
+                        placeholder="Material"
+                        value={budgetMat}
+                        onChange={(e) => setBudgetMat(e.target.value.replace(/\D/g, ''))}
+                      />
+                      <input
+                        className="w-full rounded-lg border px-3 py-2 text-sm"
+                        placeholder="Jasa"
+                        value={budgetJas}
+                        onChange={(e) => setBudgetJas(e.target.value.replace(/\D/g, ''))}
+                      />
+                      <input
+                        className="w-full rounded-lg border px-3 py-2 text-sm"
+                        placeholder="Alasan penyesuaian"
+                        value={budgetReason}
+                        onChange={(e) => setBudgetReason(e.target.value)}
+                      />
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        className="flex-1 rounded-xl border py-2 text-sm font-bold"
+                        onClick={async () => {
+                          if (budgetTotalBelowSpent) return;
+                          setSaving(true);
+                          try {
+                            await apiPatch(`/finance-projects/${id}/budget`, {
+                              totalBudget: Number(budgetTotal) || 0,
+                              materialBudget: budgetMat ? Number(budgetMat) : null,
+                              jasaBudget: budgetJas ? Number(budgetJas) : null,
+                              reason: budgetReason || undefined,
+                            });
+                            toast.success('Budget diperbarui');
+                            await loadDetail({ silent: true });
+                          } catch (e) {
+                            toast.error(e instanceof Error ? e.message : 'Gagal');
+                          } finally {
+                            setSaving(false);
+                          }
+                        }}
+                        disabled={saving || budgetTotalBelowSpent}
+                      >
+                        Simpan budget
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <div className="border-t pt-3 space-y-1 text-sm text-slate-600">
+                    <div className="font-bold text-slate-800">Budget (read-only)</div>
+                    <p>Total: {formatRupiah(num(detail.totalBudget))}</p>
+                    <p>Material: {formatRupiah(num(detail.materialBudget))}</p>
+                    <p>Jasa: {formatRupiah(num(detail.jasaBudget))}</p>
+                  </div>
+                )}
                 <div className="flex flex-col gap-2 border-t pt-3">
-                  <button
-                    type="button"
-                    className="rounded-xl bg-slate-800 text-white py-2 text-sm font-bold disabled:opacity-50"
-                    onClick={async () => {
-                      if (detail.status !== 'ACTIVE') {
-                        toast.error('Hanya proyek aktif yang bisa ditutup');
-                        return;
-                      }
-                      const label = `${detail.code} · ${detail.name}`;
-                      const ok = window.confirm(
-                        `Tutup project "${label}"?\n\nStatus akan menjadi CLOSED dan project hilang dari daftar Aktif.` +
-                          (isSegment ? '\n\nSemua Site aktif di bawah Segment ini juga akan ditutup.' : ''),
-                      );
-                      if (!ok) return;
-                      setSaving(true);
-                      try {
-                        const updated = await apiPatch<{ status?: string }>(`/finance-projects/${id}`, {
-                          status: 'CLOSED',
-                        });
-                        if (updated?.status && updated.status !== 'CLOSED') {
-                          throw new Error(`Status tidak berubah (masih ${updated.status})`);
+                  {!isLocked ? (
+                    <button
+                      type="button"
+                      className="rounded-xl bg-slate-800 text-white py-2 text-sm font-bold disabled:opacity-50"
+                      onClick={async () => {
+                        if (detail.status !== 'ACTIVE') {
+                          toast.error('Hanya proyek aktif yang bisa ditutup');
+                          return;
                         }
-                        toast.success('Project berhasil ditutup');
-                        setSettingsOpen(false);
-                        await loadDetail({ silent: true });
-                      } catch (e) {
-                        const msg =
-                          e instanceof Error
-                            ? e.message
-                            : typeof e === 'object' && e && 'message' in e
-                              ? String((e as { message: unknown }).message)
-                              : 'Gagal menutup project';
-                        toast.error(msg || 'Gagal menutup project');
-                      } finally {
-                        setSaving(false);
-                      }
-                    }}
-                    disabled={saving || detail.status !== 'ACTIVE'}
-                  >
-                    {saving ? 'Menutup…' : 'Tutup Project'}
-                  </button>
+                        const label = `${detail.code} · ${detail.name}`;
+                        const ok = window.confirm(
+                          `Tutup project "${label}"?\n\nStatus akan menjadi CLOSED dan project hilang dari daftar Aktif.` +
+                            (isSegment ? '\n\nSemua Site aktif di bawah Segment ini juga akan ditutup.' : ''),
+                        );
+                        if (!ok) return;
+                        setSaving(true);
+                        try {
+                          const updated = await apiPatch<{ status?: string }>(`/finance-projects/${id}`, {
+                            status: 'CLOSED',
+                          });
+                          if (updated?.status && updated.status !== 'CLOSED') {
+                            throw new Error(`Status tidak berubah (masih ${updated.status})`);
+                          }
+                          toast.success('Project berhasil ditutup');
+                          setSettingsOpen(false);
+                          await loadDetail({ silent: true });
+                        } catch (e) {
+                          toast.error(e instanceof Error ? e.message : 'Gagal menutup project');
+                        } finally {
+                          setSaving(false);
+                        }
+                      }}
+                      disabled={saving || detail.status !== 'ACTIVE'}
+                    >
+                      {saving ? 'Menutup…' : 'Tutup Project'}
+                    </button>
+                  ) : null}
+                  {isClosed ? (
+                    <button
+                      type="button"
+                      className="rounded-xl border border-red-200 text-red-700 py-2 text-sm font-bold"
+                      onClick={async () => {
+                        setSaving(true);
+                        try {
+                          await apiPatch(`/finance-projects/${id}`, { status: 'ARCHIVED' });
+                          toast.success('Proyek diarsipkan');
+                          setSettingsOpen(false);
+                          await loadDetail({ silent: true });
+                        } catch (e) {
+                          toast.error(e instanceof Error ? e.message : 'Gagal');
+                        } finally {
+                          setSaving(false);
+                        }
+                      }}
+                      disabled={saving}
+                    >
+                      Arsipkan
+                    </button>
+                  ) : null}
+                  {isArchived ? (
+                    <button
+                      type="button"
+                      className="rounded-xl bg-emerald-600 text-white py-2 text-sm font-bold disabled:opacity-50"
+                      onClick={async () => {
+                        const ok = window.confirm(
+                          `Unarchive project "${detail.code} · ${detail.name}"?\n\nStatus akan kembali ACTIVE dan edit diaktifkan kembali.`,
+                        );
+                        if (!ok) return;
+                        setSaving(true);
+                        try {
+                          const updated = await apiPatch<{ status?: string }>(`/finance-projects/${id}`, {
+                            status: 'ACTIVE',
+                          });
+                          if (updated?.status && updated.status !== 'ACTIVE') {
+                            throw new Error(`Status tidak berubah (masih ${updated.status})`);
+                          }
+                          toast.success('Project berhasil di-Unarchive (ACTIVE)');
+                          setSettingsOpen(false);
+                          await loadDetail({ silent: true });
+                        } catch (e) {
+                          toast.error(e instanceof Error ? e.message : 'Gagal Unarchive');
+                        } finally {
+                          setSaving(false);
+                        }
+                      }}
+                      disabled={saving}
+                    >
+                      {saving ? 'Memproses…' : 'Unarchive'}
+                    </button>
+                  ) : null}
+                </div>
+                {!isLocked ? (
                   <button
                     type="button"
-                    className="rounded-xl border border-red-200 text-red-700 py-2 text-sm font-bold"
+                    className="w-full rounded-xl bg-[#0F1B2D] text-white py-2 text-sm font-bold"
                     onClick={async () => {
-                      if (detail.status !== 'CLOSED') {
-                        toast.error('Arsip hanya dari status CLOSED');
-                        return;
-                      }
                       setSaving(true);
                       try {
-                        await apiPatch(`/finance-projects/${id}`, { status: 'ARCHIVED' });
-                        toast.success('Proyek diarsipkan');
+                        await apiPatch(`/finance-projects/${id}`, {
+                          name: editName.trim(),
+                          description: editDesc.trim() || null,
+                        });
+                        toast.success('Disimpan');
                         setSettingsOpen(false);
                         await loadDetail({ silent: true });
                       } catch (e) {
@@ -1083,34 +1182,11 @@ export default function FinanceProjectDetailPage() {
                         setSaving(false);
                       }
                     }}
-                    disabled={saving || detail.status !== 'CLOSED'}
+                    disabled={saving}
                   >
-                    Arsipkan
+                    Simpan perubahan
                   </button>
-                </div>
-                <button
-                  type="button"
-                  className="w-full rounded-xl bg-[#0F1B2D] text-white py-2 text-sm font-bold"
-                  onClick={async () => {
-                    setSaving(true);
-                    try {
-                      await apiPatch(`/finance-projects/${id}`, {
-                        name: editName.trim(),
-                        description: editDesc.trim() || null,
-                      });
-                      toast.success('Disimpan');
-                      setSettingsOpen(false);
-                      await loadDetail({ silent: true });
-                    } catch (e) {
-                      toast.error(e instanceof Error ? e.message : 'Gagal');
-                    } finally {
-                      setSaving(false);
-                    }
-                  }}
-                  disabled={saving}
-                >
-                  Simpan perubahan
-                </button>
+                ) : null}
               </>
             )}
           </div>

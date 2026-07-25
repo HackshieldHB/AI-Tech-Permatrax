@@ -216,6 +216,9 @@ export class FinanceProjectService {
 
   /** Integra V1: create Site under an existing Segment */
   async createSite(segmentId: string, dto: CreateFinanceSiteInput, actorId: string): Promise<FinanceProject> {
+    const parent = await this.prisma.financeProject.findUnique({ where: { id: segmentId } });
+    if (!parent) throw new NotFoundException('Finance project tidak ditemukan');
+    this.assertProjectMutable(parent);
     const total =
       (dto.budgetPerizinan ?? 0) + (dto.materialBudget ?? 0) + (dto.jasaBudget ?? 0);
     return this.create(
@@ -278,6 +281,30 @@ export class FinanceProjectService {
       if (dto.endDate !== undefined) {
         throw new BadRequestException('Tanggal akhir proyek GENERAL tidak dapat diubah');
       }
+    }
+
+    const metadataChange =
+      dto.name != null || dto.description !== undefined || dto.endDate !== undefined;
+
+    // Integra: Closed/Archived are read-only except allowed status transitions
+    // (CLOSED→ARCHIVED, ARCHIVED→ACTIVE unarchive). No name/budget/metadata edits.
+    if (
+      (cur.status === FinanceProjectStatus.CLOSED || cur.status === FinanceProjectStatus.ARCHIVED) &&
+      metadataChange
+    ) {
+      throw new BadRequestException(
+        `Project berstatus ${cur.status} bersifat read-only dan tidak dapat diubah. ` +
+          (cur.status === FinanceProjectStatus.ARCHIVED
+            ? 'Gunakan Unarchive untuk mengaktifkan kembali.'
+            : 'Arsipkan project bila sudah final.'),
+      );
+    }
+    if (
+      cur.status === FinanceProjectStatus.ARCHIVED &&
+      dto.status != null &&
+      dto.status !== FinanceProjectStatus.ACTIVE
+    ) {
+      throw new BadRequestException('Project ARCHIVED hanya dapat di-Unarchive (status → ACTIVE)');
     }
 
     if (dto.status != null) {
@@ -344,6 +371,7 @@ export class FinanceProjectService {
   async updateBudget(id: string, dto: UpdateBudgetInput, actorId: string): Promise<FinanceProject> {
     const cur = await this.prisma.financeProject.findUnique({ where: { id } });
     if (!cur) throw new NotFoundException('Finance project tidak ditemukan');
+    this.assertProjectMutable(cur);
     if (cur.isDefaultUncategorized) {
       throw new BadRequestException('Budget proyek GENERAL tidak dapat disesuaikan melalui endpoint ini');
     }
@@ -700,7 +728,9 @@ export class FinanceProjectService {
   }
 
   async setTimeline(id: string, dto: SetTimelineInput) {
-    await this.ensureProjectExists(id);
+    const cur = await this.prisma.financeProject.findUnique({ where: { id } });
+    if (!cur) throw new NotFoundException('Finance project tidak ditemukan');
+    this.assertProjectMutable(cur);
     const rows = dto.milestones
       .filter((m) => m.targetDate)
       .map((m) => ({
@@ -748,7 +778,9 @@ export class FinanceProjectService {
   }
 
   async updatePlanning(id: string, dto: UpdatePlanningInput): Promise<{ success: true }> {
-    await this.ensureProjectExists(id);
+    const cur = await this.prisma.financeProject.findUnique({ where: { id } });
+    if (!cur) throw new NotFoundException('Finance project tidak ditemukan');
+    this.assertProjectMutable(cur);
     await this.prisma.$transaction([
       this.prisma.financeProjectPlanning.deleteMany({ where: { financeProjectId: id } }),
       this.prisma.financeProjectPlanning.createMany({
@@ -890,6 +922,7 @@ export class FinanceProjectService {
     }
     const project = await this.prisma.financeProject.findUnique({ where: { id } });
     if (!project) throw new NotFoundException('Finance project tidak ditemukan');
+    this.assertProjectMutable(project);
     if (project.hierarchyLevel === 'SEGMENT') {
       throw new BadRequestException('PO Customer diinput pada level Site, bukan Segment');
     }
@@ -1046,7 +1079,20 @@ export class FinanceProjectService {
     if (from === to) return;
     if (from === FinanceProjectStatus.ACTIVE && to === FinanceProjectStatus.CLOSED) return;
     if (from === FinanceProjectStatus.CLOSED && to === FinanceProjectStatus.ARCHIVED) return;
+    // Integra: Unarchive
+    if (from === FinanceProjectStatus.ARCHIVED && to === FinanceProjectStatus.ACTIVE) return;
     throw new BadRequestException(`Transisi status tidak diizinkan: ${from} → ${to}`);
+  }
+
+  /** Closed / Archived projects cannot receive data mutations (except status transitions via update). */
+  private assertProjectMutable(project: {
+    status: FinanceProjectStatus;
+    code?: string;
+  }): void {
+    if (project.status === FinanceProjectStatus.ACTIVE) return;
+    throw new BadRequestException(
+      `Project ${project.code ? `${project.code} ` : ''}berstatus ${project.status} bersifat read-only dan tidak dapat diubah.`,
+    );
   }
 
   private async nextAutoFinCode(tx: Prisma.TransactionClient, year: number): Promise<string> {
