@@ -1309,7 +1309,7 @@ export interface FtttReconDoc {
   uploadedBy:      { id: string; name: string };
 }
 
-export type FtttImplLogType    = 'PHOTO' | 'MONITORING_DOC' | 'NOTE' | 'RFSD';
+export type FtttImplLogType    = 'PHOTO' | 'MONITORING_DOC' | 'NOTE' | 'RFSD' | 'KMZ';
 export type FtttClosingLogType = 'BAST_II' | 'EVIDENCE' | 'NOTE';
 
 export interface FtttClosingLog {

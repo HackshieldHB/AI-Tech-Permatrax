@@ -1563,14 +1563,22 @@ export class FtttProjectService {
       }
     }
 
-    // File required for PHOTO, MONITORING_DOC, RFSD
+    // File required for PHOTO, MONITORING_DOC, RFSD, KMZ
     if (
       (dto.logType === FtttImplLogType.PHOTO ||
         dto.logType === FtttImplLogType.MONITORING_DOC ||
-        dto.logType === FtttImplLogType.RFSD) &&
+        dto.logType === FtttImplLogType.RFSD ||
+        dto.logType === FtttImplLogType.KMZ) &&
       !file
     ) {
       throw new BadRequestException('File wajib untuk tipe log ini');
+    }
+
+    if (dto.logType === FtttImplLogType.KMZ && file) {
+      const name = (file.originalname || '').toLowerCase();
+      if (!name.endsWith('.kmz')) {
+        throw new BadRequestException('Hanya file dengan format .kmz yang diterima untuk tipe File KMZ');
+      }
     }
 
     let fileUrl: string | undefined;

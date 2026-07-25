@@ -49,7 +49,11 @@ import {
 import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe';
 import { Role } from '@prisma/client'; // kept for approveDocument role check
 
-const upload = { storage: memoryStorage() };
+const maxUploadBytes = Number(process.env.MAX_FILE_SIZE) || 50 * 1024 * 1024;
+const upload = {
+  storage: memoryStorage(),
+  limits: { fileSize: maxUploadBytes },
+};
 
 @UseGuards(JwtAuthGuard)
 @Controller('fttt-projects')
