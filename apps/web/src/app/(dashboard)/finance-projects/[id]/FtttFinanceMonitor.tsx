@@ -245,12 +245,12 @@ export function FtttFinanceMonitor({ financeProjectId, tab, reloadKey = 0 }: { f
                     ) : disburseId === t.id ? (
                       <div className="flex items-center gap-1">
                         <input type="date" value={disburseDate}
-                          min={new Date().toISOString().slice(0, 10)}
                           max={(() => { const d = new Date(); d.setDate(d.getDate() + 14); return d.toISOString().slice(0, 10); })()}
                           onChange={(e) => {
                             const v = e.target.value;
                             const max = new Date(); max.setDate(max.getDate() + 14);
                             const maxStr = max.toISOString().slice(0, 10);
+                            // Integra V10: allow backdate; only cap future +14d
                             if (v && v > maxStr) { toast.error('Tanggal Dana Keluar maksimal 14 hari dari hari ini'); return; }
                             setDisburseDate(v);
                           }}

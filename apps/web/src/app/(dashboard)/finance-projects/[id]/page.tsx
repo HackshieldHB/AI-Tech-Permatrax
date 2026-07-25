@@ -281,8 +281,9 @@ export default function FinanceProjectDetailPage() {
     }
   };
 
-  const loadDetail = useCallback(async () => {
-    setLoading(true);
+  const loadDetail = useCallback(async (opts?: { silent?: boolean }) => {
+    // Integra V10: silent refresh keeps settings modal mounted (avoid "no response" on Tutup Project)
+    if (!opts?.silent) setLoading(true);
     try {
       const d = await apiGet<FinanceProjectDetail>(`/finance-projects/${id}`);
       setDetail(d);
@@ -304,7 +305,7 @@ export default function FinanceProjectDetailPage() {
       toast.error('Gagal memuat proyek');
       router.push('/finance-projects');
     } finally {
-      setLoading(false);
+      if (!opts?.silent) setLoading(false);
     }
   }, [id, router]);
 
@@ -1008,7 +1009,7 @@ export default function FinanceProjectDetailPage() {
                           reason: budgetReason || undefined,
                         });
                         toast.success('Budget diperbarui');
-                        await loadDetail();
+                        await loadDetail({ silent: true });
                       } catch (e) {
                         toast.error(e instanceof Error ? e.message : 'Gagal');
                       } finally {
@@ -1023,26 +1024,44 @@ export default function FinanceProjectDetailPage() {
                 <div className="flex flex-col gap-2 border-t pt-3">
                   <button
                     type="button"
-                    className="rounded-xl bg-slate-800 text-white py-2 text-sm font-bold"
+                    className="rounded-xl bg-slate-800 text-white py-2 text-sm font-bold disabled:opacity-50"
                     onClick={async () => {
                       if (detail.status !== 'ACTIVE') {
                         toast.error('Hanya proyek aktif yang bisa ditutup');
                         return;
                       }
+                      const label = `${detail.code} · ${detail.name}`;
+                      const ok = window.confirm(
+                        `Tutup project "${label}"?\n\nStatus akan menjadi CLOSED dan project hilang dari daftar Aktif.` +
+                          (isSegment ? '\n\nSemua Site aktif di bawah Segment ini juga akan ditutup.' : ''),
+                      );
+                      if (!ok) return;
                       setSaving(true);
                       try {
-                        await apiPatch(`/finance-projects/${id}`, { status: 'CLOSED' });
-                        toast.success('Proyek ditutup');
-                        await loadDetail();
+                        const updated = await apiPatch<{ status?: string }>(`/finance-projects/${id}`, {
+                          status: 'CLOSED',
+                        });
+                        if (updated?.status && updated.status !== 'CLOSED') {
+                          throw new Error(`Status tidak berubah (masih ${updated.status})`);
+                        }
+                        toast.success('Project berhasil ditutup');
+                        setSettingsOpen(false);
+                        await loadDetail({ silent: true });
                       } catch (e) {
-                        toast.error(e instanceof Error ? e.message : 'Gagal');
+                        const msg =
+                          e instanceof Error
+                            ? e.message
+                            : typeof e === 'object' && e && 'message' in e
+                              ? String((e as { message: unknown }).message)
+                              : 'Gagal menutup project';
+                        toast.error(msg || 'Gagal menutup project');
                       } finally {
                         setSaving(false);
                       }
                     }}
                     disabled={saving || detail.status !== 'ACTIVE'}
                   >
-                    Tutup Project
+                    {saving ? 'Menutup…' : 'Tutup Project'}
                   </button>
                   <button
                     type="button"
@@ -1056,7 +1075,8 @@ export default function FinanceProjectDetailPage() {
                       try {
                         await apiPatch(`/finance-projects/${id}`, { status: 'ARCHIVED' });
                         toast.success('Proyek diarsipkan');
-                        await loadDetail();
+                        setSettingsOpen(false);
+                        await loadDetail({ silent: true });
                       } catch (e) {
                         toast.error(e instanceof Error ? e.message : 'Gagal');
                       } finally {
@@ -1079,8 +1099,8 @@ export default function FinanceProjectDetailPage() {
                         description: editDesc.trim() || null,
                       });
                       toast.success('Disimpan');
-                      await loadDetail();
                       setSettingsOpen(false);
+                      await loadDetail({ silent: true });
                     } catch (e) {
                       toast.error(e instanceof Error ? e.message : 'Gagal');
                     } finally {
