@@ -66,9 +66,20 @@ async function handle<T>(res: Response, opts?: { silentForbidden?: boolean }): P
   }
   if (!res.ok) {
     const err = (await parseResponseBody<Record<string, unknown>>(res)) ?? {};
-    const message = typeof err.message === 'string'
-      ? err.message
-      : res.statusText;
+    let message = res.statusText;
+    if (typeof err.message === 'string') {
+      message = err.message;
+    } else if (Array.isArray(err.message)) {
+      // Nest / Zod often return message as an array of issue objects or strings
+      message = err.message
+        .map((m) => {
+          if (typeof m === 'string') return m;
+          if (m && typeof m === 'object' && 'message' in m) return String((m as { message: unknown }).message);
+          return JSON.stringify(m);
+        })
+        .filter(Boolean)
+        .join('; ') || res.statusText;
+    }
     const wrappedError = new Error(message) as Error & { response?: unknown; status?: number }; // FIX: preserve API error body for UI field-level parsing
     wrappedError.response = err;
     wrappedError.status = res.status; // FIX: let callers treat 404 as “not initialized” vs hard failure

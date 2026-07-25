@@ -7,6 +7,7 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { PERMISSIONS } from '../auth/permissions';
 import { FinanceProjectService } from './finance-project.service';
 import { FinanceForecastService } from '../finance-forecast/finance-forecast.service';
+import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe';
 import {
   CreateFinanceProjectDto,
   CreateFinanceSiteDto,
@@ -18,6 +19,7 @@ import {
   UpdateBudgetDto,
   UpdateFinanceProjectDto,
   UpdatePlanningDto,
+  type UpdateFinanceProjectInput,
 } from './finance-project.dto';
 import { Role } from '@prisma/client';
 const upload = { storage: memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } };
@@ -168,14 +170,10 @@ export class FinanceProjectController {
   @ApiOperation({ summary: 'Perbarui metadata / status proyek' })
   async patch(
     @Param('id') id: string,
-    @Body() body: unknown,
+    @Body(new ZodValidationPipe(UpdateFinanceProjectDto)) dto: UpdateFinanceProjectInput,
     @Req() req: Express.Request & { user: { userId: string } },
   ) {
-    const parsed = UpdateFinanceProjectDto.safeParse(body);
-    if (!parsed.success) {
-      throw new BadRequestException(parsed.error.issues);
-    }
-    return this.financeProjectService.update(id, parsed.data, req.user.userId);
+    return this.financeProjectService.update(id, dto, req.user.userId);
   }
 
   @Post(':id/planning')

@@ -1996,14 +1996,13 @@ export class FtttProjectService {
     if (Number.isNaN(d.getTime())) {
       throw new BadRequestException('Tanggal Dana Keluar tidak valid');
     }
-    // Max today+14 days — Finance may schedule Dana Keluar up to 2 weeks ahead
+    // Integra V10: backdate allowed (actual field disbursement); future capped at today+14
     const maxDate = new Date();
     maxDate.setDate(maxDate.getDate() + 14);
     maxDate.setHours(23, 59, 59, 999);
     if (d.getTime() > maxDate.getTime()) {
       throw new BadRequestException('Tanggal Dana Keluar maksimal 14 hari dari hari ini');
     }
-    // Also reject dates before a reasonable past floor? Keep allowing past dates within reason — only future capped.
     return this.prisma.ftttTransaction.update({
       where: { id: txId },
       data: { disbursedAt: d, disbursedById: userId },
