@@ -1594,6 +1594,12 @@ function SpanSection({ project, onRefresh, isAdmin, canLog, mode }: { project: F
   const handleAddLogs = async (spanId: string, files: FileList | File[]) => {
     const arr = Array.from(files).filter((f) => f.size > 0);
     if (arr.length === 0) return;
+    const MAX_BYTES = 50 * 1024 * 1024;
+    const oversized = arr.find((f) => f.size > MAX_BYTES);
+    if (oversized) {
+      toast.error(`File terlalu besar (maks. 50 MB): ${oversized.name}`);
+      return;
+    }
     setUploadingLog(spanId);
     let ok = 0;
     try {
@@ -1604,7 +1610,11 @@ function SpanSection({ project, onRefresh, isAdmin, canLog, mode }: { project: F
         if (logCaption) fd.append('caption', logCaption);
         fd.append('file', arr[i]);
         const res = await apiFetch(`/fttt-projects/spans/${spanId}/logs`, { method: 'POST', body: fd }, user?.id);
-        if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error((e as { message?: string }).message ?? 'Gagal'); }
+        if (!res.ok) {
+          if (res.status === 413) throw new Error('File terlalu besar untuk diunggah (batas server). Maks. 50 MB.');
+          const e = await res.json().catch(() => ({}));
+          throw new Error((e as { message?: string }).message ?? 'Gagal');
+        }
         ok++;
       }
       setLogCaption('');
@@ -2310,7 +2320,7 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
   const implProg = project.phaseProgresses.find((p) => p.phase === 'IMPLEMENTATION');
   const lapanganDone = implProg?.notes === 'SURVEYOR_DONE';
 
-  const [logType, setLogType] = useState<'PHOTO' | 'MONITORING_DOC' | 'NOTE' | 'RFSD'>('PHOTO');
+  const [logType, setLogType] = useState<'PHOTO' | 'MONITORING_DOC' | 'NOTE' | 'RFSD' | 'KMZ'>('PHOTO');
   const [caption, setCaption] = useState('');
   const [notes, setNotes]   = useState('');
   const [uploading, setUploading]   = useState(false);
@@ -2322,7 +2332,22 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
   useEffect(() => { if (implType) setImplTab('daily'); }, [implType]);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const LOG_LABELS: Record<string, string> = { PHOTO: '📷 Foto Progress', MONITORING_DOC: '📊 Dokumen Monitoring', NOTE: '📝 Catatan Progress', RFSD: '📦 RFSD (Ready For Sales Document)' };
+  const LOG_LABELS: Record<string, string> = {
+    PHOTO: '📷 Foto Progress',
+    MONITORING_DOC: '📊 Dokumen Monitoring',
+    NOTE: '📝 Catatan Progress',
+    RFSD: '📦 RFSD (Ready For Sales Document)',
+    KMZ: '🗺️ File KMZ',
+  };
+  const MAX_IMPL_UPLOAD_BYTES = 50 * 1024 * 1024;
+  const MAX_PHOTO_UPLOAD_BYTES = 20 * 1024 * 1024;
+
+  const acceptForLogType = (t: typeof logType) => {
+    if (t === 'PHOTO') return '.jpg,.jpeg,.png,.webp';
+    if (t === 'KMZ') return '.kmz,application/vnd.google-earth.kmz';
+    if (t === 'RFSD') return '.pdf,.xlsx,.xls,.doc,.docx';
+    return '.xlsx,.xls,.pdf';
+  };
 
   // ── iFORTE GENERAL: Progress (%) berdasarkan panjang implementasi (meter) ──
   const totalPanjang = Number(project.totalPanjangMeter ?? 0);
@@ -2380,6 +2405,17 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
   // Issue #1: multi-file upload — loop through files for PHOTO type
   const handleAdd = async (files?: FileList | File[]) => {
     const fileArray = files ? Array.from(files) : [];
+    if (logType === 'KMZ') {
+      const bad = fileArray.find((f) => !f.name.toLowerCase().endsWith('.kmz'));
+      if (bad) { toast.error('Hanya file dengan format .kmz yang diterima'); return; }
+    }
+    const sizeLimit = logType === 'PHOTO' ? MAX_PHOTO_UPLOAD_BYTES : MAX_IMPL_UPLOAD_BYTES;
+    const oversized = fileArray.find((f) => f.size > sizeLimit);
+    if (oversized) {
+      const limitMb = Math.round(sizeLimit / (1024 * 1024));
+      toast.error(`File terlalu besar (maks. ${limitMb} MB): ${oversized.name}`);
+      return;
+    }
     setUploading(true);
     try {
       if (logType === 'NOTE' || fileArray.length === 0) {
@@ -2390,21 +2426,34 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
         if (notes)   fd.append('notes', notes);
         if (fileArray[0]) fd.append('file', fileArray[0]);
         const res = await apiFetch(`/fttt-projects/${project.id}/implementation-logs`, { method: 'POST', body: fd }, user?.id);
-        if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
-        toast.success('Log implementasi berhasil disimpan');
+        if (!res.ok) {
+          if (res.status === 413) throw new Error('File terlalu besar untuk diunggah (batas server). Maks. 50 MB.');
+          throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
+        }
+        toast.success(logType === 'KMZ' ? 'File KMZ berhasil diunggah' : 'Log implementasi berhasil disimpan');
       } else {
         // Issue #1: multiple files — upload each as a separate log entry
         for (let i = 0; i < fileArray.length; i++) {
           setUploadProgress(`Mengunggah ${i + 1}/${fileArray.length}…`);
           const fd = new FormData();
           fd.append('logType', logType);
-          fd.append('caption', caption || `Foto ${i + 1}${fileArray.length > 1 ? ` dari ${fileArray.length}` : ''}`);
+          fd.append('caption', caption || (logType === 'PHOTO'
+            ? `Foto ${i + 1}${fileArray.length > 1 ? ` dari ${fileArray.length}` : ''}`
+            : logType === 'KMZ' ? 'File KMZ' : `Dokumen ${i + 1}`));
           if (notes) fd.append('notes', notes);
           fd.append('file', fileArray[i]);
           const res = await apiFetch(`/fttt-projects/${project.id}/implementation-logs`, { method: 'POST', body: fd }, user?.id);
-          if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error((e as {message?: string}).message ?? 'Gagal'); }
+          if (!res.ok) {
+            if (res.status === 413) throw new Error('File terlalu besar untuk diunggah (batas server). Maks. 50 MB.');
+            const e = await res.json().catch(() => ({}));
+            throw new Error((e as {message?: string}).message ?? 'Gagal');
+          }
         }
-        toast.success(`${fileArray.length} foto berhasil diunggah`);
+        toast.success(
+          logType === 'PHOTO' ? `${fileArray.length} foto berhasil diunggah`
+            : logType === 'KMZ' ? 'File KMZ berhasil diunggah'
+              : `${fileArray.length} dokumen berhasil diunggah`,
+        );
       }
       setCaption(''); setNotes(''); setUploadProgress(''); onRefresh();
     } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
@@ -2579,7 +2628,7 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
       )}
       {logs.map((log) => (
         <div key={log.id} style={{ background: '#F6F8FA', borderRadius: 8, padding: 10, marginBottom: 6, display: 'flex', gap: 10, alignItems: 'flex-start' }}>
-          <span style={{ fontSize: 18 }}>{log.logType === 'PHOTO' ? '📷' : log.logType === 'MONITORING_DOC' ? '📊' : log.logType === 'RFSD' ? '📦' : '📝'}</span>
+          <span style={{ fontSize: 18 }}>{log.logType === 'PHOTO' ? '📷' : log.logType === 'MONITORING_DOC' ? '📊' : log.logType === 'RFSD' ? '📦' : log.logType === 'KMZ' ? '🗺️' : '📝'}</span>
           <div style={{ flex: 1 }}>
             <p style={{ margin: 0, fontSize: 12, fontWeight: 600 }}>{LOG_LABELS[log.logType]}</p>
             {log.caption && <p style={{ margin: '2px 0 0', fontSize: 12 }}>{log.caption}</p>}
@@ -2621,6 +2670,7 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
               {canUpload && <option value="PHOTO">📷 Foto Progress</option>}
               {canMonitoring && <option value="MONITORING_DOC">📊 Dokumen Monitoring (Excel/PDF)</option>}
               {isIforte && isAdmin && <option value="RFSD">📦 RFSD — Ready For Sales Document</option>}
+              {canUpload && <option value="KMZ">🗺️ File KMZ</option>}
               <option value="NOTE">📝 Catatan Progress</option>
             </select>
             {!canMonitoring && userRole !== 'PM_FTTT' && (
@@ -2642,17 +2692,22 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
             </button>
           ) : (
             <>
-              {/* Issue #1: PHOTO supports multiple files (max 20MB each); MONITORING_DOC single file */}
+              {/* Issue #1: PHOTO supports multiple files (max 20MB each); MONITORING_DOC / KMZ / RFSD single file */}
               <input ref={fileRef} type="file"
-                accept={logType === 'PHOTO' ? '.jpg,.jpeg,.png,.webp' : '.xlsx,.xls,.pdf'}
+                accept={acceptForLogType(logType)}
                 multiple={logType === 'PHOTO'}
                 style={{ display: 'none' }}
-                onChange={(e) => { if (e.target.files && e.target.files.length > 0) void handleAdd(e.target.files); }} />
+                onChange={(e) => { if (e.target.files && e.target.files.length > 0) void handleAdd(e.target.files); e.target.value = ''; }} />
               <button type="button" onClick={() => fileRef.current?.click()} disabled={uploading}
                 style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: logType === 'RFSD' ? '#1a7f37' : '#0969DA', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 12 }}>
-                {uploading ? (uploadProgress || 'Mengunggah…') : logType === 'PHOTO' ? '📷 Upload Foto (dapat pilih banyak)' : logType === 'RFSD' ? '📦 Upload RFSD' : '+ Upload Dokumen'}
+                {uploading ? (uploadProgress || 'Mengunggah…')
+                  : logType === 'PHOTO' ? '📷 Upload Foto (dapat pilih banyak)'
+                    : logType === 'RFSD' ? '📦 Upload RFSD'
+                      : logType === 'KMZ' ? '🗺️ Upload File KMZ'
+                        : '+ Upload Dokumen'}
               </button>
               {logType === 'PHOTO' && <span style={{ fontSize: 11, color: '#57606a', alignSelf: 'center' }}>Pilih 1 atau lebih foto • maks 20 MB/foto</span>}
+              {logType === 'KMZ' && <span style={{ fontSize: 11, color: '#57606a', alignSelf: 'center' }}>Format: .kmz • maks 50 MB</span>}
             </>
           )}
         </div>

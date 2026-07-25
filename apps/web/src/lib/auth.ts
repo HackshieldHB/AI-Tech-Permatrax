@@ -96,14 +96,29 @@ async function fetchOrExplain(url: string, init: RequestInit): Promise<Response>
   try {
     return await fetch(url, init);
   } catch (err) {
-    // FIX: browsers throw TypeError("Failed to fetch") when the network layer can't reach the server
-    const message =
-      `Tidak dapat terhubung ke backend.\n` +
-      `URL: ${API_URL}\n\n` +
-      `Solusi:\n` +
-      `1. Pastikan backend jalan: cd apps/api && npm run start:dev\n` +
-      `2. Jika pakai ngrok: .\\scripts\\start-ngrok.ps1\n` +
-      `3. Restart frontend setelah ngrok/URL berubah`;
+    // Browsers throw TypeError("Failed to fetch") for offline hosts AND for some
+    // proxy rejections (e.g. nginx 413 without CORS on cross-origin api.* host).
+    const isFormData = typeof FormData !== 'undefined' && init.body instanceof FormData;
+    const name = err instanceof Error ? err.name : '';
+    const raw = err instanceof Error ? err.message : String(err);
+    let message: string;
+    if (name === 'AbortError') {
+      message = 'Upload/request dibatalkan atau melebihi batas waktu. Coba lagi dengan file lebih kecil.';
+    } else if (isFormData) {
+      message =
+        `Gagal mengunggah file ke server.\n` +
+        `Penyebab umum: ukuran file melebihi batas (maks. 50 MB), koneksi terputus, atau proxy menolak upload.\n` +
+        `URL: ${url}\n` +
+        `Detail: ${raw}`;
+    } else {
+      message =
+        `Tidak dapat terhubung ke backend.\n` +
+        `URL: ${API_URL}\n\n` +
+        `Solusi:\n` +
+        `1. Pastikan backend jalan: cd apps/api && npm run start:dev\n` +
+        `2. Jika pakai ngrok: .\\scripts\\start-ngrok.ps1\n` +
+        `3. Restart frontend setelah ngrok/URL berubah`;
+    }
     const wrapped = new Error(message) as Error & { cause?: unknown; isNetworkError?: boolean };
     wrapped.cause = err;
     wrapped.isNetworkError = true;
