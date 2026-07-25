@@ -227,12 +227,40 @@ describe('FinanceProjectService', () => {
         service.update('p', { status: FinanceProjectStatus.ARCHIVED }, 'u'),
       ).rejects.toBeInstanceOf(BadRequestException);
     });
+
+    it('Unarchive ARCHIVED → ACTIVE', async () => {
+      prisma.financeProject.findUnique.mockResolvedValue({
+        id: 'p',
+        isDefaultUncategorized: false,
+        status: FinanceProjectStatus.ARCHIVED,
+        hierarchyLevel: 'SITE',
+      });
+      prisma.financeProject.update.mockResolvedValue({
+        id: 'p',
+        status: FinanceProjectStatus.ACTIVE,
+      });
+      await expect(
+        service.update('p', { status: FinanceProjectStatus.ACTIVE }, 'u'),
+      ).resolves.toBeDefined();
+    });
+
+    it('menolak edit metadata saat CLOSED', async () => {
+      prisma.financeProject.findUnique.mockResolvedValue({
+        id: 'p',
+        isDefaultUncategorized: false,
+        status: FinanceProjectStatus.CLOSED,
+      });
+      await expect(
+        service.update('p', { name: 'New Name' }, 'u'),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
   });
 
   describe('updateBudget', () => {
     const baseCur = {
       id: 'p',
       isDefaultUncategorized: false,
+      status: FinanceProjectStatus.ACTIVE,
       totalBudget: new Prisma.Decimal(1000),
       materialBudget: new Prisma.Decimal(600),
       jasaBudget: new Prisma.Decimal(400),
