@@ -69,9 +69,15 @@ def ssh_exec(client: paramiko.SSHClient, cmd: str, timeout: int = 600) -> tuple[
     err = stderr.read().decode("utf-8", "replace")
     code = stdout.channel.recv_exit_status()
     if out.strip():
-        print(out[-4000:])
+        try:
+            print(out[-4000:])
+        except UnicodeEncodeError:
+            print(out[-4000:].encode("ascii", "replace").decode("ascii"))
     if err.strip():
-        print("ERR:", err[-2000:])
+        try:
+            print("ERR:", err[-2000:])
+        except UnicodeEncodeError:
+            print("ERR:", err[-2000:].encode("ascii", "replace").decode("ascii"))
     print("exit", code)
     return code, out, err
 

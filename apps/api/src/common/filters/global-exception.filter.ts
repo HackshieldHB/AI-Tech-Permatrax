@@ -59,8 +59,16 @@ export class GlobalExceptionFilter implements ExceptionFilter {
           message = isProd ? message : exception.message;
       }
     } else if (exception instanceof Error) {
-      this.logger.error(exception.message, exception.stack);
-      message = isProd ? message : exception.message;
+      // Multer file-size / unexpected field errors surface as plain Error (or MulterError)
+      const multerCode = (exception as Error & { code?: string }).code;
+      if (multerCode === 'LIMIT_FILE_SIZE') {
+        status = HttpStatus.PAYLOAD_TOO_LARGE;
+        error = 'Payload Too Large';
+        message = 'File terlalu besar. Maksimal ukuran upload adalah 50 MB.';
+      } else {
+        this.logger.error(exception.message, exception.stack);
+        message = isProd ? message : exception.message;
+      }
     }
 
     if (status >= 500) {
