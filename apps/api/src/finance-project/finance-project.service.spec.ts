@@ -9,6 +9,7 @@ import { FinanceProjectService } from './finance-project.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { BudgetLedgerService } from '../budget-ledger/budget-ledger.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { StorageService } from '../storage/storage.service';
 import { CreateFinanceProjectDto } from './finance-project.dto';
 
 describe('FinanceProjectService', () => {
@@ -50,6 +51,9 @@ describe('FinanceProjectService', () => {
     budgetTransfer: {
       count: jest.fn(),
     },
+    ftttTransaction: {
+      groupBy: jest.fn().mockResolvedValue([]),
+    },
     $transaction: jest.fn(),
   };
 
@@ -70,6 +74,7 @@ describe('FinanceProjectService', () => {
         BudgetLedgerService,
         { provide: PrismaService, useValue: prisma },
         { provide: NotificationsService, useValue: { notifyBudgetThresholdAlerts: jest.fn() } },
+        { provide: StorageService, useValue: { uploadMulterFile: jest.fn() } },
       ],
     }).compile();
 
@@ -261,9 +266,12 @@ describe('FinanceProjectService', () => {
       id: 'p',
       isDefaultUncategorized: false,
       status: FinanceProjectStatus.ACTIVE,
+      hierarchyLevel: 'STANDALONE' as const,
       totalBudget: new Prisma.Decimal(1000),
       materialBudget: new Prisma.Decimal(600),
       jasaBudget: new Prisma.Decimal(400),
+      budgetPerizinan: null,
+      budgetLainLain: null,
       materialSpent: new Prisma.Decimal(300),
       jasaSpent: new Prisma.Decimal(200),
     };
@@ -287,6 +295,11 @@ describe('FinanceProjectService', () => {
           totalBudget: new Prisma.Decimal(2000),
           isOverbudget: false,
         });
+      // updateBudget now returns hydrated findOne
+      jest.spyOn(service, 'findOne').mockResolvedValue({
+        ...baseCur,
+        totalBudget: new Prisma.Decimal(2000),
+      } as never);
 
       await service.updateBudget(
         'p',
@@ -334,9 +347,13 @@ describe('FinanceProjectService', () => {
         code: 'C',
         name: 'N',
         description: null,
+        projectType: 'FTTH',
+        hierarchyLevel: 'STANDALONE',
         totalBudget: new Prisma.Decimal(100),
         materialBudget: null,
         jasaBudget: null,
+        budgetPerizinan: null,
+        budgetLainLain: null,
         materialSpent: new Prisma.Decimal(10),
         jasaSpent: new Prisma.Decimal(5),
         isOverbudget: false,
@@ -347,6 +364,8 @@ describe('FinanceProjectService', () => {
         updatedById: null,
         createdAt: new Date(),
         updatedAt: new Date(),
+        parent: null,
+        _count: { children: 0 },
       };
       prisma.financeProject.findUnique.mockResolvedValue(row);
       prisma.budgetTransfer.count.mockResolvedValue(0);

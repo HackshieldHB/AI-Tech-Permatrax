@@ -221,6 +221,49 @@ export class FtttProjectService {
     return bulky;
   }
 
+  /** Integra V11: Closed / Cancelled projects are histori — block operational mutations. */
+  private assertFtttMutable(project: { status: FtttProjectStatus; projectName?: string | null; id?: string }) {
+    if (project.status === FtttProjectStatus.ACTIVE || project.status === FtttProjectStatus.ON_HOLD) return;
+    const label = project.projectName ?? project.id ?? '';
+    throw new BadRequestException(
+      `Project ${label} berstatus ${project.status} bersifat read-only dan tidak dapat diubah.`,
+    );
+  }
+
+  // POST :id/close — Integra V11: PM FTTT closes Parent (Bulky); cascade ACTIVE children → CLOSED
+  async closeParent(bulkyId: string, actorId: string, actorRole: Role) {
+    const allowed: Role[] = [Role.PM_FTTT, Role.ADMIN, Role.GENERAL_MANAGER];
+    if (!allowed.includes(actorRole)) {
+      throw new ForbiddenException('Hanya PM FTTT yang dapat menutup Parent Project');
+    }
+    const bulky = await this.assertBulky(bulkyId);
+    if (bulky.status !== FtttProjectStatus.ACTIVE) {
+      throw new BadRequestException(`Parent Project sudah berstatus ${bulky.status}`);
+    }
+
+    await this.prisma.$transaction([
+      this.prisma.ftttProject.updateMany({
+        where: { parentId: bulkyId, status: FtttProjectStatus.ACTIVE },
+        data: { status: FtttProjectStatus.CLOSED },
+      }),
+      this.prisma.ftttProject.update({
+        where: { id: bulkyId },
+        data: { status: FtttProjectStatus.CLOSED },
+      }),
+    ]);
+
+    this.gateway.emitToAll('fttt:project_closed', {
+      projectId: bulkyId,
+      status: FtttProjectStatus.CLOSED,
+      closedById: actorId,
+    });
+
+    return this.prisma.ftttProject.findUniqueOrThrow({
+      where: { id: bulkyId },
+      include: this.fullInclude(),
+    });
+  }
+
   // GET :id/available-finance-sites — Finance Sites under the Bulky's linked
   // Segment that are not yet linked to another active FTTT Site
   async listAvailableFinanceSites(bulkyId: string) {
@@ -244,7 +287,7 @@ export class FtttProjectService {
       where: {
         hierarchyLevel: FtttHierarchyLevel.SITE,
         financeProjectId: { in: candidateSites.map((s) => s.id) },
-        status: { not: FtttProjectStatus.CANCELLED },
+        status: { notIn: [FtttProjectStatus.CANCELLED, FtttProjectStatus.CLOSED] },
       },
       select: { financeProjectId: true },
     });
@@ -259,6 +302,7 @@ export class FtttProjectService {
       throw new ForbiddenException('Hanya PM FTTT yang dapat menambahkan Site');
     }
     const bulky = await this.assertBulky(bulkyId);
+    this.assertFtttMutable(bulky);
 
     const lifecycle = FTTT_PHASES_BY_COMPANY[bulky.ftttCompany];
     const siteInitIdx = lifecycle.indexOf(FtttPhase.SITE_INITIATION);
@@ -280,7 +324,7 @@ export class FtttProjectService {
       where: {
         financeProjectId,
         hierarchyLevel: FtttHierarchyLevel.SITE,
-        status: { not: FtttProjectStatus.CANCELLED },
+        status: { notIn: [FtttProjectStatus.CANCELLED, FtttProjectStatus.CLOSED] },
       },
     });
     if (existingLink) {
@@ -378,6 +422,11 @@ export class FtttProjectService {
     if (site.hierarchyLevel !== FtttHierarchyLevel.SITE) {
       throw new BadRequestException('Hanya Site yang dapat dihapus melalui operasi ini');
     }
+    this.assertFtttMutable(site);
+    if (site.parentId) {
+      const parent = await this.prisma.ftttProject.findUnique({ where: { id: site.parentId } });
+      if (parent) this.assertFtttMutable(parent);
+    }
     if (site.currentPhase !== FtttPhase.SURVEY) {
       throw new BadRequestException('Site hanya dapat dihapus selagi masih pada fase Validation & Survey');
     }
@@ -394,7 +443,8 @@ export class FtttProjectService {
     if (userRole !== Role.ADMIN && userRole !== Role.GENERAL_MANAGER && userRole !== Role.PM_FTTT) {
       throw new ForbiddenException('Hanya Admin atau PM FTTT yang dapat mengganti dokumen triggering');
     }
-    const project = await this.prisma.ftttProject.findUniqueOrThrow({ where: { id }, select: { id: true, currentPhase: true, ftttCompany: true } });
+    const project = await this.prisma.ftttProject.findUniqueOrThrow({ where: { id }, select: { id: true, currentPhase: true, ftttCompany: true, status: true, projectName: true } });
+    this.assertFtttMutable(project);
     if (project.currentPhase !== FtttPhase.INITIATION) {
       throw new BadRequestException('Dokumen triggering hanya dapat diganti pada fase Project Initiation');
     }
@@ -840,6 +890,7 @@ export class FtttProjectService {
       where: { id },
       include: { phaseProgresses: true },
     });
+    this.assertFtttMutable(project);
 
     // C5-Issue4: Only Admin can complete the Implementation phase
     if (

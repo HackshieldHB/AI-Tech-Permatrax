@@ -141,6 +141,15 @@ export class FtttProjectController {
     return this.service.deleteSite(siteId, user.userId, user.role);
   }
 
+  // POST /fttt-projects/:id/close — Integra V11: Close Parent (Bulky) Project
+  @Post(':id/close')
+  closeParent(
+    @Param('id') id: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.service.closeParent(id, user.userId, user.role);
+  }
+
   // GET /fttt-projects/:id/budget-scurve  (budget summary + cost/progress S-curve)
   @Get(':id/budget-scurve')
   getBudgetScurve(@Param('id') id: string) {

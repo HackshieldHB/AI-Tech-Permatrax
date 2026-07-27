@@ -3062,6 +3062,7 @@ enum FtttProjectStatus {
   COMPLETED
   ON_HOLD
   CANCELLED
+  CLOSED // Integra V11: Parent Bulky closed (histori, read-only)
 }
 
 enum FtttPhaseStatus {

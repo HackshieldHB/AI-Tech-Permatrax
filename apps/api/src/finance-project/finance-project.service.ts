@@ -376,7 +376,7 @@ export class FinanceProjectService {
       throw new BadRequestException('Budget proyek GENERAL tidak dapat disesuaikan melalui endpoint ini');
     }
 
-    const newTotal = new Prisma.Decimal(dto.totalBudget);
+    let newTotal = new Prisma.Decimal(dto.totalBudget);
     const spentSum = new Prisma.Decimal(cur.materialSpent).plus(cur.jasaSpent);
     if (newTotal.lt(spentSum)) {
       throw new BadRequestException(
@@ -384,18 +384,44 @@ export class FinanceProjectService {
       );
     }
 
-    const newMaterial =
+    let newMaterial =
       dto.materialBudget === undefined
         ? cur.materialBudget
         : dto.materialBudget == null
           ? null
           : new Prisma.Decimal(dto.materialBudget);
-    const newJasa =
+    let newJasa =
       dto.jasaBudget === undefined
         ? cur.jasaBudget
         : dto.jasaBudget == null
           ? null
           : new Prisma.Decimal(dto.jasaBudget);
+    let newPerizinan =
+      dto.budgetPerizinan === undefined
+        ? cur.budgetPerizinan
+        : dto.budgetPerizinan == null
+          ? null
+          : new Prisma.Decimal(dto.budgetPerizinan);
+    let newLainLain =
+      dto.budgetLainLain === undefined
+        ? cur.budgetLainLain
+        : dto.budgetLainLain == null
+          ? null
+          : new Prisma.Decimal(dto.budgetLainLain);
+
+    // Keep hierarchy fields in sync with create() semantics so Financial Performance /
+    // FTTT category cards refresh from the same source of truth after save.
+    if (cur.hierarchyLevel === 'SEGMENT') {
+      newLainLain = dto.budgetLainLain != null
+        ? new Prisma.Decimal(dto.budgetLainLain)
+        : newTotal;
+      newTotal = newLainLain;
+      newMaterial = null;
+      newJasa = null;
+      newPerizinan = null;
+    } else if (cur.hierarchyLevel === 'SITE') {
+      newLainLain = new Prisma.Decimal(0);
+    }
 
     if (newMaterial != null && newJasa != null && newMaterial.plus(newJasa).gt(newTotal)) {
       throw new BadRequestException('Material + Jasa budget tidak boleh melebihi Total Budget');
@@ -406,6 +432,8 @@ export class FinanceProjectService {
         totalBudget: cur.totalBudget.toString(),
         materialBudget: cur.materialBudget?.toString() ?? null,
         jasaBudget: cur.jasaBudget?.toString() ?? null,
+        budgetPerizinan: cur.budgetPerizinan?.toString() ?? null,
+        budgetLainLain: cur.budgetLainLain?.toString() ?? null,
         materialSpent: cur.materialSpent.toString(),
         jasaSpent: cur.jasaSpent.toString(),
       },
@@ -413,17 +441,21 @@ export class FinanceProjectService {
         totalBudget: newTotal.toString(),
         materialBudget: newMaterial?.toString() ?? null,
         jasaBudget: newJasa?.toString() ?? null,
+        budgetPerizinan: newPerizinan?.toString() ?? null,
+        budgetLainLain: newLainLain?.toString() ?? null,
       },
       reason: dto.reason ?? null,
     };
 
-    return this.prisma.$transaction(async (tx) => {
+    await this.prisma.$transaction(async (tx) => {
       const updated = await tx.financeProject.update({
         where: { id },
         data: {
           totalBudget: newTotal,
           materialBudget: newMaterial,
           jasaBudget: newJasa,
+          budgetPerizinan: newPerizinan,
+          budgetLainLain: newLainLain,
           updatedById: actorId,
         },
       });
@@ -442,11 +474,14 @@ export class FinanceProjectService {
       });
 
       const u = this.ledgerService.utilizationFromProject(updated);
-      return tx.financeProject.update({
+      await tx.financeProject.update({
         where: { id },
         data: { isOverbudget: u.material >= 1 || u.jasa >= 1 },
       });
     });
+
+    // Return hydrated detail so clients that merge the PATCH body stay in sync
+    return this.findOne(id) as Promise<FinanceProject>;
   }
 
   async findAll(filter: FinanceProjectFilterInput): Promise<PaginatedResponse<FinanceProjectListItem>> {
@@ -628,11 +663,14 @@ export class FinanceProjectService {
       const sitesBudget = sites.reduce((s, x) => s + Number(x.totalBudget), 0);
       const sitesSpent = sites.reduce((s, x) => s + (x.totalSpent ?? 0), 0);
       const lain = base.lainLainSpent ?? 0;
-      const totalBudgetNum = Number(p.totalBudget) + sitesBudget;
+      const ownBudget = Number(p.budgetLainLain ?? p.totalBudget);
+      const totalBudgetNum = ownBudget + sitesBudget;
       const totalSpent = lain + sitesSpent;
       return {
         ...base,
-        totalBudget: new Prisma.Decimal(totalBudgetNum),
+        // Keep own Lain-Lain as totalBudget for settings; expose rollup separately.
+        totalBudget: new Prisma.Decimal(ownBudget),
+        totalRab: totalBudgetNum,
         totalSpent,
         totalRemaining: totalBudgetNum - totalSpent,
         aggregatedTotalBudget: totalBudgetNum,
