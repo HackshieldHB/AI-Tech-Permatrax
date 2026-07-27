@@ -387,7 +387,8 @@ export class FinanceProjectService {
 
     let newTotal = new Prisma.Decimal(dto.totalBudget);
     const spentSum = new Prisma.Decimal(cur.materialSpent).plus(cur.jasaSpent);
-    if (newTotal.lt(spentSum)) {
+    // Site total is derived later from kategori — skip early check against dto.totalBudget
+    if (cur.hierarchyLevel !== 'SITE' && newTotal.lt(spentSum)) {
       throw new BadRequestException(
         'Total budget baru tidak boleh kurang dari total realisasi (material + jasa)',
       );
@@ -429,7 +430,17 @@ export class FinanceProjectService {
       newJasa = null;
       newPerizinan = null;
     } else if (cur.hierarchyLevel === 'SITE') {
+      // Integra V13: Total Budget Site = Perizinan + Material + Jasa (sistem, bukan input manual)
       newLainLain = new Prisma.Decimal(0);
+      const p = newPerizinan ?? new Prisma.Decimal(0);
+      const m = newMaterial ?? new Prisma.Decimal(0);
+      const j = newJasa ?? new Prisma.Decimal(0);
+      newTotal = p.plus(m).plus(j);
+      if (newTotal.lt(spentSum)) {
+        throw new BadRequestException(
+          'Total budget (Perizinan + Material + Jasa) tidak boleh kurang dari total realisasi',
+        );
+      }
     }
 
     if (newMaterial != null && newJasa != null && newMaterial.plus(newJasa).gt(newTotal)) {
@@ -1007,17 +1018,15 @@ export class FinanceProjectService {
       throw new BadRequestException('Masih ada pengajuan PO yang menunggu approval GM');
     }
 
+    // Integra V13: dokumen PO opsional — boleh dilengkapi kemudian
     let docUrl: string | null = null;
     if (file) {
-      const saved = await this.storage.uploadMulterFile(file, 'finance-po', id);
-      docUrl = saved;
-    } else {
-      // Integra V4: dokumen PO wajib untuk pengajuan baru maupun perubahan
-      throw new BadRequestException('Dokumen PO Customer wajib diunggah');
+      docUrl = await this.storage.uploadMulterFile(file, 'finance-po', id);
     }
 
     const previousAmount = project.poCustomer != null ? Number(project.poCustomer) : null;
     const previousPoNumber = project.poCustomerNumber ?? null;
+    const proposedPoNumber = dto.poNumber?.trim() || null;
     const req = await this.prisma.$transaction(async (tx) => {
       const change = await tx.financePoChangeRequest.create({
         data: {
@@ -1025,7 +1034,7 @@ export class FinanceProjectService {
           previousAmount: previousAmount != null ? previousAmount : null,
           proposedAmount: dto.amount,
           previousPoNumber,
-          proposedPoNumber: dto.poNumber.trim(),
+          proposedPoNumber,
           docUrl,
           reason: dto.reason ?? null,
           status: FinancePoApprovalStatus.PENDING,
@@ -1037,15 +1046,16 @@ export class FinanceProjectService {
         data: {
           poApprovalStatus: FinancePoApprovalStatus.PENDING,
           updatedById: actorId,
-          poCustomerDocUrl: docUrl,
+          ...(docUrl ? { poCustomerDocUrl: docUrl } : {}),
         },
       });
       return change;
     });
 
+    const poLabel = proposedPoNumber ? `PO ${proposedPoNumber}` : 'PO Customer';
     await this.notifications.notifyUsersByRole(Role.GENERAL_MANAGER, {
       title: 'Finance — Pengajuan PO Customer',
-      message: `${project.code} · ${project.name}: PO ${dto.poNumber.trim()} · Rp ${Math.round(dto.amount).toLocaleString('id-ID')} menunggu approval.`,
+      message: `${project.code} · ${project.name}: ${poLabel} · Rp ${Math.round(dto.amount).toLocaleString('id-ID')} menunggu approval.`,
       type: 'FINANCE_PO_APPROVAL',
       link: `/finance-projects/${id}`,
       entityId: req.id,

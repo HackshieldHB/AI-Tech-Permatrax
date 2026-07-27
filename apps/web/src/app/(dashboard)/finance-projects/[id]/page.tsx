@@ -292,13 +292,19 @@ export default function FinanceProjectDetailPage() {
       setEditName(d.name);
       setEditDesc(d.description ?? '');
       // Segment: edit own Lain-Lain budget (not aggregated site totals)
+      // Site (V13): Total derived from kategori — seed categories then display auto total
+      const seedPerizinan = d.budgetPerizinan != null ? num(d.budgetPerizinan) : 0;
+      const seedMat = d.materialBudget != null ? num(d.materialBudget) : 0;
+      const seedJas = d.jasaBudget != null ? num(d.jasaBudget) : 0;
       const seedTotal = d.hierarchyLevel === 'SEGMENT'
         ? num(d.budgetLainLain ?? d.totalBudget)
-        : num(d.totalBudget);
+        : d.hierarchyLevel === 'SITE'
+          ? seedPerizinan + seedMat + seedJas
+          : num(d.totalBudget);
       setBudgetTotal(seedTotal ? formatBudgetInput(String(seedTotal).replace('.', ',')) : '');
-      setBudgetPerizinan(d.budgetPerizinan != null && num(d.budgetPerizinan) ? formatBudgetInput(String(num(d.budgetPerizinan)).replace('.', ',')) : '');
-      setBudgetMat(d.materialBudget != null && num(d.materialBudget) ? formatBudgetInput(String(num(d.materialBudget)).replace('.', ',')) : '');
-      setBudgetJas(d.jasaBudget != null && num(d.jasaBudget) ? formatBudgetInput(String(num(d.jasaBudget)).replace('.', ',')) : '');
+      setBudgetPerizinan(seedPerizinan ? formatBudgetInput(String(seedPerizinan).replace('.', ',')) : '');
+      setBudgetMat(seedMat ? formatBudgetInput(String(seedMat).replace('.', ',')) : '');
+      setBudgetJas(seedJas ? formatBudgetInput(String(seedJas).replace('.', ',')) : '');
       const adj = await apiGet<BudgetLedger[]>(`/finance-projects/${id}/adjustments`);
       setAdjustments(adj);
     } catch {
@@ -367,13 +373,6 @@ export default function FinanceProjectDetailPage() {
     [detail, ledger.rows],
   );
 
-  const newBudgetTotalNum = parseBudgetInput(budgetTotal);
-  const budgetTotalBelowSpent =
-    !!detail &&
-    !detail.isDefaultUncategorized &&
-    newBudgetTotalNum > 0 &&
-    newBudgetTotalNum < spentTotal;
-
   if (loading || !detail) {
     return <div className="p-8 text-slate-500">Memuat…</div>;
   }
@@ -391,6 +390,15 @@ export default function FinanceProjectDetailPage() {
   const isArchived = detail.status === 'ARCHIVED';
   const isLocked = isClosed || isArchived;
   const canMutate = manage && !isLocked && !isGen;
+
+  // Integra V13: Site Total Budget = Perizinan + Material + Jasa (auto)
+  const newBudgetTotalNum = isSite
+    ? parseBudgetInput(budgetPerizinan) + parseBudgetInput(budgetMat) + parseBudgetInput(budgetJas)
+    : parseBudgetInput(budgetTotal);
+  const budgetTotalBelowSpent =
+    !detail.isDefaultUncategorized &&
+    newBudgetTotalNum > 0 &&
+    newBudgetTotalNum < spentTotal;
 
   const renderSiteTable = (rows: FinanceProjectListItem[], emptyLabel: string) => (
     rows.length === 0 ? (
@@ -477,6 +485,10 @@ export default function FinanceProjectDetailPage() {
               </span>
             ) : null}
           </div>
+          {/* Integra V13: Deskripsi di bawah nama, di atas status/tanggal */}
+          {detail.description?.trim() ? (
+            <p className="text-sm text-slate-600 mt-1 whitespace-pre-wrap">{detail.description.trim()}</p>
+          ) : null}
           <p className="text-sm text-slate-500 mt-1">
             {detail.status} · Dibuat {formatDateID(detail.createdAt)}
           </p>
@@ -1029,13 +1041,37 @@ export default function FinanceProjectDetailPage() {
                   <>
                     <div className="border-t pt-3 space-y-2">
                       <div className="font-bold text-sm">Budget</div>
-                      <input
-                        className="w-full rounded-lg border px-3 py-2 text-sm"
-                        placeholder="Total Budget"
-                        inputMode="decimal"
-                        value={budgetTotal}
-                        onChange={(e) => setBudgetTotal(formatBudgetInput(e.target.value))}
-                      />
+                      {isSite ? (
+                        <div>
+                          <label className="text-[11px] font-semibold text-slate-500">Total Budget (otomatis)</label>
+                          <input
+                            className="mt-0.5 w-full rounded-lg border px-3 py-2 text-sm bg-slate-50 text-slate-700"
+                            placeholder="Total Budget"
+                            value={
+                              newBudgetTotalNum > 0
+                                ? formatBudgetInput(
+                                    String(newBudgetTotalNum).includes('.')
+                                      ? String(newBudgetTotalNum).replace('.', ',')
+                                      : String(newBudgetTotalNum),
+                                  )
+                                : ''
+                            }
+                            readOnly
+                            disabled
+                          />
+                          <p className="text-[10px] text-slate-400 mt-0.5">
+                            = Budget Perizinan + Material + Jasa
+                          </p>
+                        </div>
+                      ) : (
+                        <input
+                          className="w-full rounded-lg border px-3 py-2 text-sm"
+                          placeholder="Total Budget"
+                          inputMode="decimal"
+                          value={budgetTotal}
+                          onChange={(e) => setBudgetTotal(formatBudgetInput(e.target.value))}
+                        />
+                      )}
                       {budgetTotalBelowSpent ? (
                         <p className="text-xs text-red-600">
                           Total budget tidak boleh lebih kecil dari realisasi ({formatRupiah(spentTotal)}).
@@ -1083,8 +1119,9 @@ export default function FinanceProjectDetailPage() {
                           if (budgetTotalBelowSpent) return;
                           setSaving(true);
                           try {
+                            const totalToSave = isSite ? newBudgetTotalNum : parseBudgetInput(budgetTotal);
                             await apiPatch(`/finance-projects/${id}/budget`, {
-                              totalBudget: parseBudgetInput(budgetTotal),
+                              totalBudget: totalToSave,
                               materialBudget: budgetMat.trim() ? parseBudgetInput(budgetMat) : null,
                               jasaBudget: budgetJas.trim() ? parseBudgetInput(budgetJas) : null,
                               // Always send number (incl. 0) so clearing/keeping Perizinan is explicit

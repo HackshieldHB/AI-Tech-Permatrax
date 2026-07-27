@@ -94,7 +94,13 @@ export type SetTimelineInput = z.infer<typeof SetTimelineDto>;
 // Integra V3/V4: Finance submits PO Customer for GM approval
 export const SubmitPoCustomerDto = z.object({
   amount: z.coerce.number().positive(),
-  poNumber: z.string().trim().min(1, 'Nomor PO Customer wajib diisi').max(100),
+  // Integra V13: Nomor PO opsional — approval boleh diajukan sebelum nomor tersedia
+  poNumber: z
+    .string()
+    .trim()
+    .max(100)
+    .optional()
+    .transform((v) => (v && v.length > 0 ? v : undefined)),
   reason: z.string().max(500).optional(),
 });
 export type SubmitPoCustomerInput = z.infer<typeof SubmitPoCustomerDto>;
