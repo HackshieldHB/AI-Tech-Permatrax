@@ -22,6 +22,7 @@ import type {
   FinanceProjectListItem,
 } from '../../../../types/api.types';
 import { num } from '../_lib/num';
+import { formatBudgetInput, parseBudgetInput } from '../_lib/budget-input';
 import { ForecastPanel } from './ForecastPanel';
 import { SCurveChart } from './SCurveChart';
 import { FtttFinanceMonitor } from './FtttFinanceMonitor';
@@ -167,6 +168,7 @@ export default function FinanceProjectDetailPage() {
   const [editName, setEditName] = useState('');
   const [editDesc, setEditDesc] = useState('');
   const [budgetTotal, setBudgetTotal] = useState('');
+  const [budgetPerizinan, setBudgetPerizinan] = useState('');
   const [budgetMat, setBudgetMat] = useState('');
   const [budgetJas, setBudgetJas] = useState('');
   const [budgetReason, setBudgetReason] = useState('');
@@ -185,13 +187,6 @@ export default function FinanceProjectDetailPage() {
   const [siteJasa, setSiteJasa] = useState('');
   const [creatingSite, setCreatingSite] = useState(false);
   const [uploadingPlan, setUploadingPlan] = useState(false);
-
-  const formatBudgetInput = (raw: string) => {
-    const digits = raw.replace(/\D/g, '');
-    if (!digits) return '';
-    return Number(digits).toLocaleString('id-ID');
-  };
-  const parseBudgetInput = (display: string) => Number(display.replace(/\D/g, '')) || 0;
 
   const openTimeline = useCallback(async () => {
     setTimelineOpen(true);
@@ -243,9 +238,9 @@ export default function FinanceProjectDetailPage() {
     try {
       await apiPost(`/finance-projects/${id}/sites`, {
         name: siteName.trim(),
-        budgetPerizinan: Number(sitePerizinan) || 0,
-        materialBudget: Number(siteMaterial) || 0,
-        jasaBudget: Number(siteJasa) || 0,
+        budgetPerizinan: parseBudgetInput(sitePerizinan),
+        materialBudget: parseBudgetInput(siteMaterial),
+        jasaBudget: parseBudgetInput(siteJasa),
       });
       toast.success('Site berhasil dibuat');
       setSiteName(''); setSitePerizinan(''); setSiteMaterial(''); setSiteJasa('');
@@ -300,9 +295,10 @@ export default function FinanceProjectDetailPage() {
       const seedTotal = d.hierarchyLevel === 'SEGMENT'
         ? num(d.budgetLainLain ?? d.totalBudget)
         : num(d.totalBudget);
-      setBudgetTotal(String(seedTotal));
-      setBudgetMat(d.materialBudget != null ? String(num(d.materialBudget)) : '');
-      setBudgetJas(d.jasaBudget != null ? String(num(d.jasaBudget)) : '');
+      setBudgetTotal(seedTotal ? formatBudgetInput(String(seedTotal).replace('.', ',')) : '');
+      setBudgetPerizinan(d.budgetPerizinan != null && num(d.budgetPerizinan) ? formatBudgetInput(String(num(d.budgetPerizinan)).replace('.', ',')) : '');
+      setBudgetMat(d.materialBudget != null && num(d.materialBudget) ? formatBudgetInput(String(num(d.materialBudget)).replace('.', ',')) : '');
+      setBudgetJas(d.jasaBudget != null && num(d.jasaBudget) ? formatBudgetInput(String(num(d.jasaBudget)).replace('.', ',')) : '');
       const adj = await apiGet<BudgetLedger[]>(`/finance-projects/${id}/adjustments`);
       setAdjustments(adj);
     } catch {
@@ -371,7 +367,7 @@ export default function FinanceProjectDetailPage() {
     [detail, ledger.rows],
   );
 
-  const newBudgetTotalNum = Number(budgetTotal) || 0;
+  const newBudgetTotalNum = parseBudgetInput(budgetTotal);
   const budgetTotalBelowSpent =
     !!detail &&
     !detail.isDefaultUncategorized &&
@@ -389,10 +385,47 @@ export default function FinanceProjectDetailPage() {
   const isSegment = detail.hierarchyLevel === 'SEGMENT';
   const isSite = detail.hierarchyLevel === 'SITE';
   const sites: FinanceProjectListItem[] = detail.sites ?? [];
+  const sitesClosed: FinanceProjectListItem[] = detail.sitesClosed ?? [];
+  const sitesArchived: FinanceProjectListItem[] = detail.sitesArchived ?? [];
   const isClosed = detail.status === 'CLOSED';
   const isArchived = detail.status === 'ARCHIVED';
   const isLocked = isClosed || isArchived;
   const canMutate = manage && !isLocked && !isGen;
+
+  const renderSiteTable = (rows: FinanceProjectListItem[], emptyLabel: string) => (
+    rows.length === 0 ? (
+      <p className="text-sm text-slate-500">{emptyLabel}</p>
+    ) : (
+      <div className="overflow-x-auto rounded-xl border border-slate-100">
+        <table className="min-w-full text-sm">
+          <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500">
+            <tr>
+              <th className="p-2">Kode</th>
+              <th className="p-2">Nama</th>
+              <th className="p-2">Status</th>
+              <th className="p-2 text-right">Total Budget</th>
+              <th className="p-2 text-right">Terpakai</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((s) => (
+              <tr
+                key={s.id}
+                className="border-t border-slate-100 hover:bg-slate-50 cursor-pointer"
+                onClick={() => router.push(`/finance-projects/${s.id}`)}
+              >
+                <td className="p-2 font-bold text-[#00D4B4]">{s.code}</td>
+                <td className="p-2">{s.name}</td>
+                <td className="p-2">{s.status}</td>
+                <td className="p-2 text-right tabular-nums">{formatRupiah(num(s.totalBudget))}</td>
+                <td className="p-2 text-right tabular-nums">{formatRupiah(num(s.totalSpent))}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    )
+  );
 
   return (
     <div className="max-w-6xl mx-auto px-3 pb-12 space-y-6">
@@ -557,42 +590,27 @@ export default function FinanceProjectDetailPage() {
       </header>
 
       {isSegment ? (
-        <section className="rounded-2xl border border-slate-100 bg-white p-5 space-y-4">
+        <section className="rounded-2xl border border-slate-100 bg-white p-5 space-y-5">
           <h3 className="font-bold text-slate-800 flex items-center gap-2">
-            <Folder className="w-4 h-4 text-amber-500" /> Sites di bawah Segment ini ({sites.length})
+            <Folder className="w-4 h-4 text-amber-500" /> Sites di bawah Segment ini
           </h3>
-          {sites.length === 0 ? (
-            <p className="text-sm text-slate-500">Belum ada Site. Tambahkan Site menggunakan form di bawah.</p>
-          ) : (
-            <div className="overflow-x-auto rounded-xl border border-slate-100">
-              <table className="min-w-full text-sm">
-                <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500">
-                  <tr>
-                    <th className="p-2">Kode</th>
-                    <th className="p-2">Nama</th>
-                    <th className="p-2">Status</th>
-                    <th className="p-2 text-right">Total Budget</th>
-                    <th className="p-2 text-right">Terpakai</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {sites.map((s) => (
-                    <tr
-                      key={s.id}
-                      className="border-t border-slate-100 hover:bg-slate-50 cursor-pointer"
-                      onClick={() => router.push(`/finance-projects/${s.id}`)}
-                    >
-                      <td className="p-2 font-bold text-[#00D4B4]">{s.code}</td>
-                      <td className="p-2">{s.name}</td>
-                      <td className="p-2">{s.status}</td>
-                      <td className="p-2 text-right tabular-nums">{formatRupiah(num(s.totalBudget))}</td>
-                      <td className="p-2 text-right tabular-nums">{formatRupiah(num(s.totalSpent))}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+          <p className="text-xs text-slate-500 -mt-3">
+            Ringkasan budget Segment hanya menghitung Site <b>Active</b> ({sites.length} site).
+          </p>
+
+          <div className="space-y-2">
+            <h4 className="text-sm font-bold text-emerald-700">Active Projects ({sites.length})</h4>
+            {renderSiteTable(sites, 'Belum ada Site Active. Tambahkan Site menggunakan form di bawah.')}
+          </div>
+          <div className="space-y-2">
+            <h4 className="text-sm font-bold text-slate-600">Closed Projects ({sitesClosed.length})</h4>
+            {renderSiteTable(sitesClosed, 'Tidak ada Site Closed.')}
+          </div>
+          <div className="space-y-2">
+            <h4 className="text-sm font-bold text-amber-800">Archived Projects ({sitesArchived.length})</h4>
+            {renderSiteTable(sitesArchived, 'Tidak ada Site Archived.')}
+          </div>
+
           {canMutate ? (
             <div className="rounded-xl border border-dashed border-slate-200 p-4 space-y-3">
               <p className="text-xs font-bold text-slate-500 uppercase">Tambah Site</p>
@@ -605,21 +623,24 @@ export default function FinanceProjectDetailPage() {
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <input
                   className="rounded-lg border border-slate-200 px-3 py-2 text-sm"
-                  placeholder="Budget Perizinan"
+                  placeholder="Budget Perizinan (contoh 1.500.000,50)"
+                  inputMode="decimal"
                   value={sitePerizinan}
-                  onChange={(e) => setSitePerizinan(e.target.value.replace(/\D/g, ''))}
+                  onChange={(e) => setSitePerizinan(formatBudgetInput(e.target.value))}
                 />
                 <input
                   className="rounded-lg border border-slate-200 px-3 py-2 text-sm"
                   placeholder="Budget Material"
+                  inputMode="decimal"
                   value={siteMaterial}
-                  onChange={(e) => setSiteMaterial(e.target.value.replace(/\D/g, ''))}
+                  onChange={(e) => setSiteMaterial(formatBudgetInput(e.target.value))}
                 />
                 <input
                   className="rounded-lg border border-slate-200 px-3 py-2 text-sm"
                   placeholder="Budget Jasa"
+                  inputMode="decimal"
                   value={siteJasa}
-                  onChange={(e) => setSiteJasa(e.target.value.replace(/\D/g, ''))}
+                  onChange={(e) => setSiteJasa(formatBudgetInput(e.target.value))}
                 />
               </div>
               <button
@@ -1010,27 +1031,43 @@ export default function FinanceProjectDetailPage() {
                       <div className="font-bold text-sm">Budget</div>
                       <input
                         className="w-full rounded-lg border px-3 py-2 text-sm"
-                        placeholder="Total"
+                        placeholder="Total Budget"
+                        inputMode="decimal"
                         value={budgetTotal}
-                        onChange={(e) => setBudgetTotal(e.target.value.replace(/\D/g, ''))}
+                        onChange={(e) => setBudgetTotal(formatBudgetInput(e.target.value))}
                       />
                       {budgetTotalBelowSpent ? (
                         <p className="text-xs text-red-600">
                           Total budget tidak boleh lebih kecil dari realisasi ({formatRupiah(spentTotal)}).
                         </p>
                       ) : null}
-                      <input
-                        className="w-full rounded-lg border px-3 py-2 text-sm"
-                        placeholder="Material"
-                        value={budgetMat}
-                        onChange={(e) => setBudgetMat(e.target.value.replace(/\D/g, ''))}
-                      />
-                      <input
-                        className="w-full rounded-lg border px-3 py-2 text-sm"
-                        placeholder="Jasa"
-                        value={budgetJas}
-                        onChange={(e) => setBudgetJas(e.target.value.replace(/\D/g, ''))}
-                      />
+                      {(isSite || (!isSegment && !isGen)) ? (
+                        <input
+                          className="w-full rounded-lg border px-3 py-2 text-sm"
+                          placeholder="Budget Perizinan"
+                          inputMode="decimal"
+                          value={budgetPerizinan}
+                          onChange={(e) => setBudgetPerizinan(formatBudgetInput(e.target.value))}
+                        />
+                      ) : null}
+                      {!isSegment ? (
+                        <>
+                          <input
+                            className="w-full rounded-lg border px-3 py-2 text-sm"
+                            placeholder="Budget Material"
+                            inputMode="decimal"
+                            value={budgetMat}
+                            onChange={(e) => setBudgetMat(formatBudgetInput(e.target.value))}
+                          />
+                          <input
+                            className="w-full rounded-lg border px-3 py-2 text-sm"
+                            placeholder="Budget Jasa"
+                            inputMode="decimal"
+                            value={budgetJas}
+                            onChange={(e) => setBudgetJas(formatBudgetInput(e.target.value))}
+                          />
+                        </>
+                      ) : null}
                       <input
                         className="w-full rounded-lg border px-3 py-2 text-sm"
                         placeholder="Alasan penyesuaian"
@@ -1047,9 +1084,14 @@ export default function FinanceProjectDetailPage() {
                           setSaving(true);
                           try {
                             await apiPatch(`/finance-projects/${id}/budget`, {
-                              totalBudget: Number(budgetTotal) || 0,
-                              materialBudget: budgetMat ? Number(budgetMat) : null,
-                              jasaBudget: budgetJas ? Number(budgetJas) : null,
+                              totalBudget: parseBudgetInput(budgetTotal),
+                              materialBudget: budgetMat.trim() ? parseBudgetInput(budgetMat) : null,
+                              jasaBudget: budgetJas.trim() ? parseBudgetInput(budgetJas) : null,
+                              // Always send number (incl. 0) so clearing/keeping Perizinan is explicit
+                              budgetPerizinan:
+                                isSite || (!isSegment && !isGen)
+                                  ? parseBudgetInput(budgetPerizinan)
+                                  : undefined,
                               reason: budgetReason || undefined,
                             });
                             toast.success('Budget diperbarui');
@@ -1072,6 +1114,7 @@ export default function FinanceProjectDetailPage() {
                   <div className="border-t pt-3 space-y-1 text-sm text-slate-600">
                     <div className="font-bold text-slate-800">Budget (read-only)</div>
                     <p>Total: {formatRupiah(num(detail.totalBudget))}</p>
+                    {detail.budgetPerizinan != null ? <p>Perizinan: {formatRupiah(num(detail.budgetPerizinan))}</p> : null}
                     <p>Material: {formatRupiah(num(detail.materialBudget))}</p>
                     <p>Jasa: {formatRupiah(num(detail.jasaBudget))}</p>
                   </div>
