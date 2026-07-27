@@ -641,6 +641,9 @@ export interface FinanceProjectListItem {
   parentId?: string | null;
   childCount?: number;
   sites?: FinanceProjectListItem[];
+  /** Integra V12: Closed / Archived Sites (excluded from Segment summary) */
+  sitesClosed?: FinanceProjectListItem[];
+  sitesArchived?: FinanceProjectListItem[];
   parent?: { id: string; code: string; name: string } | null;
   totalBudget: string | number;
   materialBudget: string | number | null;

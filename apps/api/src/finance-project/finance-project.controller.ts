@@ -21,7 +21,7 @@ import {
   UpdatePlanningDto,
   type UpdateFinanceProjectInput,
 } from './finance-project.dto';
-import { Role } from '@prisma/client';
+import { Role, FinanceProjectStatus } from '@prisma/client';
 const upload = { storage: memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } };
 
 @ApiTags('Finance Projects')
@@ -63,9 +63,18 @@ export class FinanceProjectController {
 
   @Get(':id/sites')
   @Roles(...PERMISSIONS.FINANCE_PROJECT_VIEW)
-  @ApiOperation({ summary: 'Daftar Site di dalam Segment' })
-  async listSites(@Param('id') id: string) {
-    return this.financeProjectService.listSites(id);
+  @ApiOperation({ summary: 'Daftar Site di dalam Segment (default: Active only)' })
+  async listSites(
+    @Param('id') id: string,
+    @Query('status') status?: string,
+  ) {
+    const statusOpt =
+      status === 'ALL' || status === 'all'
+        ? 'ALL' as const
+        : status === 'CLOSED' || status === 'ARCHIVED' || status === 'ACTIVE'
+          ? (status as FinanceProjectStatus)
+          : undefined;
+    return this.financeProjectService.listSites(id, statusOpt != null ? { status: statusOpt } : undefined);
   }
 
   @Post(':id/sites')

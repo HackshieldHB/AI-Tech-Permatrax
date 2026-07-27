@@ -61,8 +61,10 @@ export default function FinanceProjectsDashboardPage() {
     if (willOpen && !sitesByParent[segmentId]) {
       setLoadingSites((cur) => ({ ...cur, [segmentId]: true }));
       try {
+        // Integra V12: load all statuses then group Active / Closed / Archived
         const res = await apiGetPaginated<FinanceProjectListItem>('/finance-projects', {
           parentId: segmentId,
+          includeArchived: true,
           limit: 100,
         });
         setSitesByParent((cur) => ({ ...cur, [segmentId]: res.data }));
@@ -399,28 +401,41 @@ export default function FinanceProjectsDashboardPage() {
                 ) : null}
 
                 {isSegment && isExpanded ? (
-                  <div className="flex flex-col gap-2 rounded-xl bg-slate-50 border border-slate-100 p-2">
+                  <div className="flex flex-col gap-3 rounded-xl bg-slate-50 border border-slate-100 p-2">
                     {loadingSites[p.id] ? (
                       <div className="text-xs text-slate-500 px-2 py-1">Memuat sites…</div>
                     ) : sites.length === 0 ? (
                       <div className="text-xs text-slate-500 px-2 py-1">Belum ada Site.</div>
                     ) : (
-                      sites.map((s) => (
-                        <Link
-                          key={s.id}
-                          href={`/finance-projects/${s.id}`}
-                          className="flex items-center justify-between gap-2 rounded-lg bg-white border border-slate-100 px-3 py-2 hover:border-[#00D4B4]"
-                        >
-                          <div className="min-w-0">
-                            <div className="text-[11px] font-bold text-slate-500">{s.code}</div>
-                            <div className="text-xs font-bold text-slate-900 truncate">{s.name}</div>
+                      (['ACTIVE', 'CLOSED', 'ARCHIVED'] as const).map((st) => {
+                        const group = sites.filter((s) => s.status === st);
+                        if (group.length === 0) return null;
+                        const title =
+                          st === 'ACTIVE' ? 'Active Projects' : st === 'CLOSED' ? 'Closed Projects' : 'Archived Projects';
+                        return (
+                          <div key={st} className="space-y-1.5">
+                            <div className="text-[10px] font-bold uppercase tracking-wide text-slate-500 px-1">
+                              {title} ({group.length})
+                            </div>
+                            {group.map((s) => (
+                              <Link
+                                key={s.id}
+                                href={`/finance-projects/${s.id}`}
+                                className="flex items-center justify-between gap-2 rounded-lg bg-white border border-slate-100 px-3 py-2 hover:border-[#00D4B4]"
+                              >
+                                <div className="min-w-0">
+                                  <div className="text-[11px] font-bold text-slate-500">{s.code}</div>
+                                  <div className="text-xs font-bold text-slate-900 truncate">{s.name}</div>
+                                </div>
+                                <div className="text-right shrink-0">
+                                  <div className="text-xs font-bold text-slate-800">{formatRupiah(num(s.totalBudget))}</div>
+                                  <div className="text-[10px] text-slate-500">{s.status}</div>
+                                </div>
+                              </Link>
+                            ))}
                           </div>
-                          <div className="text-right shrink-0">
-                            <div className="text-xs font-bold text-slate-800">{formatRupiah(num(s.totalBudget))}</div>
-                            <div className="text-[10px] text-slate-500">{s.status}</div>
-                          </div>
-                        </Link>
-                      ))
+                        );
+                      })
                     )}
                   </div>
                 ) : null}

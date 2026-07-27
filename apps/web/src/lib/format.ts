@@ -3,9 +3,10 @@
 export function formatRupiah(value: string | number, opts?: { withSymbol?: boolean }): string {
   const num = typeof value === 'string' ? Number(value) : value;
   if (Number.isNaN(num)) return '—';
+  const hasFraction = Math.abs(num % 1) > 1e-9;
   const formatted = num.toLocaleString('id-ID', {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0,
+    minimumFractionDigits: hasFraction ? 2 : 0,
+    maximumFractionDigits: 2,
   });
   return opts?.withSymbol === false ? formatted : `Rp ${formatted}`;
 }
