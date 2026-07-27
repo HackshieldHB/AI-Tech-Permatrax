@@ -240,14 +240,23 @@ export class FinanceProjectService {
     );
   }
 
-  async listSites(segmentId: string): Promise<FinanceProjectListItem[]> {
+  async listSites(
+    segmentId: string,
+    opts?: { status?: FinanceProjectStatus | 'ALL' },
+  ): Promise<FinanceProjectListItem[]> {
     const parent = await this.prisma.financeProject.findUnique({ where: { id: segmentId } });
     if (!parent) throw new NotFoundException('Finance project tidak ditemukan');
     if (parent.hierarchyLevel !== 'SEGMENT') {
       throw new BadRequestException('Hanya Segment yang memiliki daftar Site');
     }
+    // Integra V12: default Active-only (summary + primary list); pass ALL for status sections
+    const statusFilter =
+      opts?.status === 'ALL' ? undefined : (opts?.status ?? FinanceProjectStatus.ACTIVE);
     const rows = await this.prisma.financeProject.findMany({
-      where: { parentId: segmentId },
+      where: {
+        parentId: segmentId,
+        ...(statusFilter ? { status: statusFilter } : {}),
+      },
       orderBy: { createdAt: 'asc' },
     });
     const ftttSpent = await this.getFtttSpentMap(rows.map((r) => r.id));
@@ -517,8 +526,15 @@ export class FinanceProjectService {
         take: filter.limit,
         orderBy,
         include: {
-          children: { select: { id: true }, take: 200 },
-          _count: { select: { children: true } },
+          // Integra V12: Segment rollups only from Active Sites
+          children: {
+            where: { status: FinanceProjectStatus.ACTIVE },
+            select: { id: true },
+            take: 200,
+          },
+          _count: {
+            select: { children: { where: { status: FinanceProjectStatus.ACTIVE } } },
+          },
         },
       }),
     ]);
@@ -532,7 +548,10 @@ export class FinanceProjectService {
     const childBudgetRows =
       childIds.length > 0
         ? await this.prisma.financeProject.findMany({
-            where: { id: { in: childIds } },
+            where: {
+              id: { in: childIds },
+              status: FinanceProjectStatus.ACTIVE,
+            },
             select: {
               id: true, parentId: true, totalBudget: true,
               budgetPerizinan: true, materialBudget: true, jasaBudget: true,
@@ -598,7 +617,15 @@ export class FinanceProjectService {
     return paginate(data, total, filter.page, filter.limit);
   }
 
-  async findOne(id: string): Promise<FinanceProjectDetail & { sites?: FinanceProjectListItem[]; parent?: { id: string; code: string; name: string } | null; childCount?: number }> {
+  async findOne(id: string): Promise<
+    FinanceProjectDetail & {
+      sites?: FinanceProjectListItem[];
+      sitesClosed?: FinanceProjectListItem[];
+      sitesArchived?: FinanceProjectListItem[];
+      parent?: { id: string; code: string; name: string } | null;
+      childCount?: number;
+    }
+  > {
     const p = await this.prisma.financeProject.findUnique({
       where: { id },
       include: {
@@ -659,22 +686,34 @@ export class FinanceProjectService {
     };
 
     if (p.hierarchyLevel === 'SEGMENT') {
-      const sites = await this.listSites(id);
-      const sitesBudget = sites.reduce((s, x) => s + Number(x.totalBudget), 0);
-      const sitesSpent = sites.reduce((s, x) => s + (x.totalSpent ?? 0), 0);
+      const allSites = await this.listSites(id, { status: 'ALL' });
+      const activeSites = allSites.filter((s) => s.status === FinanceProjectStatus.ACTIVE);
+      const closedSites = allSites.filter((s) => s.status === FinanceProjectStatus.CLOSED);
+      const archivedSites = allSites.filter((s) => s.status === FinanceProjectStatus.ARCHIVED);
+      // Integra V12: Segment summary / rollup from Active Sites only
+      const sitesBudget = activeSites.reduce((s, x) => s + Number(x.totalBudget), 0);
+      const sitesSpent = activeSites.reduce((s, x) => s + (x.totalSpent ?? 0), 0);
       const lain = base.lainLainSpent ?? 0;
       const ownBudget = Number(p.budgetLainLain ?? p.totalBudget);
       const totalBudgetNum = ownBudget + sitesBudget;
       const totalSpent = lain + sitesSpent;
+      const catPerizinan = activeSites.reduce((s, x) => s + Number(x.budgetPerizinan ?? 0), 0);
+      const catMaterial = activeSites.reduce((s, x) => s + Number(x.materialBudget ?? 0), 0);
+      const catJasa = activeSites.reduce((s, x) => s + Number(x.jasaBudget ?? 0), 0);
       return {
         ...base,
-        // Keep own Lain-Lain as totalBudget for settings; expose rollup separately.
         totalBudget: new Prisma.Decimal(ownBudget),
         totalRab: totalBudgetNum,
         totalSpent,
         totalRemaining: totalBudgetNum - totalSpent,
         aggregatedTotalBudget: totalBudgetNum,
-        sites,
+        budgetPerizinan: new Prisma.Decimal(catPerizinan),
+        materialBudget: new Prisma.Decimal(catMaterial),
+        jasaBudget: new Prisma.Decimal(catJasa),
+        childCount: activeSites.length,
+        sites: activeSites,
+        sitesClosed: closedSites,
+        sitesArchived: archivedSites,
       };
     }
 
