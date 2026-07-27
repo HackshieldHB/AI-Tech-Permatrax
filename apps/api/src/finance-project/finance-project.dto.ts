@@ -65,6 +65,8 @@ export const UpdateBudgetDto = z
     totalBudget: z.coerce.number().nonnegative(),
     materialBudget: z.coerce.number().nonnegative().nullable().optional(),
     jasaBudget: z.coerce.number().nonnegative().nullable().optional(),
+    budgetPerizinan: z.coerce.number().nonnegative().nullable().optional(),
+    budgetLainLain: z.coerce.number().nonnegative().nullable().optional(),
     reason: z.string().optional(),
   })
   .refine(

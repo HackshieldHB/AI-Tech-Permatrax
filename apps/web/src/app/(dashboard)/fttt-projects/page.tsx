@@ -17,22 +17,23 @@ import { API_HOST } from '../../../lib/api';
 
 // ─── Phase progress bar ───────────────────────────────────────────────────────
 function PhaseBar({ project }: { project: FtttProject }) {
+  const isClosed = project.status === 'CLOSED' || project.status === 'CANCELLED';
   const phases = project.phaseProgresses.filter((p) => p.status !== 'SKIPPED');
   const completed = phases.filter((p) => p.status === 'COMPLETED').length;
   const pct = phases.length > 0 ? Math.round((completed / phases.length) * 100) : 0;
 
   return (
-    <div style={{ marginTop: 8 }}>
+    <div style={{ marginTop: 8, opacity: isClosed ? 0.7 : 1 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: '#57606a', marginBottom: 4 }}>
-        <span>{FTTT_PHASE_LABELS[project.currentPhase]}</span>
-        <span>{pct}%</span>
+        <span>{isClosed ? 'Project Closed' : FTTT_PHASE_LABELS[project.currentPhase]}</span>
+        <span>{isClosed ? 'Closed' : `${pct}%`}</span>
       </div>
       <div style={{ height: 6, background: '#EAEEF2', borderRadius: 3, overflow: 'hidden' }}>
         <div
           style={{
             height: '100%',
-            width: `${pct}%`,
-            background: project.status === 'COMPLETED' ? '#1a7f37' : '#0969DA',
+            width: isClosed ? '100%' : `${pct}%`,
+            background: isClosed ? '#8C959F' : project.status === 'COMPLETED' ? '#1a7f37' : '#0969DA',
             borderRadius: 3,
             transition: 'width 0.4s ease',
           }}
@@ -47,10 +48,11 @@ function PhaseBar({ project }: { project: FtttProject }) {
               flex: 1,
               height: 4,
               borderRadius: 2,
-              background:
-                p.status === 'COMPLETED' ? '#1a7f37' :
-                p.status === 'ACTIVE' ? '#0969DA' :
-                '#EAEEF2',
+              background: isClosed
+                ? '#D0D7DE'
+                : p.status === 'COMPLETED' ? '#1a7f37'
+                  : p.status === 'ACTIVE' ? '#0969DA'
+                    : '#EAEEF2',
             }}
           />
         ))}
@@ -124,9 +126,10 @@ export default function FtttProjectsPage() {
     });
 
     socket.on('fttt:project_created', () => void load(1));
+    socket.on('fttt:project_closed', () => void load(page));
 
     return () => { socket.disconnect(); };
-  }, [load]);
+  }, [load, page]);
 
   return (
     <div style={{ padding: 24 }}>

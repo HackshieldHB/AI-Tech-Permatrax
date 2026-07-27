@@ -296,7 +296,11 @@ export default function FinanceProjectDetailPage() {
       }
       setEditName(d.name);
       setEditDesc(d.description ?? '');
-      setBudgetTotal(String(num(d.totalBudget)));
+      // Segment: edit own Lain-Lain budget (not aggregated site totals)
+      const seedTotal = d.hierarchyLevel === 'SEGMENT'
+        ? num(d.budgetLainLain ?? d.totalBudget)
+        : num(d.totalBudget);
+      setBudgetTotal(String(seedTotal));
       setBudgetMat(d.materialBudget != null ? String(num(d.materialBudget)) : '');
       setBudgetJas(d.jasaBudget != null ? String(num(d.jasaBudget)) : '');
       const adj = await apiGet<BudgetLedger[]>(`/finance-projects/${id}/adjustments`);
@@ -1050,6 +1054,8 @@ export default function FinanceProjectDetailPage() {
                             });
                             toast.success('Budget diperbarui');
                             await loadDetail({ silent: true });
+                            // Invalidate FTTT monitor (Total Budget / kategori / S-curve)
+                            setReloadKey((k) => k + 1);
                           } catch (e) {
                             toast.error(e instanceof Error ? e.message : 'Gagal');
                           } finally {

@@ -1011,7 +1011,7 @@ export type FtttHierarchyLevel = 'BULKY' | 'SITE';
 export type FtttRequestStatus = 'PENDING_REVIEW' | 'ACCEPTED' | 'DECLINED';
 export type FtttRequestPriority = 'HIGH' | 'MEDIUM' | 'LOW';
 export type FtttPhaseStatus = 'LOCKED' | 'ACTIVE' | 'COMPLETED' | 'SKIPPED';
-export type FtttProjectStatus = 'ACTIVE' | 'COMPLETED' | 'ON_HOLD' | 'CANCELLED';
+export type FtttProjectStatus = 'ACTIVE' | 'COMPLETED' | 'ON_HOLD' | 'CANCELLED' | 'CLOSED';
 export type FtttDocType = 'PO_CONTRACT' | 'SITELIST' | 'BOQ_TOS';
 export type FtttApprovalStatus = 'PENDING_PM' | 'PENDING_ADMIN' | 'APPROVED' | 'REJECTED';
 export type FtttSanggahStatus = 'SUBMITTED' | 'ACCEPTED' | 'REJECTED';
@@ -1136,6 +1136,7 @@ export const FTTT_PROJECT_STATUS_LABELS: Record<FtttProjectStatus, { label: stri
   COMPLETED: { label: 'Selesai', color: 'green' },
   ON_HOLD:   { label: 'Ditunda', color: 'orange' },
   CANCELLED: { label: 'Dibatalkan', color: 'red' },
+  CLOSED:    { label: 'Closed', color: 'gray' },
 };
 
 export interface FtttPhaseProgress {

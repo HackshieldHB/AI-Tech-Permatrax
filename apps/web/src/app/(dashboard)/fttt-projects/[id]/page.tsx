@@ -72,6 +72,7 @@ function LiveProgressBar({ project }: { project: FtttProject }) {
   // Integra V3: Bulky Parent progress = Initiation + Site Initiation only.
   // Site children still use full operational lifecycle; optional aggregate label when Sites exist.
   const isBulky = project.hierarchyLevel === 'BULKY';
+  const isClosed = project.status === 'CLOSED' || project.status === 'CANCELLED';
   const children = project.children ?? [];
   const stepperPhases = isBulky ? BULKY_PHASES : PHASE_ORDER.filter((phase) => {
     const progress = project.phaseProgresses.find((p) => p.phase === phase);
@@ -80,7 +81,10 @@ function LiveProgressBar({ project }: { project: FtttProject }) {
 
   let pct: number;
   let overallLabel = 'Overall Progress';
-  if (isBulky) {
+  if (isClosed) {
+    overallLabel = 'Project Closed';
+    pct = 0;
+  } else if (isBulky) {
     const bulkyProg = project.phaseProgresses.filter((p) => BULKY_PHASES.includes(p.phase));
     const completed = bulkyProg.filter((p) => p.status === 'COMPLETED').length;
     pct = bulkyProg.length > 0 ? Math.round((completed / bulkyProg.length) * 100) : 0;
@@ -101,19 +105,21 @@ function LiveProgressBar({ project }: { project: FtttProject }) {
     pct = visible.length > 0 ? Math.round((completed / visible.length) * 100) : 0;
   }
 
+  const barColor = isClosed ? '#8C959F' : pct === 100 ? '#1a7f37' : '#0969DA';
+
   return (
-    <div style={{ background: '#fff', border: '1px solid #D0D7DE', borderRadius: 12, padding: 16, marginBottom: 16 }}>
+    <div style={{ background: '#fff', border: '1px solid #D0D7DE', borderRadius: 12, padding: 16, marginBottom: 16, opacity: isClosed ? 0.85 : 1 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 8 }}>
-        <span style={{ fontWeight: 600 }}>{overallLabel}</span>
-        <span style={{ fontWeight: 700, color: pct === 100 ? '#1a7f37' : '#0969DA' }}>{pct}%</span>
+        <span style={{ fontWeight: 600, color: isClosed ? '#57606a' : undefined }}>{overallLabel}</span>
+        <span style={{ fontWeight: 700, color: barColor }}>{isClosed ? 'Closed' : `${pct}%`}</span>
       </div>
       {/* Bar */}
       <div style={{ height: 10, background: '#EAEEF2', borderRadius: 5, overflow: 'hidden', marginBottom: 12 }}>
         <div
           style={{
             height: '100%',
-            width: `${pct}%`,
-            background: pct === 100 ? '#1a7f37' : '#0969DA',
+            width: isClosed ? '100%' : `${pct}%`,
+            background: barColor,
             borderRadius: 5,
             transition: 'width 0.5s ease',
           }}
@@ -125,24 +131,29 @@ function LiveProgressBar({ project }: { project: FtttProject }) {
           const progress = project.phaseProgresses.find((p) => p.phase === phase);
           if (!progress) return null;
           const isLast = idx === arr.length - 1;
+          const labelColor = isClosed
+            ? '#8c959f'
+            : progress.status === 'ACTIVE' ? '#0969DA'
+              : progress.status === 'COMPLETED' ? '#1a7f37'
+                : progress.status === 'SKIPPED' ? '#bbb' : '#8c959f';
           return (
             <React.Fragment key={phase}>
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: 72, gap: 4 }}>
-                <PhaseIcon status={progress.status} />
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: 72, gap: 4, opacity: isClosed ? 0.55 : 1 }}>
+                <PhaseIcon status={isClosed ? 'LOCKED' : progress.status} />
                 <span
                   style={{
                     fontSize: 10,
                     textAlign: 'center',
-                    color: progress.status === 'ACTIVE' ? '#0969DA' : progress.status === 'COMPLETED' ? '#1a7f37' : progress.status === 'SKIPPED' ? '#bbb' : '#8c959f',
-                    fontWeight: progress.status === 'ACTIVE' ? 700 : 400,
+                    color: labelColor,
+                    fontWeight: !isClosed && progress.status === 'ACTIVE' ? 700 : 400,
                     lineHeight: 1.2,
                   }}
                 >
-                  {FTTT_PHASE_LABELS[phase]}
+                  {isClosed && idx === 0 ? 'Project Closed' : FTTT_PHASE_LABELS[phase]}
                 </span>
               </div>
               {!isLast && (
-                <div style={{ flex: 1, height: 2, minWidth: 8, background: progress.status === 'COMPLETED' ? '#1a7f37' : '#EAEEF2', margin: '0 2px', marginBottom: 14 }} />
+                <div style={{ flex: 1, height: 2, minWidth: 8, background: isClosed ? '#D0D7DE' : progress.status === 'COMPLETED' ? '#1a7f37' : '#EAEEF2', margin: '0 2px', marginBottom: 14 }} />
               )}
             </React.Fragment>
           );
@@ -3546,6 +3557,7 @@ export default function FtttProjectDetailPage() {
   const [readiness, setReadiness] = useState<{ ready: boolean; blockedReasons: string[] } | null>(null);
   const [loading, setLoading] = useState(true);
   const [advancing, setAdvancing] = useState(false);
+  const [closingParent, setClosingParent] = useState(false);
   const socketRef = useRef<Socket | null>(null);
 
   const load = useCallback(async () => {
@@ -3574,6 +3586,9 @@ export default function FtttProjectDetailPage() {
     socket.on('fttt:phase_advanced', (payload: any) => {
       if (payload.projectId === id) void load();
     });
+    socket.on('fttt:project_closed', (payload: { projectId?: string }) => {
+      if (payload.projectId === id) void load();
+    });
     return () => { socket.disconnect(); };
   }, [id, load]);
 
@@ -3597,6 +3612,26 @@ export default function FtttProjectDetailPage() {
     }
   };
 
+  const handleCloseParent = async () => {
+    if (!confirm(
+      'Tutup Parent Project?\n\nStatus Parent dan seluruh Child Site yang masih Aktif akan berubah menjadi Closed.\nProject tetap tersimpan sebagai histori (read-only) dan tidak dapat diedit lagi.',
+    )) return;
+    setClosingParent(true);
+    try {
+      const res = await apiFetch(`/fttt-projects/${id}/close`, { method: 'POST' }, user?.id);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({})) as { message?: string };
+        throw new Error(err.message ?? 'Gagal menutup project');
+      }
+      toast.success('Parent Project berhasil ditutup (Closed)');
+      void load();
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Gagal');
+    } finally {
+      setClosingParent(false);
+    }
+  };
+
   if (loading) return <div style={{ padding: 40, textAlign: 'center', color: '#57606a' }}>Memuat project…</div>;
   if (!project)  return <div style={{ padding: 40, textAlign: 'center', color: '#cf222e' }}>Project tidak ditemukan.</div>;
 
@@ -3610,7 +3645,8 @@ export default function FtttProjectDetailPage() {
   };
   const sc = colorMap[statusCfg.color] ?? colorMap.gray;
 
-  const isCompletedOrCancelled = ['COMPLETED', 'CANCELLED'].includes(project.status);
+  const isCompletedOrCancelled = ['COMPLETED', 'CANCELLED', 'CLOSED'].includes(project.status);
+  const isClosed = project.status === 'CLOSED';
   const currentProgress = project.phaseProgresses.find((p) => p.phase === project.currentPhase);
   const isPm  = project.pmId === user?.id || user?.role === 'PM_FTTT';
   const userRole = user?.role ?? '';
@@ -3619,6 +3655,10 @@ export default function FtttProjectDetailPage() {
   // Integra V2/V3: Bulky Project only manages Initiation lifecycle — operational
   // phase actions (Survey, Implementation, etc.) belong to its Sites
   const isBulky = project.hierarchyLevel === 'BULKY';
+  const canCloseParent =
+    isBulky &&
+    project.status === 'ACTIVE' &&
+    (userRole === 'PM_FTTT' || userRole === 'ADMIN' || userRole === 'GENERAL_MANAGER');
   const bulkySiteInitProg = project.phaseProgresses.find((p) => p.phase === 'SITE_INITIATION');
   const bulkyInitiationDone =
     isBulky &&
@@ -3715,7 +3755,26 @@ export default function FtttProjectDetailPage() {
               {advancing ? 'Memproses…' : `Selesaikan Fase → ${FTTT_PHASE_LABELS[project.currentPhase]}`}
             </button>
           )}
-          {isBulky && bulkyInitiationDone && !isSurveyorFttt && (
+          {canCloseParent && (
+            <button
+              type="button"
+              onClick={() => void handleCloseParent()}
+              disabled={closingParent}
+              style={{
+                padding: '10px 18px', borderRadius: 8, border: '1px solid #cf222e', fontWeight: 700, fontSize: 13,
+                background: '#FFEBE9', color: '#cf222e',
+                cursor: closingParent ? 'not-allowed' : 'pointer',
+              }}
+            >
+              {closingParent ? 'Menutup…' : 'Close Parent Project'}
+            </button>
+          )}
+          {isClosed && (
+            <div style={{ padding: '8px 14px', borderRadius: 8, background: '#F6F8FA', border: '1px solid #D0D7DE', fontSize: 12, color: '#57606a' }}>
+              Project Closed — histori read-only. Seluruh aktivitas operasional dan edit dinonaktifkan.
+            </div>
+          )}
+          {isBulky && bulkyInitiationDone && !isSurveyorFttt && !isClosed && (
             <div style={{ padding: '8px 14px', borderRadius: 8, background: '#DAFBE1', border: '1px solid #1a7f37', fontSize: 12, color: '#1a7f37' }}>
               Parent Initiation selesai — lanjutkan lifecycle operasional di masing-masing Child Site.
             </div>
@@ -3923,6 +3982,19 @@ export default function FtttProjectDetailPage() {
           <CheckCircle size={32} color="#1a7f37" style={{ marginBottom: 8 }} />
           <p style={{ margin: 0, fontWeight: 700, fontSize: 16, color: '#1a7f37' }}>Project Selesai 🎉</p>
           <p style={{ margin: '4px 0 0', fontSize: 13, color: '#57606a' }}>Semua fase lifecycle FTTT telah berhasil diselesaikan.</p>
+        </div>
+      )}
+
+      {/* Integra V11: Closed Parent — histori read-only child list */}
+      {isClosed && isBulky && (
+        <div style={{ background: '#fff', border: '1px solid #D0D7DE', borderRadius: 12, padding: 20, marginTop: 16 }}>
+          <p style={{ margin: '0 0 12px', fontWeight: 600, fontSize: 14, color: '#57606a' }}>Histori Child Project (Site) — read-only</p>
+          <SiteInitiationSection
+            project={project}
+            onRefresh={load}
+            userRole={user?.role ?? ''}
+            monitoringOnly
+          />
         </div>
       )}
     </div>
