@@ -76,17 +76,16 @@ export function FinancialPerformance({ detail, canEdit, isGm, onRefresh }: Props
   };
 
   const submitPo = async () => {
-    if (!poNumber.trim()) { toast.error('Nomor PO Customer wajib diisi'); return; }
     const n = Number(String(amount).replace(/\./g, '').replace(/,/g, '.'));
     if (!n || n <= 0) { toast.error('Nominal PO Customer wajib diisi'); return; }
-    if (!file) { toast.error('Dokumen PO Customer wajib diunggah'); return; }
     setSubmitting(true);
     try {
       const fd = new FormData();
       fd.append('amount', String(n));
-      fd.append('poNumber', poNumber.trim());
+      // Integra V13: nomor & dokumen opsional
+      if (poNumber.trim()) fd.append('poNumber', poNumber.trim());
       if (reason.trim()) fd.append('reason', reason.trim());
-      fd.append('file', file);
+      if (file) fd.append('file', file);
       await apiPostForm(`/finance-projects/${detail.id}/po-customer`, fd);
       toast.success('Pengajuan PO Customer dikirim ke GM');
       setModalOpen(false);
@@ -288,12 +287,12 @@ export function FinancialPerformance({ detail, canEdit, isGm, onRefresh }: Props
               Perubahan tidak langsung tersimpan. Ajukan ke GM untuk approval.
             </p>
             <label className="block text-xs font-semibold text-slate-600">
-              Nomor PO Customer <span className="text-red-600">*</span>
+              Nomor PO Customer
               <input
                 value={poNumber}
                 onChange={(e) => setPoNumber(e.target.value)}
                 className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
-                placeholder="Contoh: PO/BIZ/2026/00125"
+                placeholder="Contoh: PO/BIZ/2026/00125 (opsional)"
               />
             </label>
             <label className="block text-xs font-semibold text-slate-600">
@@ -315,13 +314,14 @@ export function FinancialPerformance({ detail, canEdit, isGm, onRefresh }: Props
               />
             </label>
             <label className="block text-xs font-semibold text-slate-600">
-              Dokumen PO <span className="text-red-600">*</span>
+              Dokumen PO
               <input
                 type="file"
                 accept=".pdf,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg"
                 onChange={(e) => setFile(e.target.files?.[0] ?? null)}
                 className="mt-1 block w-full text-xs"
               />
+              <span className="mt-0.5 block text-[10px] font-normal text-slate-400">Opsional — dapat dilengkapi kemudian</span>
             </label>
             <div className="flex justify-end gap-2 pt-2">
               <button type="button" onClick={() => setModalOpen(false)} className="px-3 py-2 text-sm rounded-lg border">
