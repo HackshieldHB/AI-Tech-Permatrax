@@ -33,6 +33,7 @@ import {
   CreateFtttProjectDto,
   DeclineFinancialRequestDto,
   DisburseFtttTransactionDto,
+  FinancialRequestInboxFilterDto,
   FtttProjectFilterDto,
   ResolveSanggahDto,
   SetImplementationTypeDto,
@@ -97,6 +98,28 @@ export class FtttProjectController {
   @Get('by-finance/:financeProjectId/monitoring')
   getMonitoringByFinance(@Param('financeProjectId') financeProjectId: string) {
     return this.service.getMonitoringByFinance(financeProjectId);
+  }
+
+  // Stable v1: Approval Dana inbox — must be before ':id'
+  @Get('financial-requests')
+  listFinancialRequests(
+    @Query(new ZodValidationPipe(FinancialRequestInboxFilterDto)) filter: any,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.service.listFinancialRequests(filter, user.userId, user.role);
+  }
+
+  @Get('financial-requests/inbox-count')
+  financialRequestInboxCount(@CurrentUser() user: AuthUser) {
+    return this.service.financialRequestInboxCount(user.userId, user.role);
+  }
+
+  @Post('financial-requests/:txId/mark-read')
+  markFinancialRequestRead(
+    @Param('txId') txId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.service.markFinancialRequestRead(txId, user.userId, user.role);
   }
 
   // GET /fttt-projects/:id
@@ -176,14 +199,20 @@ export class FtttProjectController {
     return this.service.addTransaction(id, dto, user.userId, user.role);
   }
 
-  // PUT /fttt-projects/transactions/:txId/disburse  (Finance — Tanggal Dana Keluar)
+  // PUT /fttt-projects/transactions/:txId/disburse  (Finance — Tanggal Dana Keluar + Bukti Transfer)
   @Put('transactions/:txId/disburse')
+  @UseInterceptors(FileInterceptor('file', upload))
   disburseTransaction(
     @Param('txId') txId: string,
-    @Body(new ZodValidationPipe(DisburseFtttTransactionDto)) dto: any,
+    @UploadedFile() file: Express.Multer.File,
+    @Body('disbursedAt') disbursedAt: string,
     @CurrentUser() user: AuthUser,
   ) {
-    return this.service.disburseTransaction(txId, dto.disbursedAt, user.userId, user.role);
+    const parsed = DisburseFtttTransactionDto.safeParse({ disbursedAt });
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.issues[0]?.message ?? 'Tanggal Dana Keluar wajib diisi');
+    }
+    return this.service.disburseTransaction(txId, parsed.data.disbursedAt, user.userId, user.role, file);
   }
 
   // POST /fttt-projects/transactions/:txId/accept  (Finance — Financial Request Accepted)

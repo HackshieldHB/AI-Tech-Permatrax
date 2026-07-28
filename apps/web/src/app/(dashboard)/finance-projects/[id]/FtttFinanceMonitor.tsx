@@ -1,12 +1,14 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   ComposedChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
 } from 'recharts';
-import { apiGet, apiPut } from '../../../../lib/api';
+import { apiGet, fixFileUrl } from '../../../../lib/api';
+import { apiFetch } from '../../../../lib/auth';
 import { formatRupiah } from '../../../../lib/format';
 import { toast } from 'sonner';
+import { useAuthStore } from '../../../../store/authStore';
 
 type Cat = 'PERIZINAN' | 'MATERIAL' | 'JASA' | 'LAIN_LAIN';
 const CAT_LABEL: Record<Cat, string> = { PERIZINAN: 'Perizinan', MATERIAL: 'Material', JASA: 'Jasa', LAIN_LAIN: 'Lain-Lain' };
@@ -27,6 +29,8 @@ interface MonitoringData {
     id: string; category: Cat; aktivitas: string; uom: string | null;
     qty: string | number; price: string | number; total: string | number; remarks: string;
     createdAt: string; disbursedAt?: string | null;
+    hasTransferProof?: boolean;
+    transferProofUrl?: string | null;
     createdBy: { name: string } | null;
     disbursedBy?: { name: string } | null;
   }[];
@@ -40,12 +44,11 @@ function MiniCurve({ title, data, dataWeekly, keys, money }: {
   money?: boolean;
 }) {
   const [period, setPeriod] = useState<'monthly' | 'weekly'>('weekly');
-  const scrollRef = useRef<HTMLDivElement>(null);
+  const scrollRef = React.useRef<HTMLDivElement>(null);
   const [containerW, setContainerW] = useState(0);
   const shown = period === 'weekly' && dataWeekly && dataWeekly.length > 0 ? dataWeekly : data;
   const pxPerTick = period === 'weekly' ? 88 : 96;
   const chartHeight = 288;
-  // Fill container when short; expand past container when many weeks → real horizontal scroll
   const contentW = Math.max(1, shown.length * pxPerTick + 72);
   const chartWidth = Math.max(containerW || contentW, contentW);
 
@@ -101,10 +104,12 @@ function MiniCurve({ title, data, dataWeekly, keys, money }: {
 }
 
 export function FtttFinanceMonitor({ financeProjectId, tab, reloadKey = 0 }: { financeProjectId: string; tab: 'overview' | 'transactions' | 'scurve'; reloadKey?: number }) {
+  const { user } = useAuthStore();
   const [data, setData] = useState<MonitoringData | null>(null);
   const [loading, setLoading] = useState(true);
   const [disburseId, setDisburseId] = useState<string | null>(null);
   const [disburseDate, setDisburseDate] = useState('');
+  const [disburseFile, setDisburseFile] = useState<File | null>(null);
   const [disbursing, setDisbursing] = useState(false);
   const [localReload, setLocalReload] = useState(0);
 
@@ -120,22 +125,20 @@ export function FtttFinanceMonitor({ financeProjectId, tab, reloadKey = 0 }: { f
 
   const handleDisburse = async (txId: string) => {
     if (!disburseDate) { toast.error('Isi Tanggal Dana Keluar'); return; }
+    if (!disburseFile) { toast.error('Upload Bukti Transfer wajib diisi'); return; }
     const today = new Date();
     const max = new Date(today); max.setDate(max.getDate() + 14);
-    const todayStr = today.toISOString().slice(0, 10);
     const maxStr = max.toISOString().slice(0, 10);
     if (disburseDate > maxStr) { toast.error('Tanggal Dana Keluar maksimal 14 hari dari hari ini'); return; }
     setDisbursing(true);
     try {
-      await apiPut(`/fttt-projects/transactions/${txId}/disburse`, {
-        disbursedAt: new Date(disburseDate + 'T12:00:00').toISOString(),
-      });
-      toast.success(
-        disburseDate > todayStr
-          ? 'Dana keluar dijadwalkan — budget berkurang pada tanggal tersebut'
-          : 'Tanggal Dana Keluar tersimpan — budget diperbarui',
-      );
-      setDisburseId(null); setDisburseDate('');
+      const fd = new FormData();
+      fd.append('disbursedAt', disburseDate);
+      fd.append('file', disburseFile);
+      const res = await apiFetch(`/fttt-projects/transactions/${txId}/disburse`, { method: 'PUT', body: fd }, user?.id);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
+      toast.success('Dana Keluar tersimpan — budget diperbarui secara real-time');
+      setDisburseId(null); setDisburseDate(''); setDisburseFile(null);
       setLocalReload((k) => k + 1);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Gagal');
@@ -201,7 +204,7 @@ export function FtttFinanceMonitor({ financeProjectId, tab, reloadKey = 0 }: { f
     return (
       <div className="rounded-2xl border border-slate-100 bg-white overflow-x-auto">
         <p className="px-3 pt-3 text-xs text-slate-500">
-          Budget hanya berkurang setelah Tanggal Dana Keluar diisi. Transaksi tanpa tanggal masih berupa rencana.
+          Budget berkurang segera setelah Tanggal Dana Keluar + Bukti Transfer disubmit.
         </p>
         <table className="min-w-full text-sm">
           <thead>
@@ -218,14 +221,13 @@ export function FtttFinanceMonitor({ financeProjectId, tab, reloadKey = 0 }: { f
               const total = num(t.total);
               const bobot = rab > 0 ? (total / rab) * 100 : 0;
               const hasDate = !!t.disbursedAt;
-              const realized = hasDate && new Date(t.disbursedAt!).getTime() <= Date.now();
-              const scheduled = hasDate && !realized;
+              const realized = hasDate;
               return (
                 <tr key={t.id} className="border-b border-slate-50">
                   <td className="px-3 py-2 text-xs text-slate-500 whitespace-nowrap">{new Date(t.createdAt).toLocaleString('id-ID', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</td>
                   <td className="px-3 py-2">
-                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${realized ? 'bg-emerald-100 text-emerald-700' : scheduled ? 'bg-sky-100 text-sky-700' : 'bg-amber-100 text-amber-700'}`}>
-                      {realized ? 'Terealisasi' : scheduled ? 'Terjadwal' : 'Menunggu'}
+                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${realized ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
+                      {realized ? 'Dana Keluar' : 'Menunggu'}
                     </span>
                   </td>
                   <td className="px-3 py-2">{CAT_LABEL[t.category]}</td>
@@ -238,30 +240,34 @@ export function FtttFinanceMonitor({ financeProjectId, tab, reloadKey = 0 }: { f
                   <td className="px-3 py-2 text-xs text-slate-500">{t.createdBy?.name ?? '—'}</td>
                   <td className="px-3 py-2 text-xs">
                     {hasDate ? (
-                      <span className={`whitespace-nowrap ${realized ? 'text-emerald-700' : 'text-sky-700'}`}>
+                      <span className="whitespace-nowrap text-emerald-700">
                         {new Date(t.disbursedAt!).toLocaleDateString('id-ID')}
-                        {scheduled ? ' (jadwal)' : ''}
+                        {t.transferProofUrl && (
+                          <> · <a href={fixFileUrl(t.transferProofUrl)} target="_blank" rel="noopener noreferrer" className="text-blue-600 underline">Bukti</a></>
+                        )}
                       </span>
                     ) : disburseId === t.id ? (
-                      <div className="flex items-center gap-1">
+                      <div className="flex flex-col gap-1 min-w-[160px]">
                         <input type="date" value={disburseDate}
                           max={(() => { const d = new Date(); d.setDate(d.getDate() + 14); return d.toISOString().slice(0, 10); })()}
                           onChange={(e) => {
                             const v = e.target.value;
                             const max = new Date(); max.setDate(max.getDate() + 14);
                             const maxStr = max.toISOString().slice(0, 10);
-                            // Integra V10: allow backdate; only cap future +14d
                             if (v && v > maxStr) { toast.error('Tanggal Dana Keluar maksimal 14 hari dari hari ini'); return; }
                             setDisburseDate(v);
                           }}
                           className="text-xs border rounded px-1 py-0.5" />
+                        <input type="file" accept=".jpg,.jpeg,.png,.pdf,image/jpeg,image/png,application/pdf"
+                          onChange={(e) => setDisburseFile(e.target.files?.[0] ?? null)}
+                          className="text-xs" />
                         <button type="button" disabled={disbursing} onClick={() => void handleDisburse(t.id)}
                           className="text-xs font-bold bg-emerald-600 text-white rounded px-2 py-0.5">
-                          {disbursing ? '…' : 'Simpan'}
+                          {disbursing ? '…' : 'Submit'}
                         </button>
                       </div>
                     ) : (
-                      <button type="button" onClick={() => { setDisburseId(t.id); setDisburseDate(new Date().toISOString().slice(0, 10)); }}
+                      <button type="button" onClick={() => { setDisburseId(t.id); setDisburseDate(new Date().toISOString().slice(0, 10)); setDisburseFile(null); }}
                         className="text-xs font-bold text-blue-600 hover:underline">
                         + Tanggal
                       </button>
@@ -276,7 +282,6 @@ export function FtttFinanceMonitor({ financeProjectId, tab, reloadKey = 0 }: { f
     );
   }
 
-  // tab === 'scurve'
   const showRevision = !!data.hasRevision;
   return (
     <div className="space-y-6">
