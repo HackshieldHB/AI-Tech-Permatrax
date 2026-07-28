@@ -80,8 +80,10 @@ import {
   AdvancePhaseDtoType,
   ApproveDocumentDtoType,
   CreateFtttProjectDtoType,
+  FinancialRequestInboxFilterDtoType,
   FtttProjectFilterDtoType,
   FTTT_PHASES_BY_COMPANY,
+  PHASE_LABELS,
   ResolveSanggahDtoType,
   SetPhasePlanDtoType,
   SubmitSanggahDtoType,
@@ -1300,8 +1302,22 @@ export class FtttProjectService {
     if (!allowed.includes(userRole)) {
       throw new ForbiddenException('Tidak berwenang menghapus site survey');
     }
-    const site = await this.prisma.ftttSurveySite.findFirst({ where: { id: siteId, projectId } });
+    const project = await this.prisma.ftttProject.findUnique({
+      where: { id: projectId },
+      select: { currentPhase: true },
+    });
+    if (!project) throw new NotFoundException('Project tidak ditemukan');
+    if (project.currentPhase !== FtttPhase.SURVEY) {
+      throw new BadRequestException('Site tidak dapat dihapus karena sudah memasuki fase berikutnya');
+    }
+    const site = await this.prisma.ftttSurveySite.findFirst({
+      where: { id: siteId, projectId },
+      include: { _count: { select: { uploads: true } } },
+    });
     if (!site) throw new NotFoundException('Site survey tidak ditemukan');
+    if (site.status === 'DONE' || site._count.uploads > 0) {
+      throw new BadRequestException('Site tidak dapat dihapus karena sudah memiliki aktivitas/transaksi');
+    }
     await this.prisma.ftttSurveySite.delete({ where: { id: siteId } });
     await this.maybeMarkSurveyAllComplete(projectId);
     return { success: true };
@@ -1943,8 +1959,8 @@ export class FtttProjectService {
       title:   'FTTT — Financial Request Baru',
       message: `PM FTTT mengajukan Financial Request "${tx.aktivitas}" (${dto.category}, prioritas ${priority}) untuk project ${project.projectName ?? projectId.slice(-6)}.`,
       type:    'FTTT_FINANCIAL_REQUEST',
-      link:    `/fttt-projects/${projectId}`,
-      entityId: projectId,
+      link:    `/fttt-projects/${projectId}?tx=${tx.id}`,
+      entityId: tx.id,
     });
 
     // Daily Activity auto-log handled globally by ProjectDailyActivityInterceptor (all users)
@@ -1952,7 +1968,7 @@ export class FtttProjectService {
     return tx;
   }
 
-  // Integra V1: Finance accepts a Financial Request and schedules the release date
+  // Integra V1 / Stable v1: Finance accepts — Tanggal Persetujuan (date-only, no jam)
   async acceptFinancialRequest(txId: string, scheduledReleaseAtIso: string, userId: string, userRole: Role) {
     if (userRole !== Role.FINANCE && userRole !== Role.GENERAL_MANAGER) {
       throw new ForbiddenException('Hanya Finance yang dapat menyetujui Financial Request');
@@ -1964,9 +1980,11 @@ export class FtttProjectService {
     if (tx.requestStatus !== FtttRequestStatus.PENDING_REVIEW) {
       throw new BadRequestException('Financial Request ini sudah diproses sebelumnya');
     }
-    const scheduledReleaseAt = new Date(scheduledReleaseAtIso);
-    if (Number.isNaN(scheduledReleaseAt.getTime())) {
-      throw new BadRequestException('Rencana Tanggal Pencairan tidak valid');
+    // Normalize to date-only (start of calendar day) — no time component required from Finance
+    const dateOnly = scheduledReleaseAtIso.slice(0, 10);
+    const scheduledReleaseAt = new Date(`${dateOnly}T00:00:00.000Z`);
+    if (Number.isNaN(scheduledReleaseAt.getTime()) || !/^\d{4}-\d{2}-\d{2}$/.test(dateOnly)) {
+      throw new BadRequestException('Tanggal Persetujuan tidak valid');
     }
     const updated = await this.prisma.ftttTransaction.update({
       where: { id: txId },
@@ -1974,7 +1992,7 @@ export class FtttProjectService {
         requestStatus:  FtttRequestStatus.ACCEPTED,
         scheduledReleaseAt,
         reviewedById:   userId,
-        reviewedAt:     new Date(),
+        reviewedAt:     scheduledReleaseAt,
         declinedReason: null,
       },
       include: {
@@ -1986,10 +2004,10 @@ export class FtttProjectService {
     if (tx.ftttProject.pmId) {
       await this.notifications.createForUser(tx.ftttProject.pmId, {
         title:   'FTTT — Financial Request Disetujui',
-        message: `Financial Request "${tx.aktivitas}" untuk project ${tx.ftttProject.projectName ?? tx.ftttProject.id.slice(-6)} telah disetujui Finance. Rencana pencairan: ${scheduledReleaseAt.toLocaleDateString('id-ID')}.`,
+        message: `Financial Request "${tx.aktivitas}" untuk project ${tx.ftttProject.projectName ?? tx.ftttProject.id.slice(-6)} telah disetujui Finance. Tanggal Persetujuan: ${scheduledReleaseAt.toLocaleDateString('id-ID')}.`,
         type:    'FTTT_FINANCIAL_REQUEST_ACCEPTED',
-        link:    `/fttt-projects/${tx.ftttProject.id}`,
-        entityId: tx.ftttProject.id,
+        link:    `/fttt-projects/${tx.ftttProject.id}?tx=${txId}`,
+        entityId: txId,
       });
     }
     return updated;
@@ -2036,8 +2054,14 @@ export class FtttProjectService {
     return updated;
   }
 
-  // Stage 2: Finance sets Tanggal Dana Keluar → only then counts toward budget / S-curve Actual
-  async disburseTransaction(txId: string, disbursedAtIso: string, userId: string, userRole: Role) {
+  // Stage 2 / Stable v1: Tanggal Dana Keluar + Bukti Transfer → budget deducted immediately
+  async disburseTransaction(
+    txId: string,
+    disbursedAtIso: string,
+    userId: string,
+    userRole: Role,
+    file?: Express.Multer.File,
+  ) {
     if (userRole !== Role.FINANCE && userRole !== Role.GENERAL_MANAGER) {
       throw new ForbiddenException('Hanya Finance yang dapat mengisi Tanggal Dana Keluar');
     }
@@ -2051,20 +2075,37 @@ export class FtttProjectService {
     if (tx.reason && tx.requestStatus !== FtttRequestStatus.ACCEPTED) {
       throw new BadRequestException('Financial Request harus disetujui (Accepted) oleh Finance sebelum dana dapat dikeluarkan');
     }
-    const d = new Date(disbursedAtIso);
-    if (Number.isNaN(d.getTime())) {
+    if (!file) {
+      throw new BadRequestException('Upload Bukti Transfer wajib diisi (JPG, JPEG, PNG, atau PDF)');
+    }
+    const allowedMime = new Set(['image/jpeg', 'image/jpg', 'image/png', 'application/pdf']);
+    const mime = (file.mimetype || '').toLowerCase();
+    const nameOk = /\.(jpe?g|png|pdf)$/i.test(file.originalname || '');
+    if (!allowedMime.has(mime) && !nameOk) {
+      throw new BadRequestException('Bukti Transfer harus berupa JPG, JPEG, PNG, atau PDF');
+    }
+    // Normalize to date-only start-of-day so budget is not delayed to noon
+    const dateOnly = disbursedAtIso.slice(0, 10);
+    const d = new Date(`${dateOnly}T00:00:00.000Z`);
+    if (Number.isNaN(d.getTime()) || !/^\d{4}-\d{2}-\d{2}$/.test(dateOnly)) {
       throw new BadRequestException('Tanggal Dana Keluar tidak valid');
     }
-    // Integra V10: backdate allowed (actual field disbursement); future capped at today+14
+    // Integra V10: backdate allowed; future capped at today+14
     const maxDate = new Date();
     maxDate.setDate(maxDate.getDate() + 14);
     maxDate.setHours(23, 59, 59, 999);
     if (d.getTime() > maxDate.getTime()) {
       throw new BadRequestException('Tanggal Dana Keluar maksimal 14 hari dari hari ini');
     }
+    const transferProofUrl = await this.storage.uploadMulterFile(file, 'fttt-transfer', tx.ftttProjectId);
     return this.prisma.ftttTransaction.update({
       where: { id: txId },
-      data: { disbursedAt: d, disbursedById: userId },
+      data: {
+        disbursedAt: d,
+        disbursedById: userId,
+        hasTransferProof: true,
+        transferProofUrl,
+      },
       include: {
         createdBy: { select: { id: true, name: true } },
         disbursedBy: { select: { id: true, name: true } },
@@ -2082,6 +2123,164 @@ export class FtttProjectService {
       throw new ForbiddenException('Tidak berwenang menghapus transaksi');
     }
     return this.prisma.ftttTransaction.delete({ where: { id: txId } });
+  }
+
+  // ─── Stable v1: Approval Dana inbox ──────────────────────────────────────
+  private assertFinanceInboxRole(userRole: Role) {
+    if (userRole !== Role.FINANCE && userRole !== Role.GENERAL_MANAGER && userRole !== Role.ADMIN) {
+      throw new ForbiddenException('Hanya Finance yang dapat mengakses Approval Dana');
+    }
+  }
+
+  async listFinancialRequests(filter: FinancialRequestInboxFilterDtoType, userId: string, userRole: Role) {
+    this.assertFinanceInboxRole(userRole);
+    const page = filter.page ?? 1;
+    const limit = filter.limit ?? 20;
+    const search = filter.search?.trim();
+
+    const and: Record<string, unknown>[] = [];
+
+    if (filter.filter === 'pending') {
+      and.push({ requestStatus: FtttRequestStatus.PENDING_REVIEW, disbursedAt: null });
+    } else if (filter.filter === 'accepted') {
+      and.push({ requestStatus: FtttRequestStatus.ACCEPTED, disbursedAt: null });
+    } else if (filter.filter === 'disbursed') {
+      and.push({ disbursedAt: { not: null } });
+    } else if (filter.filter === 'declined') {
+      and.push({ requestStatus: FtttRequestStatus.DECLINED });
+    } else if (filter.filter === 'unread') {
+      and.push({ fundRequestReads: { none: { userId } } });
+    }
+
+    if (search) {
+      const q = search;
+      const searchOr: Record<string, unknown>[] = [
+        { aktivitas: { contains: q, mode: 'insensitive' } },
+        { createdBy: { name: { contains: q, mode: 'insensitive' } } },
+        { ftttProject: { projectName: { contains: q, mode: 'insensitive' } } },
+        { ftttProject: { financeProject: { name: { contains: q, mode: 'insensitive' } } } },
+        { ftttProject: { financeProject: { code: { contains: q, mode: 'insensitive' } } } },
+        { ftttProject: { pm: { name: { contains: q, mode: 'insensitive' } } } },
+      ];
+      const catKey = q.toUpperCase().replace(/[\s-]+/g, '_');
+      if (['PERIZINAN', 'MATERIAL', 'JASA', 'LAIN_LAIN'].includes(catKey)
+        || ['PERIZINAN', 'MATERIAL', 'JASA', 'LAIN-LAIN'].includes(q.toUpperCase())) {
+        const mapped = catKey === 'LAIN_LAIN' || q.toUpperCase().includes('LAIN') ? 'LAIN_LAIN'
+          : catKey === 'PERIZINAN' || q.toUpperCase().includes('PERIZINAN') ? 'PERIZINAN'
+          : catKey === 'MATERIAL' ? 'MATERIAL'
+          : catKey === 'JASA' ? 'JASA' : null;
+        if (mapped) searchOr.push({ category: mapped });
+      }
+      const digits = q.replace(/\D/g, '');
+      if (digits && !Number.isNaN(Number(digits))) {
+        searchOr.push({ total: Number(digits) });
+      }
+      and.push({ OR: searchOr });
+    }
+
+    const where = and.length > 0 ? { AND: and } : {};
+
+    const [rows, total] = await Promise.all([
+      this.prisma.ftttTransaction.findMany({
+        where: where as never,
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+        include: {
+          createdBy: { select: { id: true, name: true } },
+          reviewedBy: { select: { id: true, name: true } },
+          disbursedBy: { select: { id: true, name: true } },
+          fundRequestReads: { where: { userId }, select: { readAt: true }, take: 1 },
+          ftttProject: {
+            select: {
+              id: true,
+              projectName: true,
+              currentPhase: true,
+              pm: { select: { id: true, name: true } },
+              financeProject: { select: { id: true, code: true, name: true, hierarchyLevel: true } },
+              parent: { select: { id: true, projectName: true } },
+            },
+          },
+        },
+      }),
+      this.prisma.ftttTransaction.count({ where: where as never }),
+    ]);
+
+    const CAT_LABEL: Record<string, string> = {
+      PERIZINAN: 'Perizinan', MATERIAL: 'Material', JASA: 'Jasa', LAIN_LAIN: 'Lain-Lain',
+    };
+
+    const data = rows.map((t) => {
+      const fp = t.ftttProject.financeProject;
+      const siteName = fp?.name ?? t.ftttProject.projectName ?? t.ftttProject.id.slice(-6);
+      const projectTitle = fp
+        ? `${fp.code} · ${fp.name}`
+        : (t.ftttProject.projectName ?? `Project ${t.ftttProject.id.slice(-6)}`);
+      const pmName = t.ftttProject.pm?.name ?? t.createdBy?.name ?? 'PM';
+      const jenis = CAT_LABEL[t.category] ?? t.category;
+      const totalNum = Number(t.total);
+      const isRead = (t.fundRequestReads?.length ?? 0) > 0;
+      let inboxStatus: 'pending' | 'accepted' | 'disbursed' | 'declined' = 'pending';
+      if (t.disbursedAt) inboxStatus = 'disbursed';
+      else if (t.requestStatus === FtttRequestStatus.DECLINED) inboxStatus = 'declined';
+      else if (t.requestStatus === FtttRequestStatus.ACCEPTED) inboxStatus = 'accepted';
+      else inboxStatus = 'pending';
+
+      return {
+        id: t.id,
+        category: t.category,
+        aktivitas: t.aktivitas,
+        total: t.total,
+        remarks: t.remarks,
+        createdAt: t.createdAt,
+        expectedNeedDate: t.expectedNeedDate,
+        requestStatus: t.requestStatus,
+        scheduledReleaseAt: t.scheduledReleaseAt,
+        declinedReason: t.declinedReason,
+        disbursedAt: t.disbursedAt,
+        hasTransferProof: t.hasTransferProof,
+        transferProofUrl: t.transferProofUrl,
+        inboxStatus,
+        isRead,
+        title: projectTitle,
+        description: `Pengajuan dana ${jenis} dari ${pmName} sebesar Rp ${Math.round(totalNum).toLocaleString('id-ID')}`,
+        meta: {
+          phase: PHASE_LABELS[t.ftttProject.currentPhase] ?? t.ftttProject.currentPhase,
+          site: siteName,
+          pmName,
+          parentName: t.ftttProject.parent?.projectName ?? null,
+        },
+        projectId: t.ftttProject.id,
+        link: `/fttt-projects/${t.ftttProject.id}?tx=${t.id}`,
+        createdBy: t.createdBy,
+        reviewedBy: t.reviewedBy,
+        disbursedBy: t.disbursedBy,
+      };
+    });
+
+    return paginate(data, total, page, limit);
+  }
+
+  async financialRequestInboxCount(userId: string, userRole: Role) {
+    this.assertFinanceInboxRole(userRole);
+    const count = await this.prisma.ftttTransaction.count({
+      where: {
+        requestStatus: FtttRequestStatus.PENDING_REVIEW,
+        fundRequestReads: { none: { userId } },
+      },
+    });
+    return { count };
+  }
+
+  async markFinancialRequestRead(txId: string, userId: string, userRole: Role) {
+    this.assertFinanceInboxRole(userRole);
+    await this.prisma.ftttTransaction.findUniqueOrThrow({ where: { id: txId }, select: { id: true } });
+    await this.prisma.ftttFundRequestRead.upsert({
+      where: { userId_transactionId: { userId, transactionId: txId } },
+      create: { userId, transactionId: txId },
+      update: { readAt: new Date() },
+    });
+    return { success: true };
   }
 
   // ─── JLM: Budget summary + Cost/Progress S-Curve for a linked FTTT project ───
@@ -2131,12 +2330,8 @@ export class FtttProjectService {
 
     const totalBudget = num(fp?.totalBudget) || (budgets.PERIZINAN + budgets.MATERIAL + budgets.JASA + budgets.LAIN_LAIN);
 
-    // Only disbursed transactions whose Dana Keluar date has arrived count as spent / Actual.
-    // Future-scheduled disbursements (up to +14d) are stored but do not reduce budget yet.
-    const nowMs = Date.now();
-    const realized = project.transactions.filter(
-      (t) => t.disbursedAt != null && new Date(t.disbursedAt).getTime() <= nowMs,
-    );
+    // Stable v1: any disbursed transaction counts as spent immediately (no noon / future hold)
+    const realized = project.transactions.filter((t) => t.disbursedAt != null);
     const spent = { PERIZINAN: 0, MATERIAL: 0, JASA: 0, LAIN_LAIN: 0 } as Record<string, number>;
     for (const t of realized) {
       if (t.category === 'LAIN_LAIN' && segmentLainLainId) continue; // filled from segment pool below
@@ -2147,7 +2342,7 @@ export class FtttProjectService {
         where: {
           financeProjectId: segmentLainLainId,
           category: 'LAIN_LAIN',
-          disbursedAt: { not: null, lte: new Date(nowMs) },
+          disbursedAt: { not: null },
         },
         _sum: { total: true },
       });
@@ -2257,7 +2452,7 @@ export class FtttProjectService {
         where: {
           financeProjectId: segmentLainLainId,
           category: 'LAIN_LAIN',
-          disbursedAt: { not: null, lte: new Date(nowMs) },
+          disbursedAt: { not: null },
         },
         select: { disbursedAt: true, createdAt: true, total: true },
       });
@@ -2389,6 +2584,8 @@ export class FtttProjectService {
         qty: t.qty, price: t.price, total: t.total, remarks: t.remarks,
         createdAt: t.createdAt,
         disbursedAt: t.disbursedAt,
+        hasTransferProof: (t as typeof t & { hasTransferProof?: boolean }).hasTransferProof ?? false,
+        transferProofUrl: (t as typeof t & { transferProofUrl?: string | null }).transferProofUrl ?? null,
         createdBy: (t as typeof t & { createdBy?: { name: string } }).createdBy ?? null,
         disbursedBy: (t as typeof t & { disbursedBy?: { name: string } | null }).disbursedBy ?? null,
       })),
