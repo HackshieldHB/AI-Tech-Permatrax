@@ -31,6 +31,7 @@ interface MonitoringData {
     createdAt: string; disbursedAt?: string | null;
     hasTransferProof?: boolean;
     transferProofUrl?: string | null;
+    transferProofs?: { id: string; fileUrl: string; originalFileName?: string | null }[];
     createdBy: { name: string } | null;
     disbursedBy?: { name: string } | null;
   }[];
@@ -109,7 +110,7 @@ export function FtttFinanceMonitor({ financeProjectId, tab, reloadKey = 0 }: { f
   const [loading, setLoading] = useState(true);
   const [disburseId, setDisburseId] = useState<string | null>(null);
   const [disburseDate, setDisburseDate] = useState('');
-  const [disburseFile, setDisburseFile] = useState<File | null>(null);
+  const [disburseFiles, setDisburseFiles] = useState<File[]>([]);
   const [disbursing, setDisbursing] = useState(false);
   const [localReload, setLocalReload] = useState(0);
 
@@ -125,7 +126,7 @@ export function FtttFinanceMonitor({ financeProjectId, tab, reloadKey = 0 }: { f
 
   const handleDisburse = async (txId: string) => {
     if (!disburseDate) { toast.error('Isi Tanggal Dana Keluar'); return; }
-    if (!disburseFile) { toast.error('Upload Bukti Transfer wajib diisi'); return; }
+    if (disburseFiles.length < 1) { toast.error('Upload Bukti Transfer wajib minimal 1 file'); return; }
     const today = new Date();
     const max = new Date(today); max.setDate(max.getDate() + 14);
     const maxStr = max.toISOString().slice(0, 10);
@@ -134,11 +135,11 @@ export function FtttFinanceMonitor({ financeProjectId, tab, reloadKey = 0 }: { f
     try {
       const fd = new FormData();
       fd.append('disbursedAt', disburseDate);
-      fd.append('file', disburseFile);
+      disburseFiles.forEach((f) => fd.append('files', f));
       const res = await apiFetch(`/fttt-projects/transactions/${txId}/disburse`, { method: 'PUT', body: fd }, user?.id);
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
       toast.success('Dana Keluar tersimpan — budget diperbarui secara real-time');
-      setDisburseId(null); setDisburseDate(''); setDisburseFile(null);
+      setDisburseId(null); setDisburseDate(''); setDisburseFiles([]);
       setLocalReload((k) => k + 1);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Gagal');
@@ -242,12 +243,22 @@ export function FtttFinanceMonitor({ financeProjectId, tab, reloadKey = 0 }: { f
                     {hasDate ? (
                       <span className="whitespace-nowrap text-emerald-700">
                         {new Date(t.disbursedAt!).toLocaleDateString('id-ID')}
-                        {t.transferProofUrl && (
-                          <> · <a href={fixFileUrl(t.transferProofUrl)} target="_blank" rel="noopener noreferrer" className="text-blue-600 underline">Bukti</a></>
-                        )}
+                        {(t.transferProofs?.length
+                          ? t.transferProofs
+                          : t.transferProofUrl
+                            ? [{ id: 'legacy', fileUrl: t.transferProofUrl, originalFileName: 'Bukti' }]
+                            : []
+                        ).map((p, idx) => (
+                          <span key={p.id}>
+                            {' · '}
+                            <a href={fixFileUrl(p.fileUrl)} target="_blank" rel="noopener noreferrer" className="text-blue-600 underline">
+                              {p.originalFileName || `Bukti ${idx + 1}`}
+                            </a>
+                          </span>
+                        ))}
                       </span>
                     ) : disburseId === t.id ? (
-                      <div className="flex flex-col gap-1 min-w-[160px]">
+                      <div className="flex flex-col gap-1 min-w-[180px]">
                         <input type="date" value={disburseDate}
                           max={(() => { const d = new Date(); d.setDate(d.getDate() + 14); return d.toISOString().slice(0, 10); })()}
                           onChange={(e) => {
@@ -258,16 +269,35 @@ export function FtttFinanceMonitor({ financeProjectId, tab, reloadKey = 0 }: { f
                             setDisburseDate(v);
                           }}
                           className="text-xs border rounded px-1 py-0.5" />
-                        <input type="file" accept=".jpg,.jpeg,.png,.pdf,image/jpeg,image/png,application/pdf"
-                          onChange={(e) => setDisburseFile(e.target.files?.[0] ?? null)}
+                        <input type="file" multiple accept=".jpg,.jpeg,.png,.pdf,image/jpeg,image/png,application/pdf"
+                          onChange={(e) => {
+                            const picked = Array.from(e.target.files ?? []);
+                            if (!picked.length) return;
+                            setDisburseFiles((prev) => {
+                              const names = new Set(prev.map((f) => `${f.name}:${f.size}`));
+                              const next = [...prev];
+                              for (const f of picked) {
+                                const key = `${f.name}:${f.size}`;
+                                if (!names.has(key)) next.push(f);
+                              }
+                              return next;
+                            });
+                            e.target.value = '';
+                          }}
                           className="text-xs" />
+                        {disburseFiles.map((f, idx) => (
+                          <div key={`${f.name}-${idx}`} className="flex items-center gap-2 text-[10px] text-slate-600">
+                            <span>📎 {f.name}</span>
+                            <button type="button" className="text-red-600" onClick={() => setDisburseFiles((prev) => prev.filter((_, i) => i !== idx))}>Hapus</button>
+                          </div>
+                        ))}
                         <button type="button" disabled={disbursing} onClick={() => void handleDisburse(t.id)}
                           className="text-xs font-bold bg-emerald-600 text-white rounded px-2 py-0.5">
                           {disbursing ? '…' : 'Submit'}
                         </button>
                       </div>
                     ) : (
-                      <button type="button" onClick={() => { setDisburseId(t.id); setDisburseDate(new Date().toISOString().slice(0, 10)); setDisburseFile(null); }}
+                      <button type="button" onClick={() => { setDisburseId(t.id); setDisburseDate(new Date().toISOString().slice(0, 10)); setDisburseFiles([]); }}
                         className="text-xs font-bold text-blue-600 hover:underline">
                         + Tanggal
                       </button>

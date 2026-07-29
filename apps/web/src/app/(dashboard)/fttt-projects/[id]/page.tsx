@@ -1925,7 +1925,7 @@ function TransactionLogSection({ project, onRefresh, userRole, highlightTxId }: 
   } | null>(null);
   const [disburseId, setDisburseId] = useState<string | null>(null);
   const [disburseDate, setDisburseDate] = useState('');
-  const [disburseFile, setDisburseFile] = useState<File | null>(null);
+  const [disburseFiles, setDisburseFiles] = useState<File[]>([]);
   const [disbursing, setDisbursing] = useState(false);
   const [openCat, setOpenCat] = useState<FtttCostCategory | null>(null);
   const [form, setForm] = useState({ aktivitas: '', uom: '', qty: '', price: '', remarks: '', expectedNeedDate: '', reason: '' });
@@ -2078,7 +2078,7 @@ function TransactionLogSection({ project, onRefresh, userRole, highlightTxId }: 
 
   const handleDisburse = async (id: string) => {
     if (!disburseDate) { toast.error('Isi Tanggal Dana Keluar'); return; }
-    if (!disburseFile) { toast.error('Upload Bukti Transfer wajib diisi'); return; }
+    if (disburseFiles.length < 1) { toast.error('Upload Bukti Transfer wajib minimal 1 file'); return; }
     const today = new Date();
     const max = new Date(today); max.setDate(max.getDate() + 14);
     const maxStr = max.toISOString().slice(0, 10);
@@ -2087,13 +2087,13 @@ function TransactionLogSection({ project, onRefresh, userRole, highlightTxId }: 
     try {
       const fd = new FormData();
       fd.append('disbursedAt', disburseDate);
-      fd.append('file', disburseFile);
+      disburseFiles.forEach((f) => fd.append('files', f));
       const res = await apiFetch(`/fttt-projects/transactions/${id}/disburse`, {
         method: 'PUT', body: fd,
       }, user?.id);
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
       toast.success('Dana Keluar tersimpan — budget diperbarui secara real-time');
-      setDisburseId(null); setDisburseDate(''); setDisburseFile(null);
+      setDisburseId(null); setDisburseDate(''); setDisburseFiles([]);
       onRefresh(); void loadScurve();
     } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
     finally { setDisbursing(false); }
@@ -2202,6 +2202,11 @@ function TransactionLogSection({ project, onRefresh, userRole, highlightTxId }: 
                       <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: realized ? '#1a7f37' : '#9a6700', background: realized ? '#DAFBE1' : '#FFF8C5', padding: '1px 6px', borderRadius: 999 }}>
                         {realized ? 'Dana Keluar' : 'Menunggu Dana Keluar'}
                       </span>
+                      {t.createdPhase && (
+                        <span style={{ marginLeft: 4, fontSize: 10, fontWeight: 700, color: '#57606a', background: '#F6F8FA', padding: '1px 6px', borderRadius: 999, border: '1px solid #D0D7DE' }}>
+                          {FTTT_PHASE_LABELS[t.createdPhase] ?? t.createdPhase}
+                        </span>
+                      )}
                       {t.priority && (
                         <span style={{ marginLeft: 4, fontSize: 10, fontWeight: 700, color: '#fff', background: FTTT_PRIORITY_COLORS[t.priority] ?? '#57606a', padding: '1px 6px', borderRadius: 999 }}>
                           {FTTT_PRIORITY_LABELS[t.priority] ?? t.priority}
@@ -2236,10 +2241,20 @@ function TransactionLogSection({ project, onRefresh, userRole, highlightTxId }: 
                   )}
                   {hasDate && (
                     <div style={{ fontSize: 10, color: '#1a7f37', marginTop: 2 }}>
-                      💵 Dana keluar: {new Date(t.disbursedAt!).toLocaleDateString('id-ID')}{t.disbursedBy?.name ? ` · ${t.disbursedBy.name}` : ''}
-                      {t.transferProofUrl && (
-                        <> · <a href={fixFileUrl(t.transferProofUrl)} target="_blank" rel="noopener noreferrer" style={{ color: '#0969DA' }}>Bukti Transfer</a></>
-                      )}
+                      {'💵'} Dana keluar: {new Date(t.disbursedAt!).toLocaleDateString('id-ID')}{t.disbursedBy?.name ? ` · ${t.disbursedBy.name}` : ''}
+                      {(t.transferProofs?.length
+                        ? t.transferProofs
+                        : t.transferProofUrl
+                          ? [{ id: 'legacy', fileUrl: t.transferProofUrl, originalFileName: 'Bukti Transfer' as string | null }]
+                          : []
+                      ).map((p, idx) => (
+                        <span key={p.id}>
+                          {' · '}
+                          <a href={formFileUrl(p.fileUrl)} target="_blank" rel="noopener noreferrer" style={{ color: '#0969DA' }}>
+                            {p.originalFileName || `Bukti ${idx + 1}`}
+                          </a>
+                        </span>
+                      ))}
                     </div>
                   )}
                   {isFinance && pendingReview && (
@@ -2282,32 +2297,61 @@ function TransactionLogSection({ project, onRefresh, userRole, highlightTxId }: 
                     </div>
                   )}
                   {!hasDate && isFinance && accepted && !pendingReview && (
-                    <div style={{ marginTop: 6, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 6 }}>
                       {disburseId === t.id ? (
                         <>
-                          <input type="date" value={disburseDate}
-                            max={(() => { const d = new Date(); d.setDate(d.getDate() + 14); return d.toISOString().slice(0, 10); })()}
-                            onChange={(e) => {
-                              const v = e.target.value;
-                              const max = new Date(); max.setDate(max.getDate() + 14);
-                              const maxStr = max.toISOString().slice(0, 10);
-                              if (v && v > maxStr) { toast.error('Tanggal Dana Keluar maksimal 14 hari dari hari ini'); return; }
-                              setDisburseDate(v);
-                            }}
-                            style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 11 }} />
-                          <input type="file" accept=".jpg,.jpeg,.png,.pdf,image/jpeg,image/png,application/pdf"
-                            onChange={(e) => setDisburseFile(e.target.files?.[0] ?? null)}
-                            style={{ fontSize: 11, maxWidth: 180 }} />
-                          <button type="button" disabled={disbursing} onClick={() => void handleDisburse(t.id)}
-                            style={{ padding: '4px 10px', borderRadius: 6, border: 'none', background: '#1a7f37', color: '#fff', fontWeight: 700, fontSize: 11, cursor: 'pointer' }}>
-                            {disbursing ? '…' : 'Submit Dana Keluar'}
-                          </button>
-                          <button type="button" onClick={() => { setDisburseId(null); setDisburseDate(''); setDisburseFile(null); }}
-                            style={{ fontSize: 11, background: 'none', border: 'none', color: '#57606a', cursor: 'pointer' }}>Batal</button>
+                          <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                            <input type="date" value={disburseDate}
+                              max={(() => { const d = new Date(); d.setDate(d.getDate() + 14); return d.toISOString().slice(0, 10); })()}
+                              onChange={(e) => {
+                                const v = e.target.value;
+                                const max = new Date(); max.setDate(max.getDate() + 14);
+                                const maxStr = max.toISOString().slice(0, 10);
+                                if (v && v > maxStr) { toast.error('Tanggal Dana Keluar maksimal 14 hari dari hari ini'); return; }
+                                setDisburseDate(v);
+                              }}
+                              style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 11 }} />
+                            <input type="file" multiple accept=".jpg,.jpeg,.png,.pdf,image/jpeg,image/png,application/pdf"
+                              onChange={(e) => {
+                                const picked = Array.from(e.target.files ?? []);
+                                if (!picked.length) return;
+                                setDisburseFiles((prev) => {
+                                  const names = new Set(prev.map((f) => `${f.name}:${f.size}`));
+                                  const next = [...prev];
+                                  for (const f of picked) {
+                                    const key = `${f.name}:${f.size}`;
+                                    if (!names.has(key)) next.push(f);
+                                  }
+                                  return next;
+                                });
+                                e.target.value = '';
+                              }}
+                              style={{ fontSize: 11, maxWidth: 220 }} />
+                            <button type="button" disabled={disbursing} onClick={() => void handleDisburse(t.id)}
+                              style={{ padding: '4px 10px', borderRadius: 6, border: 'none', background: '#1a7f37', color: '#fff', fontWeight: 700, fontSize: 11, cursor: 'pointer' }}>
+                              {disbursing ? '…' : 'Submit Dana Keluar'}
+                            </button>
+                            <button type="button" onClick={() => { setDisburseId(null); setDisburseDate(''); setDisburseFiles([]); }}
+                              style={{ fontSize: 11, background: 'none', border: 'none', color: '#57606a', cursor: 'pointer' }}>Batal</button>
+                          </div>
+                          {disburseFiles.length > 0 && (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                              {disburseFiles.map((f, idx) => (
+                                <div key={`${f.name}-${f.size}-${idx}`} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color: '#374151' }}>
+                                  <span>📎 {f.name}</span>
+                                  <button type="button"
+                                    onClick={() => setDisburseFiles((prev) => prev.filter((_, i) => i !== idx))}
+                                    style={{ fontSize: 10, color: '#cf222e', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
+                                    Hapus
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
                         </>
                       ) : (
-                        <button type="button" onClick={() => { setDisburseId(t.id); setDisburseDate(new Date().toISOString().slice(0, 10)); setDisburseFile(null); }}
-                          style={{ padding: '4px 10px', borderRadius: 6, border: 'none', background: '#0969DA', color: '#fff', fontWeight: 600, fontSize: 11, cursor: 'pointer' }}>
+                        <button type="button" onClick={() => { setDisburseId(t.id); setDisburseDate(new Date().toISOString().slice(0, 10)); setDisburseFiles([]); }}
+                          style={{ padding: '4px 10px', borderRadius: 6, border: 'none', background: '#0969DA', color: '#fff', fontWeight: 600, fontSize: 11, cursor: 'pointer', alignSelf: 'flex-start' }}>
                           + Tanggal Dana Keluar
                         </button>
                       )}
@@ -4054,6 +4098,14 @@ function FtttProjectDetailPageInner() {
               {/* CLOSING phase — BAST II, evidence, notes (C6-TI3: Admin-only + maintenance gate) */}
               {project.currentPhase === 'CLOSING' && (
                 <ClosingSection project={project} onRefresh={load} userRole={userRole} />
+              )}
+
+              {/* Stable v2: Transaction Log on all operational phases except Implementation (already inside ImplementationSection tabs) */}
+              {['SURVEY', 'PREPARATION', 'DOCUMENTATION', 'RECONCILIATION', 'CLOSING'].includes(project.currentPhase) && (
+                <div style={{ marginTop: 16, borderTop: '1px solid #EAEEF2', paddingTop: 12 }}>
+                  <p style={{ margin: '0 0 10px', fontWeight: 700, fontSize: 14 }}>💰 Transaction Log</p>
+                  <TransactionLogSection project={project} onRefresh={load} userRole={userRole} highlightTxId={highlightTxId} />
+                </div>
               )}
 
               {!['SURVEY', 'PREPARATION', 'PROCUREMENT', 'DOCUMENTATION', 'RECONCILIATION', 'IMPLEMENTATION', 'CLOSING'].includes(project.currentPhase) && (
