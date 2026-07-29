@@ -359,6 +359,7 @@ model User {
   ftttTransactionsDisbursed FtttTransaction[]     @relation("FtttTransactionDisburser")
   ftttTransactionsReviewed  FtttTransaction[]     @relation("FtttTransactionReviewer")
   ftttFundRequestReads      FtttFundRequestRead[] @relation("FtttFundRequestReader")
+  ftttTransferProofsUploaded FtttTransactionTransferProof[] @relation("FtttTransferProofUploader")
   dailyActivitiesAsActor    DailyActivity[]       @relation("DailyActivityActor")
   dailyActivitiesUpdated    DailyActivity[]       @relation("DailyActivityUpdater")
   dailyActivityEvidencesUploaded DailyActivityEvidence[] @relation("DailyActivityEvidenceUploader")
@@ -3234,9 +3235,11 @@ model FtttTransaction {
   // Stage 2 — Finance confirms dana keluar; only then counts toward budget/S-curve Actual
   disbursedAt      DateTime?
   disbursedById    String?
-  // Stable v1 — bukti transfer wajib saat Dana Keluar
+  // Stable v1 — bukti transfer wajib saat Dana Keluar (legacy single-URL mirror)
   hasTransferProof Boolean @default(false)
   transferProofUrl String?
+  // Stable v2 — phase where the Financial Request was created
+  createdPhase     FtttPhase @default(IMPLEMENTATION)
 
   ftttProject    FtttProject     @relation(fields: [ftttProjectId], references: [id], onDelete: Cascade)
   financeProject FinanceProject? @relation(fields: [financeProjectId], references: [id])
@@ -3244,6 +3247,7 @@ model FtttTransaction {
   disbursedBy    User?           @relation("FtttTransactionDisburser", fields: [disbursedById], references: [id])
   reviewedBy     User?           @relation("FtttTransactionReviewer", fields: [reviewedById], references: [id])
   fundRequestReads FtttFundRequestRead[]
+  transferProofs   FtttTransactionTransferProof[]
 
   @@index([ftttProjectId])
   @@index([financeProjectId])
@@ -3251,6 +3255,7 @@ model FtttTransaction {
   @@index([disbursedAt])
   @@index([requestStatus])
   @@index([expectedNeedDate])
+  @@index([createdPhase])
 }
 
 /// Stable v1 — per-user read tracking for Approval Dana inbox
@@ -3265,6 +3270,23 @@ model FtttFundRequestRead {
 
   @@unique([userId, transactionId])
   @@index([userId])
+  @@index([transactionId])
+}
+
+/// Stable v2 — multiple Bukti Transfer files per Dana Keluar
+model FtttTransactionTransferProof {
+  id               String   @id @default(cuid())
+  transactionId    String
+  fileUrl          String
+  originalFileName String?
+  mimeType         String?
+  fileSize         Int?
+  uploadedById     String
+  createdAt        DateTime @default(now())
+
+  transaction FtttTransaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  uploadedBy  User            @relation("FtttTransferProofUploader", fields: [uploadedById], references: [id])
+
   @@index([transactionId])
 }
 

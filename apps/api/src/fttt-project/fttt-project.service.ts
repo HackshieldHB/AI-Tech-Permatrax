@@ -1856,6 +1856,7 @@ export class FtttProjectService {
           createdBy: { select: { id: true, name: true } },
           disbursedBy: { select: { id: true, name: true } },
           reviewedBy: { select: { id: true, name: true } },
+          transferProofs: { orderBy: { createdAt: 'asc' as const } },
         },
         orderBy: { createdAt: 'desc' as const },
       },
@@ -1897,8 +1898,17 @@ export class FtttProjectService {
       where: { id: projectId },
       select: { id: true, currentPhase: true, financeProjectId: true, projectName: true },
     });
-    if (project.currentPhase !== FtttPhase.IMPLEMENTATION) {
-      throw new BadRequestException('Transaction Log hanya dapat diisi pada fase Implementation');
+    // Stable v2: TX Log available on all operational phases (not Initiation / Site Initiation / Procurement)
+    const TX_LOG_PHASES: FtttPhase[] = [
+      FtttPhase.SURVEY,
+      FtttPhase.PREPARATION,
+      FtttPhase.IMPLEMENTATION,
+      FtttPhase.DOCUMENTATION,
+      FtttPhase.RECONCILIATION,
+      FtttPhase.CLOSING,
+    ];
+    if (!TX_LOG_PHASES.includes(project.currentPhase)) {
+      throw new BadRequestException('Transaction Log tidak tersedia pada fase ini');
     }
     const expectedNeedDate = new Date(dto.expectedNeedDate);
     if (Number.isNaN(expectedNeedDate.getTime())) {
@@ -1946,12 +1956,14 @@ export class FtttProjectService {
         reason:           dto.reason.trim(),
         priority,
         requestStatus:    FtttRequestStatus.PENDING_REVIEW,
+        createdPhase:     project.currentPhase,
         // disbursedAt left null — budget not affected until Finance confirms
       },
       include: {
         createdBy: { select: { id: true, name: true } },
         disbursedBy: { select: { id: true, name: true } },
         reviewedBy: { select: { id: true, name: true } },
+        transferProofs: true,
       },
     });
 
@@ -2054,13 +2066,13 @@ export class FtttProjectService {
     return updated;
   }
 
-  // Stage 2 / Stable v1: Tanggal Dana Keluar + Bukti Transfer → budget deducted immediately
+  // Stage 2 / Stable v2: Tanggal Dana Keluar + multi Bukti Transfer → budget deducted immediately
   async disburseTransaction(
     txId: string,
     disbursedAtIso: string,
     userId: string,
     userRole: Role,
-    file?: Express.Multer.File,
+    files: Express.Multer.File[] = [],
   ) {
     if (userRole !== Role.FINANCE && userRole !== Role.GENERAL_MANAGER) {
       throw new ForbiddenException('Hanya Finance yang dapat mengisi Tanggal Dana Keluar');
@@ -2075,14 +2087,16 @@ export class FtttProjectService {
     if (tx.reason && tx.requestStatus !== FtttRequestStatus.ACCEPTED) {
       throw new BadRequestException('Financial Request harus disetujui (Accepted) oleh Finance sebelum dana dapat dikeluarkan');
     }
-    if (!file) {
-      throw new BadRequestException('Upload Bukti Transfer wajib diisi (JPG, JPEG, PNG, atau PDF)');
+    if (!files.length) {
+      throw new BadRequestException('Upload Bukti Transfer wajib diisi minimal 1 file (JPG, JPEG, PNG, atau PDF)');
     }
     const allowedMime = new Set(['image/jpeg', 'image/jpg', 'image/png', 'application/pdf']);
-    const mime = (file.mimetype || '').toLowerCase();
-    const nameOk = /\.(jpe?g|png|pdf)$/i.test(file.originalname || '');
-    if (!allowedMime.has(mime) && !nameOk) {
-      throw new BadRequestException('Bukti Transfer harus berupa JPG, JPEG, PNG, atau PDF');
+    for (const file of files) {
+      const mime = (file.mimetype || '').toLowerCase();
+      const nameOk = /\.(jpe?g|png|pdf)$/i.test(file.originalname || '');
+      if (!allowedMime.has(mime) && !nameOk) {
+        throw new BadRequestException(`Bukti Transfer "${file.originalname}" harus berupa JPG, JPEG, PNG, atau PDF`);
+      }
     }
     // Normalize to date-only start-of-day so budget is not delayed to noon
     const dateOnly = disbursedAtIso.slice(0, 10);
@@ -2097,19 +2111,43 @@ export class FtttProjectService {
     if (d.getTime() > maxDate.getTime()) {
       throw new BadRequestException('Tanggal Dana Keluar maksimal 14 hari dari hari ini');
     }
-    const transferProofUrl = await this.storage.uploadMulterFile(file, 'fttt-transfer', tx.ftttProjectId);
+
+    const uploaded: { fileUrl: string; originalFileName: string | null; mimeType: string | null; fileSize: number | null }[] = [];
+    for (const file of files) {
+      const fileUrl = await this.storage.uploadMulterFile(file, 'fttt-transfer', tx.ftttProjectId);
+      uploaded.push({
+        fileUrl,
+        originalFileName: file.originalname || null,
+        mimeType: file.mimetype || null,
+        fileSize: file.size ?? null,
+      });
+    }
+    const primaryUrl = uploaded[0].fileUrl;
+
+    await this.prisma.ftttTransactionTransferProof.createMany({
+      data: uploaded.map((u) => ({
+        transactionId: txId,
+        fileUrl: u.fileUrl,
+        originalFileName: u.originalFileName,
+        mimeType: u.mimeType,
+        fileSize: u.fileSize,
+        uploadedById: userId,
+      })),
+    });
+
     return this.prisma.ftttTransaction.update({
       where: { id: txId },
       data: {
         disbursedAt: d,
         disbursedById: userId,
         hasTransferProof: true,
-        transferProofUrl,
+        transferProofUrl: primaryUrl,
       },
       include: {
         createdBy: { select: { id: true, name: true } },
         disbursedBy: { select: { id: true, name: true } },
         reviewedBy: { select: { id: true, name: true } },
+        transferProofs: { orderBy: { createdAt: 'asc' } },
       },
     });
   }
@@ -2296,7 +2334,7 @@ export class FtttProjectService {
             hierarchyLevel: true, parentId: true,
           },
         },
-        transactions: { orderBy: { createdAt: 'asc' }, include: { createdBy: { select: { id: true, name: true } }, disbursedBy: { select: { id: true, name: true } } } },
+        transactions: { orderBy: { createdAt: 'asc' }, include: { createdBy: { select: { id: true, name: true } }, disbursedBy: { select: { id: true, name: true } }, transferProofs: { orderBy: { createdAt: 'asc' } } } },
         phaseProgresses: true,
         // Integra V6: Actual Progress from implementation meters (Daily Log / Log Aktivitas)
         implementationLogs: { select: { meterDone: true, createdAt: true }, orderBy: { createdAt: 'asc' } },
@@ -2583,9 +2621,11 @@ export class FtttProjectService {
         id: t.id, category: t.category, aktivitas: t.aktivitas, uom: t.uom,
         qty: t.qty, price: t.price, total: t.total, remarks: t.remarks,
         createdAt: t.createdAt,
+        createdPhase: (t as typeof t & { createdPhase?: string }).createdPhase ?? null,
         disbursedAt: t.disbursedAt,
         hasTransferProof: (t as typeof t & { hasTransferProof?: boolean }).hasTransferProof ?? false,
         transferProofUrl: (t as typeof t & { transferProofUrl?: string | null }).transferProofUrl ?? null,
+        transferProofs: (t as typeof t & { transferProofs?: { id: string; fileUrl: string; originalFileName: string | null }[] }).transferProofs ?? [],
         createdBy: (t as typeof t & { createdBy?: { name: string } }).createdBy ?? null,
         disbursedBy: (t as typeof t & { disbursedBy?: { name: string } | null }).disbursedBy ?? null,
       })),

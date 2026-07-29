@@ -9,10 +9,11 @@ import {
   Put,
   Query,
   UploadedFile,
+  UploadedFiles,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
+import { FileInterceptor, FilesInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -199,12 +200,12 @@ export class FtttProjectController {
     return this.service.addTransaction(id, dto, user.userId, user.role);
   }
 
-  // PUT /fttt-projects/transactions/:txId/disburse  (Finance — Tanggal Dana Keluar + Bukti Transfer)
+  // PUT /fttt-projects/transactions/:txId/disburse  (Finance — Tanggal Dana Keluar + multi Bukti Transfer)
   @Put('transactions/:txId/disburse')
-  @UseInterceptors(FileInterceptor('file', upload))
+  @UseInterceptors(FilesInterceptor('files', 10, upload))
   disburseTransaction(
     @Param('txId') txId: string,
-    @UploadedFile() file: Express.Multer.File,
+    @UploadedFiles() files: Express.Multer.File[],
     @Body('disbursedAt') disbursedAt: string,
     @CurrentUser() user: AuthUser,
   ) {
@@ -212,7 +213,7 @@ export class FtttProjectController {
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.issues[0]?.message ?? 'Tanggal Dana Keluar wajib diisi');
     }
-    return this.service.disburseTransaction(txId, parsed.data.disbursedAt, user.userId, user.role, file);
+    return this.service.disburseTransaction(txId, parsed.data.disbursedAt, user.userId, user.role, files ?? []);
   }
 
   // POST /fttt-projects/transactions/:txId/accept  (Finance — Financial Request Accepted)

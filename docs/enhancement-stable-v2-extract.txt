@@ -1,0 +1,129 @@
+Generalisasi Transaction Log ke seluruh fase operasional Lifecycle FTTT
+MODULE: FTTT Lifecycle – Transaction Log
+Major Enhancement:
+Berdasarkan hasil diskusi bersama tim operasional di lapangan, diperoleh kebutuhan bisnis baru terkait pencatatan biaya (Transaction Log) pada lifecycle FTTT.
+Pada implementasi saat ini, Transaction Log hanya tersedia pada fase Implementation, sehingga seluruh pencatatan biaya project hanya dapat dilakukan ketika project berada pada fase tersebut. Namun pada proses bisnis aktual, pengeluaran project tidak selalu terjadi pada fase Implementation. Biaya dapat muncul sejak awal project dimulai maupun setelah pekerjaan implementasi selesai, seperti biaya survey, perizinan, dokumentasi, rekonsiliasi, hingga kebutuhan operasional pada tahap penutupan project.
+Oleh karena itu, diperlukan perubahan agar Transaction Log tidak lagi menjadi fitur yang hanya dimiliki oleh fase Implementation, melainkan menjadi fitur yang tersedia pada seluruh fase operasional lifecycle FTTT. Perubahan ini bertujuan agar seluruh pengeluaran project dapat terdokumentasi sesuai waktu terjadinya transaksi tanpa harus menunggu project memasuki fase Implementation.
+Perubahan ini tidak mengubah siapa yang bertanggung jawab terhadap Transaction Log, melainkan memperluas ketersediaan fitur Transaction Log pada seluruh fase operasional lifecycle agar PM FTTT dapat mencatat pengeluaran sesuai waktu terjadinya aktivitas project.
+Flow:
+Project memasuki salah satu fase operasional.
+PM FTTT membuka tab Transaction Log pada fase yang sedang berjalan.
+PM FTTT menginput transaksi sesuai kebutuhan operasional project.
+PM FTTT mengisi:
+Kategori biaya
+Activity
+UOM
+Quantity
+Price
+Remarks
+Expected Need Date
+Alasan kebutuhan
+Sistem menentukan sumber budget secara otomatis:
+Material, Jasa, dan Perizinan → Budget Child Project.
+Lain-Lain → Budget Parent Project.
+Transaksi dikirim ke modul Finance Project.
+Finance melakukan proses review dan memberikan keputusan Accept atau Decline.
+Apabila Accept, Finance menentukan Scheduled Fund Release sesuai hasil kesepakatan.
+Seluruh histori transaksi tersimpan berdasarkan fase lifecycle tempat transaksi dibuat.
+Cakupan Fase:
+Transaction Log tersedia pada seluruh fase berikut:
+Validation & Survey
+Project Preparation
+Implementation
+Documentation & Acceptance
+Reconciliation & Billing
+Project Closing
+Catatan: Project Initiation dan Site Initiation tidak memiliki Transaction Log karena kedua fase tersebut hanya merupakan proses pembentukan Parent Project dan Site.
+Business Rules:
+PM FTTT merupakan satu-satunya PIC yang memiliki hak untuk membuat Transaction Log pada seluruh fase operasional lifecycle FTTT.
+Transaction Log tersedia pada seluruh fase operasional berikut:
+Validation & Survey
+Project Preparation
+Implementation
+Documentation & Acceptance
+Reconciliation & Billing
+Project Closing
+Workflow approval Finance tetap mengikuti mekanisme yang telah disepakati sebelumnya.
+Mekanisme Priority Request, Expected Need Date, Accept / Decline, serta Scheduled Fund Release tetap berlaku pada seluruh fase.
+Seluruh transaksi tetap terhubung dengan modul Finance Project.
+Setiap transaksi wajib menyimpan informasi fase lifecycle tempat transaksi dibuat sebagai histori project.
+Sumber budget tetap mengikuti konsep Multi-Site Project:
+Material → Budget Child Project.
+Jasa → Budget Child Project.
+Perizinan → Budget Child Project.
+Lain-Lain (Overhead) → Budget Parent (Bulky) Project.
+Seluruh transaksi kategori Lain-Lain mengurangi budget Parent Project.
+Seluruh transaksi kategori Material, Jasa, dan Perizinan mengurangi budget Child Project yang bersangkutan.
+Actual Result:
+Saat ini Transaction Log hanya tersedia pada fase Implementation.
+Akibatnya, transaksi yang terjadi sebelum maupun setelah fase Implementation tidak dapat dicatat pada fase yang sesuai dengan waktu terjadinya transaksi.
+Expected Result:
+Sistem menyediakan tab Transaction Log pada seluruh fase operasional lifecycle FTTT, yaitu:
+Validation & Survey
+Project Preparation
+Implementation
+Documentation & Acceptance
+Reconciliation & Billing
+Project Closing
+Seluruh business process Transaction Log tetap menggunakan mekanisme yang sama dengan implementasi saat ini, termasuk:
+Priority Request
+Expected Need Date
+Accept / Decline oleh Finance
+Scheduled Fund Release
+Integrasi dengan Finance Project
+Sistem juga tetap menerapkan pembagian sumber budget sesuai konsep Multi-Site Project:
+Selain itu, setiap transaksi menyimpan informasi fase lifecycle tempat transaksi dibuat sehingga histori pengeluaran project dapat ditelusuri berdasarkan tahapan pekerjaan.
+Skema Lifecycle:
+Existing
+Proposed
+Business Impact:
+Mendukung pencatatan transaksi sesuai waktu terjadinya aktivitas operasional di lapangan.
+Menghilangkan ketergantungan terhadap fase Implementation untuk melakukan pencatatan biaya project.
+Seluruh histori pengeluaran project terdokumentasi berdasarkan fase lifecycle yang sebenarnya.
+Mempermudah proses audit dan penelusuran transaksi pada setiap tahapan project.
+Tetap mempertahankan integrasi dengan Finance Project tanpa mengubah workflow approval yang telah disepakati.
+Menyesuaikan implementasi Transaction Log dengan kondisi operasional aktual di lapangan.
+Enhancement - Menambahkan fitur Multiple File Upload pada Bukti Transfer Dana Keluar
+Module
+FTTT Projects → Detail Project → Implementation → Transaction Log → Dana Keluar
+Background
+Saat ini Finance hanya dapat mengunggah satu file sebagai bukti transfer dana keluar.
+Pada beberapa kondisi, Finance perlu melampirkan lebih dari satu dokumen pendukung, seperti:
+Bukti transfer bank.
+Screenshot transaksi.
+Bukti pembayaran.
+Dokumen pendukung lainnya.
+Karena itu, sistem perlu mendukung upload lebih dari satu file dalam satu transaksi dana keluar.
+Existing
+Pada saat Finance menginput Tanggal Dana Keluar, tersedia field untuk mengunggah bukti transfer.
+Saat ini field tersebut hanya mendukung 1 file.
+Expected
+Field Upload Bukti Transfer dapat mengunggah lebih dari satu file dalam satu transaksi.
+Format file tetap mengikuti format yang sudah didukung sistem.
+Contoh:
+JPG
+JPEG
+PNG
+PDF
+Behaviour
+User dapat memilih beberapa file sekaligus (multiple selection).
+User juga dapat menambahkan file kembali tanpa menghapus file yang sudah dipilih sebelumnya.
+Seluruh file yang berhasil dipilih ditampilkan dalam bentuk daftar.
+Contoh:
+📎 Bukti_Transfer_1.pdf
+📎 Screenshot_MBanking.png
+📎 Invoice.pdf
+Remove File
+Sebelum data disubmit, user dapat menghapus salah satu file yang telah dipilih tanpa memengaruhi file lainnya.
+Contoh:
+📎 Bukti Transfer.pdf  🗑️
+📎 Screenshot.png  🗑️
+Validasi
+Minimal terdapat 1 file yang diunggah sebelum proses Submit Dana Keluar dilakukan.
+Jumlah file yang dapat diunggah lebih dari satu.
+Validasi format file tetap mengikuti ketentuan sistem yang berlaku.
+Impact
+Setelah Submit Dana Keluar berhasil:
+Seluruh file bukti transfer tersimpan pada transaksi yang sama.
+Seluruh file dapat dilihat kembali pada detail transaksi maupun riwayat transaksi.
+Finance tidak perlu menggabungkan beberapa dokumen menjadi satu file sebelum melakukan upload
