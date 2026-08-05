@@ -82,6 +82,10 @@ module.exports = {
         UPLOAD_DIR: '/var/www/permatrax-dev/uploads',
         FILE_BASE_URL: 'https://aitech-ilt.co.id/Permatrax/api/files',
         MAX_FILE_SIZE: '52428800',
+        // PAI P3: optional Ollama slot fill (heuristic always remains fallback)
+        PAI_SLOT_FILL: 'true',
+        OLLAMA_URL: 'http://127.0.0.1:11434',
+        OLLAMA_MODEL: 'llama3.2',
       },
       error_file: '/var/log/pm2/permatrax-dev-api-error.log',
       out_file: '/var/log/pm2/permatrax-dev-api-out.log',

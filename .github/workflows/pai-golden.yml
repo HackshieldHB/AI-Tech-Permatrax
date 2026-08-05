@@ -1,0 +1,41 @@
+name: PAI Golden Suite
+
+on:
+  push:
+    paths:
+      - 'apps/api/src/ai/**'
+      - 'apps/api/package.json'
+      - 'packages/db/prisma/schema.prisma'
+      - '.github/workflows/pai-golden.yml'
+  pull_request:
+    paths:
+      - 'apps/api/src/ai/**'
+      - 'apps/api/package.json'
+      - 'packages/db/prisma/schema.prisma'
+      - '.github/workflows/pai-golden.yml'
+
+jobs:
+  pai-golden:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Prisma generate
+        run: pnpm db:generate
+
+      - name: PAI unit + golden multi-turn suite
+        working-directory: apps/api
+        run: pnpm test:pai

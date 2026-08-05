@@ -3615,3 +3615,102 @@ model FtttClosingLog {
 
   @@index([projectId])
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PermaTrax AI Chatbot — local free stack (keyword RAG + optional Ollama)
+// ═══════════════════════════════════════════════════════════════════════════
+
+model AiKnowledgeArticle {
+  id           String              @id @default(cuid())
+  slug         String              @unique
+  title        String
+  module       String
+  category     String
+  securityLevel String             @default("INTERNAL")
+  rolesAllowed String[]            @default([])
+  version      Int                 @default(1)
+  isActive     Boolean             @default(true)
+  sourceUri    String?
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+  chunks       AiKnowledgeChunk[]
+
+  @@index([module])
+  @@index([category])
+  @@index([isActive])
+}
+
+model AiKnowledgeChunk {
+  id         String             @id @default(cuid())
+  articleId  String
+  chunkIndex Int
+  content    String
+  keywords   String
+  embedding  Json?
+  createdAt  DateTime           @default(now())
+  updatedAt  DateTime           @updatedAt
+  article    AiKnowledgeArticle @relation(fields: [articleId], references: [id], onDelete: Cascade)
+
+  @@unique([articleId, chunkIndex])
+  @@index([keywords])
+}
+
+model AiConversation {
+  id           String      @id @default(cuid())
+  userId       String
+  title        String?
+  /// PAI P0: first-class Conversation State (module/intent/reference/constraints)
+  sessionState Json?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+  messages     AiMessage[]
+
+  @@index([userId])
+}
+
+model AiMessage {
+  id             String         @id @default(cuid())
+  conversationId String
+  role           String
+  content        String
+  citations      Json?
+  toolTraces     Json?
+  grounded       Boolean        @default(true)
+  createdAt      DateTime       @default(now())
+  conversation   AiConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  feedback       AiFeedback?
+
+  @@index([conversationId])
+}
+
+model AiFeedback {
+  id        String    @id @default(cuid())
+  messageId String    @unique
+  rating    Int
+  comment   String?
+  createdAt DateTime  @default(now())
+  message   AiMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+}
+
+model AiPromptLog {
+  id               String   @id @default(cuid())
+  userId           String
+  conversationId   String?
+  messageId        String?
+  intent           String?
+  /// PAI P1: explicit Response Strategy for UET / observability
+  responseStrategy String?
+  failureKind      String?
+  metadata         Json?
+  model            String?
+  tokenIn          Int?
+  tokenOut         Int?
+  latencyMs        Int?
+  ollamaUsed       Boolean  @default(false)
+  refusal          Boolean  @default(false)
+  createdAt        DateTime @default(now())
+
+  @@index([userId])
+  @@index([createdAt])
+  @@index([responseStrategy])
+}

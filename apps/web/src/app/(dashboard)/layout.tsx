@@ -20,6 +20,7 @@ import { useAuthStore } from '../../store/authStore';
 import { ProfileAvatar } from '../../components/ProfileAvatar';
 import { useNotificationStore } from '../../store/notificationStore';
 import { ErrorBoundary } from '../../components/ErrorBoundary';
+import { PermatraxChatbot } from '../../components/ai-chatbot/PermatraxChatbot';
 
 const jakarta = Plus_Jakarta_Sans({
   subsets: ['latin'],
@@ -1214,12 +1215,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         </main>
       </div>
 
-      {/* FIX: floating banner shown only when backend is unreachable — tells the user exactly what to do */}
+      {/* FIX: floating banner shown only when backend is unreachable — above chatbot FAB */}
       {backendStatus === 'error' && (
         <div
           style={{
             position: 'fixed',
-            bottom: 16,
+            bottom: 84,
             right: 16,
             zIndex: 9999,
             padding: '12px 18px',
@@ -1258,6 +1259,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           </button>
         </div>
       )}
+
+      <PermatraxChatbot />
     </div>
   );
 }
