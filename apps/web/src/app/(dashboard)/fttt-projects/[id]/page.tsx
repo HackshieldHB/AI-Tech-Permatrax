@@ -3699,6 +3699,8 @@ function FtttProjectDetailPageInner() {
   const [loading, setLoading] = useState(true);
   const [advancing, setAdvancing] = useState(false);
   const [closingParent, setClosingParent] = useState(false);
+  const [showSiteInitConfirm, setShowSiteInitConfirm] = useState(false);
+  const [siteInitReason, setSiteInitReason] = useState('');
   const socketRef = useRef<Socket | null>(null);
 
   const load = useCallback(async () => {
@@ -3733,13 +3735,17 @@ function FtttProjectDetailPageInner() {
     return () => { socket.disconnect(); };
   }, [id, load]);
 
-  const handleAdvance = async () => {
+  const handleAdvance = async (notes?: string) => {
     setAdvancing(true);
     try {
+      const body =
+        notes && notes.trim()
+          ? { notes: notes.trim() }
+          : {};
       const res = await apiFetch(`/fttt-projects/${id}/advance-phase`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
+        body: JSON.stringify(body),
       }, user?.id);
       if (!res.ok) {
         const err = await res.json().catch(() => ({})) as any;
@@ -3747,10 +3753,21 @@ function FtttProjectDetailPageInner() {
         return;
       }
       toast.success('Phase berhasil diselesaikan');
+      setShowSiteInitConfirm(false);
+      setSiteInitReason('');
       void load();
     } finally {
       setAdvancing(false);
     }
+  };
+
+  const requestAdvance = () => {
+    if (project?.currentPhase === 'SITE_INITIATION') {
+      setSiteInitReason('');
+      setShowSiteInitConfirm(true);
+      return;
+    }
+    void handleAdvance();
   };
 
   const handleCloseParent = async () => {
@@ -3811,6 +3828,15 @@ function FtttProjectDetailPageInner() {
     readiness &&
     !(isBulky && bulkyInitiationDone) &&
     (() => {
+      // Urgent: Site Initiation — PM FTTT / Admin only
+      if (
+        project.currentPhase === 'SITE_INITIATION' &&
+        userRole !== 'PM_FTTT' &&
+        userRole !== 'ADMIN' &&
+        userRole !== 'GENERAL_MANAGER'
+      ) {
+        return false;
+      }
       // C5: Implementation — Admin only
       if (project.currentPhase === 'IMPLEMENTATION' && userRole !== 'ADMIN' && userRole !== 'GENERAL_MANAGER') return false;
       // C6-TI2: Documentation & Reconciliation — PM FTTT + Admin only
@@ -3883,7 +3909,7 @@ function FtttProjectDetailPageInner() {
           {/* Integra V3: hide Selesaikan Fase on Parent after Initiation + Site Initiation */}
           {canShowAdvance && (
             <button
-              onClick={handleAdvance}
+              onClick={requestAdvance}
               disabled={advancing || !readiness.ready}
               title={readiness.ready ? 'Selesaikan fase ini dan lanjut ke berikutnya' : readiness.blockedReasons.join('; ')}
               style={{
@@ -4144,6 +4170,86 @@ function FtttProjectDetailPageInner() {
             userRole={user?.role ?? ''}
             monitoringOnly
           />
+        </div>
+      )}
+
+      {/* Urgent: confirm + mandatory reason before completing Site Initiation */}
+      {showSiteInitConfirm && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 300, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+          <div style={{ background: '#fff', borderRadius: 12, padding: 24, maxWidth: 520, width: '100%', maxHeight: '90vh', overflow: 'auto', boxShadow: '0 8px 24px rgba(0,0,0,0.12)' }}>
+            <h3 style={{ margin: '0 0 8px', fontSize: 16, fontWeight: 700 }}>
+              Selesaikan Fase Site Initiation
+            </h3>
+            <p style={{ margin: '0 0 12px', fontSize: 13, color: '#57606a', lineHeight: 1.5 }}>
+              Apakah Anda yakin ingin menyelesaikan Fase Site Initiation?
+              Setelah dikonfirmasi, penambahan Site baru pada Parent Project tidak lagi tersedia.
+            </p>
+
+            {(() => {
+              const childSites = project.children ?? [];
+              const names = childSites
+                .map((c) => c.projectName || c.financeProject?.name || c.id.slice(-6))
+                .filter(Boolean);
+              return (
+                <div style={{ marginBottom: 14, padding: 12, background: '#F6F8FA', borderRadius: 8, border: '1px solid #D0D7DE' }}>
+                  <p style={{ margin: '0 0 6px', fontSize: 12, fontWeight: 700, color: '#24292f' }}>
+                    {names.length > 0
+                      ? `List ${names.length} site yang sudah masuk ke dalam Project ${project.projectName ?? 'ini'}`
+                      : 'Belum ada Site yang ditambahkan ke Parent Project ini.'}
+                  </p>
+                  {names.length > 0 && (
+                    <ul style={{ margin: 0, paddingLeft: 18, maxHeight: 160, overflow: 'auto' }}>
+                      {names.map((n, i) => (
+                        <li key={`${n}-${i}`} style={{ fontSize: 12, color: '#57606a', lineHeight: 1.45 }}>{n}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              );
+            })()}
+
+            <label style={{ display: 'block', fontSize: 12, fontWeight: 700, marginBottom: 6, color: '#24292f' }}>
+              Alasan Penyelesaian Fase <span style={{ color: '#cf222e' }}>*</span>
+            </label>
+            <textarea
+              value={siteInitReason}
+              onChange={(e) => setSiteInitReason(e.target.value)}
+              rows={3}
+              placeholder="Contoh: Seluruh Site Segment 1 sudah ditambahkan sesuai BoQ / SPK."
+              style={{
+                width: '100%', boxSizing: 'border-box', padding: '10px 12px', borderRadius: 8,
+                border: '1px solid #D0D7DE', fontSize: 13, resize: 'vertical', marginBottom: 16,
+                fontFamily: 'inherit',
+              }}
+            />
+
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button
+                type="button"
+                disabled={advancing}
+                onClick={() => { setShowSiteInitConfirm(false); setSiteInitReason(''); }}
+                style={{ padding: '8px 16px', borderRadius: 8, border: '1px solid #D0D7DE', background: '#fff', cursor: 'pointer', fontWeight: 600, fontSize: 13 }}
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                disabled={advancing || siteInitReason.trim().length < 3}
+                onClick={() => void handleAdvance(siteInitReason)}
+                style={{
+                  padding: '8px 16px', borderRadius: 8, border: 'none', fontWeight: 700, fontSize: 13,
+                  background: advancing || siteInitReason.trim().length < 3 ? '#D0D7DE' : '#1a7f37',
+                  color: advancing || siteInitReason.trim().length < 3 ? '#8C959F' : '#fff',
+                  cursor: advancing || siteInitReason.trim().length < 3 ? 'not-allowed' : 'pointer',
+                }}
+              >
+                {advancing ? 'Memproses…' : 'Konfirmasi'}
+              </button>
+            </div>
+            <p style={{ margin: '10px 0 0', fontSize: 11, color: '#8C959F' }}>
+              Catatan: Tombol Konfirmasi nonaktif hingga kolom Alasan diisi. Alasan, user, dan waktu tersimpan sebagai audit trail.
+            </p>
+          </div>
         </div>
       )}
     </div>

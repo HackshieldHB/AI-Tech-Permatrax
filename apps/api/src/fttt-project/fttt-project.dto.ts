@@ -124,6 +124,7 @@ export const DisburseFtttTransactionDto = z.object({
 export type DisburseFtttTransactionDtoType = z.infer<typeof DisburseFtttTransactionDto>;
 
 export const AdvancePhaseDto = z.object({
+  /** Mandatory when completing Site Initiation (audit trail). */
   notes: z.string().max(1000).optional(),
 });
 export type AdvancePhaseDtoType = z.infer<typeof AdvancePhaseDto>;

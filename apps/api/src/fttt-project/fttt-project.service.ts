@@ -894,6 +894,25 @@ export class FtttProjectService {
     });
     this.assertFtttMutable(project);
 
+    // Urgent: Site Initiation completion requires mandatory reason (audit trail)
+    if (project.currentPhase === FtttPhase.SITE_INITIATION) {
+      const reason = (dto.notes ?? '').trim();
+      if (reason.length < 3) {
+        throw new BadRequestException(
+          'Alasan penyelesaian Fase Site Initiation wajib diisi (minimal 3 karakter)',
+        );
+      }
+      if (
+        userRole !== Role.PM_FTTT &&
+        userRole !== Role.ADMIN &&
+        userRole !== Role.GENERAL_MANAGER
+      ) {
+        throw new ForbiddenException(
+          'Hanya PM FTTT atau Admin yang dapat menyelesaikan fase Site Initiation',
+        );
+      }
+    }
+
     // C5-Issue4: Only Admin can complete the Implementation phase
     if (
       project.currentPhase === FtttPhase.IMPLEMENTATION &&
@@ -961,7 +980,10 @@ export class FtttProjectService {
           status:       FtttPhaseStatus.COMPLETED,
           completedAt:  new Date(),
           completedById: userId,
-          notes:        dto.notes ?? null,
+          notes:
+            project.currentPhase === FtttPhase.SITE_INITIATION
+              ? (dto.notes ?? '').trim()
+              : (dto.notes ?? null),
         },
       });
 
