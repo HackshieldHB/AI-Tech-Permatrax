@@ -199,6 +199,80 @@ export function useSketchMode(map: maplibregl.Map | null) {
     return undefined;
   }, [sketchMode, map]);
 
+  // JLM Issue 1/2: when sketch mode is off but topology exists, show a read-only
+  // overlay so Gambar Manual remains visible/selectable during Backbone/Target pick.
+  useEffect(() => {
+    if (!map) return;
+    const SRC = 'sketch-static';
+    const LAYERS = ['sketch-static-fill', 'sketch-static-line', 'sketch-static-point'] as const;
+
+    const removeStatic = () => {
+      for (const id of LAYERS) {
+        try {
+          if (map.getLayer(id)) map.removeLayer(id);
+        } catch {
+          /* ignore */
+        }
+      }
+      try {
+        if (map.getSource(SRC)) map.removeSource(SRC);
+      } catch {
+        /* ignore */
+      }
+    };
+
+    if (sketchMode) {
+      removeStatic();
+      return;
+    }
+
+    const fc = sketchTopology?.features?.length
+      ? sketchTopology
+      : { type: 'FeatureCollection', features: [] };
+    if (!fc.features.length) {
+      removeStatic();
+      return;
+    }
+
+    const data = fc as GeoJSON.FeatureCollection;
+    if (map.getSource(SRC)) {
+      (map.getSource(SRC) as maplibregl.GeoJSONSource).setData(data);
+    } else {
+      map.addSource(SRC, { type: 'geojson', data });
+      map.addLayer({
+        id: 'sketch-static-fill',
+        type: 'fill',
+        source: SRC,
+        filter: ['==', ['geometry-type'], 'Polygon'],
+        paint: { 'fill-color': '#8B5CF6', 'fill-opacity': 0.15 * sketchOpacity },
+      });
+      map.addLayer({
+        id: 'sketch-static-line',
+        type: 'line',
+        source: SRC,
+        filter: ['any', ['==', ['geometry-type'], 'LineString'], ['==', ['geometry-type'], 'Polygon']],
+        paint: { 'line-color': '#10B981', 'line-width': 3, 'line-opacity': sketchOpacity },
+      });
+      map.addLayer({
+        id: 'sketch-static-point',
+        type: 'circle',
+        source: SRC,
+        filter: ['==', ['geometry-type'], 'Point'],
+        paint: {
+          'circle-radius': 7,
+          'circle-color': '#EF4444',
+          'circle-stroke-width': 2,
+          'circle-stroke-color': '#ffffff',
+          'circle-opacity': sketchOpacity,
+        },
+      });
+    }
+
+    return () => {
+      // Keep overlay across re-renders; full cleanup when features empty / sketch on
+    };
+  }, [map, sketchMode, sketchTopology, sketchOpacity]);
+
   // JLM Phase 2 Issue 2: Hapus toolbar → trash selected sketch feature(s)
   useEffect(() => {
     if (!sketchMode || !drawRef.current || sketchTrashTick === 0) return;

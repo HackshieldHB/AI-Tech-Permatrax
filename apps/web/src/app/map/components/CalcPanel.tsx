@@ -70,6 +70,8 @@ export type CalcPanelProps = {
     drawnPolygon?: [number, number][] | null,
   ) => Promise<void>;
   handleStartCalc: () => void;
+  /** JLM Issue 3: abort wizard without wiping Gambar Manual */
+  abortCalculation: () => void;
   remapBackbone: () => void;
   remapTarget: () => void;
   setActivePanel?: Dispatch<
@@ -120,6 +122,7 @@ export function CalcPanel(props: CalcPanelProps) {
     clearTopology,
     renderTopology,
     handleStartCalc,
+    abortCalculation,
     remapBackbone,
     remapTarget,
     setActivePanel,
@@ -629,14 +632,7 @@ export function CalcPanel(props: CalcPanelProps) {
                     <div style={{ display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
                       <button
                         type="button"
-                        onClick={() => {
-                          // JLM Phase 2 Issue 3: Batalkan only retries the current step
-                          if (calcMode === 'target') {
-                            remapTarget();
-                          } else {
-                            remapBackbone();
-                          }
-                        }}
+                        onClick={() => abortCalculation()}
                         style={{
                           padding: '7px 16px',
                           borderRadius: 8,
@@ -647,7 +643,7 @@ export function CalcPanel(props: CalcPanelProps) {
                           color: '#6B7280',
                         }}
                       >
-                        ✕ Batalkan {calcMode === 'target' ? 'Target' : 'Backbone'}
+                        Batalkan Kalkulasi
                       </button>
                       {calcMode === 'target' && backbonePoint && (
                         <button
@@ -796,9 +792,28 @@ export function CalcPanel(props: CalcPanelProps) {
                         {calcResult.summary.categoryReason}
                       </div>
                       <div style={{ fontSize: 11, color: '#6B7280', marginTop: 4 }}>
-                        📡 {calcResult.summary.backboneOwner} ·{' '}
+                        {calcResult.summary.backboneOwner} ·{' '}
                         {calcResult.summary.backboneDistanceM}m · {calcResult.summary.areaType}
                       </div>
+                      {(topoExportData?.straightRouteCount ?? 0) > 0 && (
+                        <div
+                          style={{
+                            fontSize: 11,
+                            color: '#B45309',
+                            marginTop: 6,
+                            lineHeight: 1.4,
+                          }}
+                        >
+                          {topoExportData!.straightRouteCount} jalur distribusi fallback garis lurus
+                          (OSRM gagal) — tinjau ulang di peta (garis putus-putus).
+                        </div>
+                      )}
+                      {(topoExportData?.existingOdpCount ?? 0) > 0 && (
+                        <div style={{ fontSize: 11, color: '#166534', marginTop: 4 }}>
+                          {topoExportData!.existingOdpCount} ODP existing dikunci dari KMZ / desain
+                          manual.
+                        </div>
+                      )}
                     </div>
 
                     {/* FIX: Export buttons — show after calculation */}

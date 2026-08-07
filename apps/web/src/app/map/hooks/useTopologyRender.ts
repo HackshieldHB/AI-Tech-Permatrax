@@ -227,11 +227,8 @@ function placeOdpsAlongRoute(
     placedAt += spacingM; // FIX
   }
 
-  // FIX: if route too short, add remaining at end
-  while (positions.length < odpCount) {
-    positions.push(routeCoords[routeCoords.length - 1]); // FIX
-  }
-
+  // JLM Issue 4: do NOT pad with duplicate endpoints (caused stacked ODPs).
+  // Short routes simply contribute fewer candidates; caller pads via other directions.
   return positions.slice(0, odpCount); // FIX
 }
 
@@ -265,9 +262,13 @@ async function computeOdpAlongRoads(
     }; // FIX
   }); // FIX
 
-  // FIX: get road routes from ODC to each direction
+  // JLM Issue 4: sample evenly around the compass (not a contiguous 0°–135° sector)
   const numDirections = Math.min(8, Math.max(4, Math.ceil(odpCount / 3))); // FIX
-  const selectedDirs = ALL_DIRECTIONS.slice(0, numDirections); // FIX
+  const step = ALL_DIRECTIONS.length / numDirections;
+  const selectedDirs = Array.from({ length: numDirections }, (_, i) => {
+    const idx = Math.min(ALL_DIRECTIONS.length - 1, Math.round(i * step) % ALL_DIRECTIONS.length);
+    return ALL_DIRECTIONS[idx];
+  });
 
   const routeResults = await Promise.allSettled(
     selectedDirs.map((d) => backendRoute(apiBase, token, odcLng, odcLat, d.edgeLng, d.edgeLat)), // FIX
@@ -314,11 +315,23 @@ async function computeOdpAlongRoads(
     if (!tooClose) deduped.push(pos); // FIX
   }); // FIX
 
-  // FIX: pad if dedupe removed too many
-  while (deduped.length < odpCount) {
-    const last = deduped[deduped.length - 1] ?? ([odcLng, odcLat] as [number, number]); // FIX
-    deduped.push(last); // FIX
-  } // FIX
+  // JLM Issue 4: if dedupe removed too many, sample extra points along longest routes
+  // instead of cloning the last coordinate (which stacked ODPs on one pole).
+  if (deduped.length < odpCount && allRoutes.length > 0) {
+    const longest = [...allRoutes].sort(
+      (a, b) =>
+        (b.length > 1 ? haversineM(b[0][1], b[0][0], b[b.length - 1][1], b[b.length - 1][0]) : 0) -
+        (a.length > 1 ? haversineM(a[0][1], a[0][0], a[a.length - 1][1], a[a.length - 1][0]) : 0),
+    )[0];
+    const extras = placeOdpsAlongRoute(longest, odpCount - deduped.length + 2, Math.max(40, spacingM * 0.75));
+    for (const p of extras) {
+      if (deduped.length >= odpCount) break;
+      const tooClose = deduped.some(
+        (existing) => haversineM(p[1], p[0], existing[1], existing[0]) < 30,
+      );
+      if (!tooClose) deduped.push(p);
+    }
+  }
 
   return {
     positions: deduped.slice(0, odpCount), // FIX
@@ -473,16 +486,33 @@ function verifyOdpInBoundary(
     return [(λ2 * 180) / Math.PI, (φ2 * 180) / Math.PI]; // FIX: [lng, lat]
   } // FIX
   if (isPointInPolygon(lng, lat, boundary.points)) return [lng, lat]; // FIX
-  let minDist = Infinity; // FIX
-  let nearest: [number, number] = boundary.points[0]; // FIX
-  boundary.points.forEach(([px, py]) => {
-    const d = haversineM(lat, lng, py, px); // FIX
+  // JLM Issue 4: clamp to nearest boundary EDGE (not vertex) so ODPs stay on
+  // the polygon perimeter instead of jumping to a far corner.
+  const ring = [...boundary.points];
+  if (
+    ring.length > 0 &&
+    (ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1])
+  ) {
+    ring.push(ring[0]);
+  }
+  let minDist = Infinity;
+  let nearest: [number, number] = boundary.points[0];
+  for (let i = 0; i < ring.length - 1; i++) {
+    const [x1, y1] = ring[i];
+    const [x2, y2] = ring[i + 1];
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const len2 = dx * dx + dy * dy;
+    const t = len2 > 0 ? Math.max(0, Math.min(1, ((lng - x1) * dx + (lat - y1) * dy) / len2)) : 0;
+    const px = x1 + t * dx;
+    const py = y1 + t * dy;
+    const d = haversineM(lat, lng, py, px);
     if (d < minDist) {
-      minDist = d; // FIX
-      nearest = [px, py]; // FIX
+      minDist = d;
+      nearest = [px, py];
     }
-  }); // FIX
-  return nearest; // FIX
+  }
+  return nearest;
 } // FIX
 
 // FIX: max distance from center to polygon vertices (meters) — sampling radius for syntheticInsideBoundary
@@ -664,8 +694,14 @@ export function useTopologyRender(args: {
   polygonPoints: [number, number][];
   /** GIS Issue 5: titik pelanggan dari layer KMZ (menggantikan bangunan OSM bila terisi) */
   customerPoints?: [number, number][];
+  /** JLM hybrid: existing ODP/ODC/OLT from KMZ + Gambar Manual — locked, gap-fill only */
+  existingNetwork?: {
+    olt: [number, number][];
+    odc: [number, number][];
+    odp: [number, number][];
+  };
 }) {
-  const { mapRef, inputMode, polygonPoints, customerPoints } = args;
+  const { mapRef, inputMode, polygonPoints, customerPoints, existingNetwork } = args;
   const [renderingTopology, setRenderingTopology] = useState(false);
   const [topologyRendered, setTopologyRendered] = useState(false);
   const [topoExportData, setTopoExportData] = useState<TopoExportData | null>(null);
@@ -708,7 +744,10 @@ export function useTopologyRender(args: {
     }); // FIX
     setTopologyRendered(false); // FIX
     setLastRenderedGeometry(null);
-    useDesignStore.getState().clear();
+    setTopoExportData(null);
+    // JLM Issue 3: do NOT call useDesignStore.clear() — that wiped sketchTopology /
+    // manual nodes when Batalkan / remap / Hitung Ulang ran. Legend "clear" and
+    // remap only need map layers removed; design data stays until user explicitly clears.
   }, []);
 
   // FIX: render full FTTH topology on map (backend route/snap/buildings + road ODPs)
@@ -756,9 +795,18 @@ export function useTopologyRender(args: {
               centerLat: target[1], // FIX
             }; // FIX
 
-        // ── STEP ①: Snap ODC to nearest road ────────────
+        // ── STEP ①: Snap ODC to nearest road (prefer existing KMZ/manual ODC) ──
         toast.info('① Menempatkan ODC ke jalan terdekat...'); // FIX
-        const odcSnapped = await backendSnap(apiBase, authToken, target[0], target[1]); // FIX
+        const existingOdc = existingNetwork?.odc?.[0];
+        const odcSeed = existingOdc ?? target;
+        let odcSnapped = await backendSnap(apiBase, authToken, odcSeed[0], odcSeed[1]); // FIX
+        // Extra E: keep ODC inside polygon/circle after snap
+        odcSnapped = verifyOdpInBoundary(odcSnapped, boundary);
+        if (existingOdc) {
+          // Lock existing ODC position (still lightly verified in-boundary)
+          odcSnapped = verifyOdpInBoundary(existingOdc, boundary);
+          toast.info('① Memakai ODC existing dari KMZ / desain manual');
+        }
         const [odcLng, odcLat] = odcSnapped; // FIX
         const odcSnappedLng = odcLng; // FIX
         const odcSnappedLat = odcLat; // FIX
@@ -797,63 +845,64 @@ export function useTopologyRender(args: {
           }
         }
 
-        // ── STEP ③: ODP placement along roads (linear) ──
-        toast.info(`③ Menghitung posisi ${odpCount} ODP di sepanjang jalan...`); // FIX
+        // ── STEP ③: ODP placement — seed existing, gap-fill only ──
+        const lockedExistingOdps = (existingNetwork?.odp ?? [])
+          .map((p) => verifyOdpInBoundary(p, boundary))
+          .filter((p) => {
+            if (boundary.type === 'polygon') return isPointInPolygon(p[0], p[1], boundary.points);
+            return isPointInCircle(p[0], p[1], boundary.centerLng, boundary.centerLat, boundary.radiusM);
+          });
+        const gapFillCount = Math.max(0, odpCount - lockedExistingOdps.length);
+        if (lockedExistingOdps.length > 0) {
+          toast.info(
+            `③ ${lockedExistingOdps.length} ODP existing dikunci` +
+              (gapFillCount > 0 ? ` · menambah ${gapFillCount} ODP baru` : ' · kapasitas cukup'),
+          );
+        } else {
+          toast.info(`③ Menghitung posisi ${odpCount} ODP di sepanjang jalan...`); // FIX
+        }
 
-        // FIX: use road-following distribution instead of spokes
-        const { positions: rawOdpPositions, routes: spokeRoutes } = await computeOdpAlongRoads(
-          apiBase, // FIX
-          authToken, // FIX
-          odcLng, // FIX
-          odcLat, // FIX
-          odpCount, // FIX
-          spacingM, // FIX
-          radiusM, // FIX
-        ); // FIX
+        let rawOdpPositions: [number, number][] = [];
+        let spokeRoutes: [number, number][][] = [];
+        if (gapFillCount > 0) {
+          const computed = await computeOdpAlongRoads(
+            apiBase,
+            authToken,
+            odcLng,
+            odcLat,
+            gapFillCount,
+            spacingM,
+            radiusM,
+          );
+          rawOdpPositions = computed.positions;
+          spokeRoutes = computed.routes;
+        }
 
-        // FIX: snap each ODP to nearest road
         toast.info('③ Snap ODP ke jalan...'); // FIX
-        const snappedOdps = await Promise.all(
-          rawOdpPositions.map(([lng, lat]) => backendSnap(apiBase, authToken, lng, lat)), // FIX
-        ); // FIX
-
-        // FIX: verify each ODP is inside polygon boundary
-        const verifiedOdps = snappedOdps.map((odp) => verifyOdpInBoundary(odp, boundary)); // FIX
-        // GIS Issue 3: pastikan ODP tidak menumpuk di satu tiang/titik jalan
-        const odpPositions = spreadStackedOdps(verifiedOdps, rawOdpPositions);
-
-        // ── STEP ④: Distribution — cascade chain routing ──
-        toast.info('④ Menghitung jalur distribusi (cascade)...'); // FIX
-
-        // FIX: use cascade routing instead of star from ODC
-        const cascadeRoutes = buildCascadeRoutes(
-          [odcSnappedLng, odcSnappedLat], // FIX
-          odpPositions, // FIX
-          spokeRoutes || [], // FIX
-          spacingM, // FIX
-        ); // FIX
-
-        // FIX: get actual road routes for cascade segments
-        const distRouteResults = await Promise.allSettled(
-          cascadeRoutes.map(([from, to]) =>
-            backendRoute(apiBase, authToken, from[0], from[1], to[0], to[1]), // FIX
-          ), // FIX
-        ); // FIX
-
-        const distRoutes: [number, number][][] = distRouteResults.map((r, i) =>
-          r.status === 'fulfilled' && r.value?.coordinates?.length
-            ? r.value.coordinates
-            : ([cascadeRoutes[i][0], cascadeRoutes[i][1]] as [number, number][]), // FIX
-        ); // FIX
-        // GIS Issue 4: tandai segmen yang memakai fallback garis lurus (bukan
-        // rute jalan) agar tampil dashed — indikasi "perlu verifikasi lapangan"
-        const distRouteIsStraight: boolean[] = distRouteResults.map((r) =>
-          r.status === 'fulfilled' ? r.value?.source === 'straight' || (r.value?.coordinates?.length ?? 0) <= 2 : true,
+        const snappedGap = await Promise.all(
+          rawOdpPositions.map(([lng, lat]) => backendSnap(apiBase, authToken, lng, lat)),
         );
+        let verifiedGap = snappedGap.map((odp) => verifyOdpInBoundary(odp, boundary));
+        verifiedGap = spreadStackedOdps(verifiedGap, rawOdpPositions);
+        // Extra E: re-snap + re-verify after spread; drop still-outside
+        const refinedGap: [number, number][] = [];
+        for (const p of verifiedGap) {
+          const reSnapped = await backendSnap(apiBase, authToken, p[0], p[1]);
+          const clamped = verifyOdpInBoundary(reSnapped, boundary);
+          const inside =
+            boundary.type === 'polygon'
+              ? isPointInPolygon(clamped[0], clamped[1], boundary.points)
+              : isPointInCircle(
+                  clamped[0],
+                  clamped[1],
+                  boundary.centerLng,
+                  boundary.centerLat,
+                  boundary.radiusM,
+                );
+          if (inside) refinedGap.push(clamped);
+        }
 
-        // ── STEP ⑤: Get ALL buildings in polygon area ──
-        // GIS Issue 5: bila user menandai layer KMZ sebagai "Titik Pelanggan",
-        // pakai titik-titik itu sebagai homepass — bangunan OSM tidak di-fetch.
+        // ── STEP ⑤ early: buildings/homepass (also used for Extra F building reject) ──
         const kmzCustomers = (customerPoints ?? []).map(([lng, lat]) => ({
           lng,
           lat,
@@ -866,39 +915,104 @@ export function useTopologyRender(args: {
           osmBuildingsRaw = kmzCustomers;
         } else {
           toast.info('⑤ Mengambil bangunan OSM dalam area...'); // FIX
-
-          let queryRadius = radiusM + 200; // FIX: larger default capture radius
+          let queryRadius = radiusM + 200;
           if (drawnPolygon && drawnPolygon.length >= 3) {
             queryRadius =
               Math.max(
-                ...drawnPolygon.map(([lng, lat]) =>
-                  haversineM(target[1], target[0], lat, lng), // FIX: centroid to vertex
-                ),
-              ) + 100; // FIX
-          } // FIX
-          queryRadius = Math.min(queryRadius, 2000); // FIX
-
-          osmBuildingsRaw = await backendBuildings(
-            apiBase, // FIX
-            authToken, // FIX
-            target[1], // FIX
-            target[0], // FIX
-            queryRadius, // FIX
-          ); // FIX
+                ...drawnPolygon.map(([lng, lat]) => haversineM(target[1], target[0], lat, lng)),
+              ) + 100;
+          }
+          queryRadius = Math.min(queryRadius, 2000);
+          osmBuildingsRaw = await backendBuildings(apiBase, authToken, target[1], target[0], queryRadius);
         }
 
         const osmBuildings = osmBuildingsRaw.filter((b) => {
           if (boundary.type === 'polygon') {
-            return isPointInPolygon(b.lng, b.lat, boundary.points); // FIX
+            return isPointInPolygon(b.lng, b.lat, boundary.points);
           }
           return isPointInCircle(
-            b.lng, // FIX
-            b.lat, // FIX
-            boundary.centerLng, // FIX
-            boundary.centerLat, // FIX
-            boundary.radiusM, // FIX
-          ); // FIX
-        }); // FIX
+            b.lng,
+            b.lat,
+            boundary.centerLng,
+            boundary.centerLat,
+            boundary.radiusM,
+          );
+        });
+
+        // Extra F: push gap-fill ODPs away from building centroids (existing ODPs stay locked)
+        const BUILDING_CLEARANCE_M = 12;
+        const clearedGap: [number, number][] = [];
+        for (const p of refinedGap) {
+          const tooClose = osmBuildings.some(
+            (b) => haversineM(p[1], p[0], b.lat, b.lng) < BUILDING_CLEARANCE_M,
+          );
+          if (!tooClose) {
+            clearedGap.push(p);
+            continue;
+          }
+          // Nudge along a small bearing then re-snap to road + boundary
+          let rescued: [number, number] | null = null;
+          for (let attempt = 1; attempt <= 6; attempt++) {
+            const bearing = ((attempt * 60) * Math.PI) / 180;
+            const dM = BUILDING_CLEARANCE_M + attempt * 4;
+            const dLat = (dM / 6371000) * (180 / Math.PI) * Math.cos(bearing);
+            const dLng =
+              ((dM / 6371000) * (180 / Math.PI) * Math.sin(bearing)) /
+              Math.max(0.2, Math.cos((p[1] * Math.PI) / 180));
+            const candidate = await backendSnap(apiBase, authToken, p[0] + dLng, p[1] + dLat);
+            const clamped = verifyOdpInBoundary(candidate, boundary);
+            const inside =
+              boundary.type === 'polygon'
+                ? isPointInPolygon(clamped[0], clamped[1], boundary.points)
+                : isPointInCircle(
+                    clamped[0],
+                    clamped[1],
+                    boundary.centerLng,
+                    boundary.centerLat,
+                    boundary.radiusM,
+                  );
+            const stillClose = osmBuildings.some(
+              (b) => haversineM(clamped[1], clamped[0], b.lat, b.lng) < BUILDING_CLEARANCE_M,
+            );
+            if (inside && !stillClose) {
+              rescued = clamped;
+              break;
+            }
+          }
+          if (rescued) clearedGap.push(rescued);
+        }
+
+        const odpPositions = [...lockedExistingOdps, ...clearedGap].slice(
+          0,
+          Math.max(odpCount, lockedExistingOdps.length),
+        );
+
+        // ── STEP ④: Distribution — cascade chain routing ──
+        toast.info('④ Menghitung jalur distribusi (cascade)...'); // FIX
+
+        const cascadeRoutes = buildCascadeRoutes(
+          [odcSnappedLng, odcSnappedLat],
+          odpPositions,
+          spokeRoutes || [],
+          spacingM,
+        );
+
+        const distRouteResults = await Promise.allSettled(
+          cascadeRoutes.map(([from, to]) =>
+            backendRoute(apiBase, authToken, from[0], from[1], to[0], to[1]),
+          ),
+        );
+
+        const distRoutes: [number, number][][] = distRouteResults.map((r, i) =>
+          r.status === 'fulfilled' && r.value?.coordinates?.length
+            ? r.value.coordinates
+            : ([cascadeRoutes[i][0], cascadeRoutes[i][1]] as [number, number][]),
+        );
+        const distRouteIsStraight: boolean[] = distRouteResults.map((r) =>
+          r.status === 'fulfilled'
+            ? r.value?.source === 'straight' || (r.value?.coordinates?.length ?? 0) <= 2
+            : true,
+        );
 
         // ── JLM Issue 3B: capacity-aware assignment — each ODP serves at most odpCapacityVal ──
         const odpLoad: number[] = odpPositions.map(() => 0); // ports used per ODP
@@ -1476,6 +1590,8 @@ export function useTopologyRender(args: {
           ); // FIX
         }
 
+        const straightRouteCount = distRouteIsStraight.filter(Boolean).length;
+
         // FIX: store for KMZ + Excel export (JLM Issue 1/2/3A)
         setTopoExportData({
           backbone, // FIX
@@ -1488,6 +1604,8 @@ export function useTopologyRender(args: {
           polePoints: polePointsForExport, // JLM Issue B: auto-planned poles
           odpLoad, // JLM Issue 3A: per-ODP load
           odpCapacity: odpCapacityVal, // JLM Issue 3A
+          straightRouteCount,
+          existingOdpCount: lockedExistingOdps.length,
         }); // FIX
 
         setTopologyRendered(true); // FIX
@@ -1500,10 +1618,16 @@ export function useTopologyRender(args: {
           feederCoords,
           distRoutes,
         });
+        const existingNote =
+          lockedExistingOdps.length > 0 ? ` · ${lockedExistingOdps.length} ODP existing` : '';
+        const straightNote =
+          straightRouteCount > 0 ? ` · ${straightRouteCount} jalur fallback lurus` : '';
         toast.success(
-          `✅ Topologi selesai: ${odpPositions.length} ODP · ` + // FIX
-            `${osmCount} tercover / ${validHomepass.length} homepass (kapasitas 1:${odpCapacityVal})`, // FIX
-        ); // FIX
+          `✅ Topologi selesai: ${odpPositions.length} ODP · ` +
+            `${osmCount} tercover / ${validHomepass.length} homepass (kapasitas 1:${odpCapacityVal})` +
+            existingNote +
+            straightNote,
+        );
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : 'Error'; // FIX
         toast.error(`Gagal render topologi: ${msg}`); // FIX
@@ -1511,7 +1635,7 @@ export function useTopologyRender(args: {
         setRenderingTopology(false); // FIX
       }
     },
-    [clearTopology, inputMode, polygonPoints, customerPoints],
+    [clearTopology, inputMode, polygonPoints, customerPoints, existingNetwork],
   );
 
   const renderStoredDesign = useCallback(

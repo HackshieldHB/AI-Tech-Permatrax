@@ -25,6 +25,11 @@ import { MapTourOverlay } from './components/MapTourOverlay';
 import { SearchBar } from './components/SearchBar';
 import { useCommandStore } from '../../store/useCommandStore';
 import { useDesignStore } from '../../store/useDesignStore';
+import {
+  extractExistingFromDesignNodes,
+  extractExistingFromKmzLayers,
+  mergeExistingInfra,
+} from './utils/existingInfra';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -91,6 +96,18 @@ function GisMapPage() {
     return pts;
   }, [layers]);
 
+  const designNodes = useDesignStore((s) => s.nodes);
+
+  // JLM Issue 5 + Extra D: KMZ existing + Gambar Manual / design nodes
+  const existingNetwork = useMemo(
+    () =>
+      mergeExistingInfra(
+        extractExistingFromKmzLayers(layers),
+        extractExistingFromDesignNodes(designNodes),
+      ),
+    [layers, designNodes],
+  );
+
   const {
     renderingTopology,
     topologyRendered,
@@ -101,7 +118,17 @@ function GisMapPage() {
     renderStoredDesign,
     buildDesignGeometry,
   } =
-    useTopologyRender({ mapRef, inputMode, polygonPoints, customerPoints: kmzCustomerPoints });
+    useTopologyRender({
+      mapRef,
+      inputMode,
+      polygonPoints,
+      customerPoints: kmzCustomerPoints,
+      existingNetwork: {
+        olt: existingNetwork.olt,
+        odc: existingNetwork.odc,
+        odp: existingNetwork.odp,
+      },
+    });
 
   const {
     polygonMarkersRef,
@@ -127,6 +154,7 @@ function GisMapPage() {
     runCalculation,
     handleStartCalc,
     clearCalcGraphics,
+    abortCalculation,
     remapBackbone,
     remapTarget,
   } = useCalculation({
@@ -186,7 +214,12 @@ function GisMapPage() {
     setEditMode(next);
   };
 
-  useDesignModeMarkers({ mapRef, editMode });
+  // Extra A: keep MANUAL design nodes visible during calc pick / when leaving edit mode
+  useDesignModeMarkers({
+    mapRef,
+    editMode,
+    forceShowMarkers: !editMode && Object.keys(designNodes).length > 0,
+  });
   useDesignModeSync({ mapRef, editMode });
   useSketchMode(mapRef.current);
 
@@ -362,6 +395,7 @@ function GisMapPage() {
             clearTopology,
             renderTopology,
             handleStartCalc,
+            abortCalculation,
             remapBackbone,
             remapTarget,
             setActivePanel,

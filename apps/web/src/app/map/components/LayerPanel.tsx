@@ -223,7 +223,7 @@ export function LayerPanel(props: LayerPanelProps) {
                             );
                             toast.info(
                               next
-                                ? `👥 ${countLayerPoints(layer)} titik dari "${layer.name}" akan dipakai sebagai titik pelanggan pada kalkulasi berikutnya`
+                                ? `${countLayerPoints(layer)} titik dari "${layer.name}" akan dipakai sebagai titik pelanggan pada kalkulasi berikutnya`
                                 : `Titik "${layer.name}" tidak lagi dipakai sebagai titik pelanggan`,
                             );
                           }}
@@ -243,9 +243,44 @@ export function LayerPanel(props: LayerPanelProps) {
                             flexShrink: 0,
                           }}
                         >
-                          👥
+                          HP
                         </button>
                       )}
+
+                      {/* JLM Issue 5: gunakan ODP/ODC/OLT KMZ sebagai existing network */}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const next = !layer.useAsExistingNetwork;
+                          setLayers((prev) =>
+                            prev.map((l) =>
+                              l.id === layer.id ? { ...l, useAsExistingNetwork: next } : l,
+                            ),
+                          );
+                          toast.info(
+                            next
+                              ? `"${layer.name}" dipakai sebagai existing network (ODP/ODC dikunci)`
+                              : `"${layer.name}" tidak lagi dipakai sebagai existing network`,
+                          );
+                        }}
+                        title={
+                          layer.useAsExistingNetwork
+                            ? 'Layer dipakai sebagai existing network — klik untuk menonaktifkan'
+                            : 'Gunakan ODP/ODC/OLT di layer ini sebagai existing network pada kalkulasi'
+                        }
+                        style={{
+                          padding: '3px 6px',
+                          borderRadius: 5,
+                          border: 'none',
+                          background: layer.useAsExistingNetwork ? '#7C3AED' : '#F3F4F6',
+                          color: layer.useAsExistingNetwork ? 'white' : '#9CA3AF',
+                          cursor: 'pointer',
+                          fontSize: 11,
+                          flexShrink: 0,
+                        }}
+                      >
+                        EX
+                      </button>
 
                       <button
                         type="button"
