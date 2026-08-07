@@ -9,6 +9,7 @@ import {
   FileText, FolderOpen, GitBranch, Globe, HelpCircle, Inbox, LogOut, Menu, Package, PiggyBank, Settings, Wrench, X, // FIX: PackagePlus removed — no Request Stok nav
   ShoppingCart, Truck, UserCircle2, Wallet, Building, PackageX, Store, Receipt, // Phase 3 nav
   ListChecks, // NEW: Integra V1 — Daily Activity nav icon
+  Banknote, // Stable v1 — Approval Dana
 } from 'lucide-react';
 import { io, Socket } from 'socket.io-client';
 import { Plus_Jakarta_Sans } from 'next/font/google';
@@ -19,6 +20,7 @@ import { useAuthStore } from '../../store/authStore';
 import { ProfileAvatar } from '../../components/ProfileAvatar';
 import { useNotificationStore } from '../../store/notificationStore';
 import { ErrorBoundary } from '../../components/ErrorBoundary';
+import { PermatraxChatbot } from '../../components/ai-chatbot/PermatraxChatbot';
 
 const jakarta = Plus_Jakarta_Sans({
   subsets: ['latin'],
@@ -42,7 +44,7 @@ type NavItem = {
   roles?: Role[];
   section: 'OPERASIONAL' | 'INVENTARIS' | 'DOKUMEN' | 'DASHBOARD' | 'MANAJEMEN' | 'UTILITAS';
   gmOnly?: boolean;
-  badge?: 'pr' | 'cashOp' | 'purchasingInbox' | 'stockOutInbox';
+  badge?: 'pr' | 'cashOp' | 'purchasingInbox' | 'stockOutInbox' | 'approvalDana';
   dashboardForAllRoles?: boolean; // FIX: one sidebar tile — href resolved per role
 };
 
@@ -119,6 +121,14 @@ const NAV_ITEMS: NavItem[] = [
     icon: Database,
     section: 'OPERASIONAL',
     roles: ['PM_FTTT', 'SURVEYOR_FTTT', 'ADMIN', 'GENERAL_MANAGER', 'ADMIN_STOCK', 'FINANCE'],
+  },
+  {
+    href: '/approval-dana',
+    label: 'Approval Dana',
+    icon: Banknote,
+    section: 'OPERASIONAL',
+    roles: ['FINANCE', 'GENERAL_MANAGER', 'ADMIN'],
+    badge: 'approvalDana',
   },
   {
     href: '/daily-activity',
@@ -242,6 +252,7 @@ const BREADCRUMB_MAP: Record<string, string[]> = {
   '/clean-list': ['Clean List'],
   '/fttt-projects': ['FTTT Projects'],
   '/fttt-projects/new': ['FTTT Projects', 'Baru'],
+  '/approval-dana': ['Approval Dana'],
   '/daily-activity': ['Daily Activity'],
   '/ba-open': ['BA Open'],
   '/cash-operation': ['Cash Operation'],
@@ -427,6 +438,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const [backendStatus, setBackendStatus] = useState<'checking' | 'ok' | 'error'>('checking'); // FIX: surface backend reachability in the UI instead of generic "Server error"
   const [purchasingInboxCount, setPurchasingInboxCount] = useState(0);
   const [stockOutInboxCount, setStockOutInboxCount] = useState(0);
+  const [approvalDanaCount, setApprovalDanaCount] = useState(0);
 
   const notifRef = useRef<HTMLDivElement>(null);
   const userMenuRef = useRef<HTMLDivElement>(null);
@@ -530,6 +542,15 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         setStockOutInboxCount(0);
       }
     } else setStockOutInboxCount(0);
+
+    if (['FINANCE', 'GENERAL_MANAGER', 'ADMIN'].includes(user.role)) {
+      try {
+        const j = await apiGet<{ count: number }>('/fttt-projects/financial-requests/inbox-count', undefined, { silentForbidden: true });
+        setApprovalDanaCount(j.count ?? 0);
+      } catch {
+        setApprovalDanaCount(0);
+      }
+    } else setApprovalDanaCount(0);
   }, [user]);
 
   useEffect(() => {
@@ -938,7 +959,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                       ? purchasingInboxCount
                       : item.badge === 'stockOutInbox'
                         ? stockOutInboxCount
-                        : 0;
+                        : item.badge === 'approvalDana'
+                          ? approvalDanaCount
+                          : 0;
               return <NavItemLink key={item.href} item={item} collapsed={collapsed} active={active} badge={badge} onClick={() => setMobileOpen(false)} />;
             })}
           </div>
@@ -1192,12 +1215,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         </main>
       </div>
 
-      {/* FIX: floating banner shown only when backend is unreachable — tells the user exactly what to do */}
+      {/* FIX: floating banner shown only when backend is unreachable — above chatbot FAB */}
       {backendStatus === 'error' && (
         <div
           style={{
             position: 'fixed',
-            bottom: 16,
+            bottom: 84,
             right: 16,
             zIndex: 9999,
             padding: '12px 18px',
@@ -1236,6 +1259,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           </button>
         </div>
       )}
+
+      <PermatraxChatbot />
     </div>
   );
 }

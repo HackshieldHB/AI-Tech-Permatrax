@@ -34,6 +34,12 @@ export const envSchema = z.object({
   /** Pengirim email procurement (PO); fallback ke SMTP_FROM lalu SMTP_USER */
   PROCUREMENT_FROM_EMAIL: z.string().optional(),
   SMTP_FROM: z.string().optional(),
+  /** Local Ollama base URL for PermaTrax AI chatbot (free). Empty = retrieval-only fallback. */
+  OLLAMA_URL: z.string().optional().default('http://127.0.0.1:11434'),
+  /** Ollama chat model name (e.g. llama3.2, qwen2.5:3b, mistral) */
+  OLLAMA_MODEL: z.string().optional().default('llama3.2'),
+  /** Ollama embedding model (optional; keyword RAG works without it) */
+  OLLAMA_EMBED_MODEL: z.string().optional().default('nomic-embed-text'),
 });
 
 export type EnvConfig = z.infer<typeof envSchema>;

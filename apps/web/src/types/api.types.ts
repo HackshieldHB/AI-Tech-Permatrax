@@ -1077,6 +1077,17 @@ export interface FtttTransaction {
   reviewedAt?:         string | null;
   // Stage 2 — set by Finance; null = belum memotong budget
   disbursedAt?: string | null;
+  // Stable v1 — bukti transfer on Dana Keluar (legacy single URL)
+  hasTransferProof?: boolean;
+  transferProofUrl?: string | null;
+  // Stable v2 — multi bukti + phase of creation
+  createdPhase?: FtttPhase | null;
+  transferProofs?: {
+    id: string;
+    fileUrl: string;
+    originalFileName?: string | null;
+    mimeType?: string | null;
+  }[];
   createdBy:   { id: string; name: string };
   disbursedBy?: { id: string; name: string } | null;
 }

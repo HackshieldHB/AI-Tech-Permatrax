@@ -83,9 +83,9 @@ export const AddSiteToBulkyDto = z.object({
 });
 export type AddSiteToBulkyDtoType = z.infer<typeof AddSiteToBulkyDto>;
 
-// Integra V1: Financial Request review (Finance)
+// Integra V1 / Stable v1: Financial Request review (Finance) — Tanggal Persetujuan date-only
 export const AcceptFinancialRequestDto = z.object({
-  scheduledReleaseAt: z.string().min(1, 'Rencana Tanggal Pencairan wajib diisi'),
+  scheduledReleaseAt: z.string().min(1, 'Tanggal Persetujuan wajib diisi'),
 });
 export type AcceptFinancialRequestDtoType = z.infer<typeof AcceptFinancialRequestDto>;
 
@@ -93,6 +93,15 @@ export const DeclineFinancialRequestDto = z.object({
   declinedReason: z.string().min(1, 'Alasan penolakan wajib diisi').max(1000),
 });
 export type DeclineFinancialRequestDtoType = z.infer<typeof DeclineFinancialRequestDto>;
+
+// Stable v1: Approval Dana inbox filters
+export const FinancialRequestInboxFilterDto = z.object({
+  filter: z.enum(['all', 'unread', 'pending', 'accepted', 'disbursed', 'declined']).default('all'),
+  search: z.string().max(200).optional(),
+  page:   z.coerce.number().int().positive().default(1),
+  limit:  z.coerce.number().int().positive().max(100).default(20),
+});
+export type FinancialRequestInboxFilterDtoType = z.infer<typeof FinancialRequestInboxFilterDto>;
 
 // JLM: Implementation Transaction Log entry (PM FTTT)
 // Integra V1: Financial Request fields — expectedNeedDate + reason drive priority/routing
@@ -108,7 +117,7 @@ export const AddFtttTransactionDto = z.object({
 });
 export type AddFtttTransactionDtoType = z.infer<typeof AddFtttTransactionDto>;
 
-// Stage 2 — Finance confirms Tanggal Dana Keluar (budget only reduced after this)
+// Stage 2 / Stable v1 — Finance confirms Tanggal Dana Keluar + Bukti Transfer
 export const DisburseFtttTransactionDto = z.object({
   disbursedAt: z.string().min(1, 'Tanggal Dana Keluar wajib diisi'),
 });

@@ -12,6 +12,8 @@
     "start:prod": "node dist/apps/api/src/main",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
     "test": "npx jest --passWithNoTests",
+    "test:pai": "npx jest src/ai/ai.service.spec.ts --runInBand",
+    "test:pai:golden": "npx jest src/ai/ai.service.spec.ts -t \"P0|P1|P2 golden|Round 4|CSM-002|V4|V5|V6|V7|RSN-003|BHV-005\" --runInBand",
     "test:watch": "npx jest --watch",
     "test:cov": "npx jest --coverage",
     "test:e2e": "npx jest --config ./test/jest-e2e.json --passWithNoTests",

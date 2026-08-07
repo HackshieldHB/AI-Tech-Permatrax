@@ -24,8 +24,11 @@ ngrok.log
 ngrok-stdout.log
 ngrok-stderr.log
 .claude
-.md
-.docx
+# Local commercial docs / Office lockfiles / TS incremental build cache
+*.docx
+*.xlsx
+.~lock.*
+*.tsbuildinfo
 
 # PM2 / runtime logs (ecosystem.config.js writes here)
 logs/

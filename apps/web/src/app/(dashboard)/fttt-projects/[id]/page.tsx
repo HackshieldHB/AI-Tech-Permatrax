@@ -1,13 +1,15 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
-import { useParams } from 'next/navigation';
+import { useParams, useSearchParams } from 'next/navigation';
 import { ArrowLeft, CheckCircle, Circle, Lock, SkipForward, ChevronRight, Upload, FileText, ExternalLink } from 'lucide-react';
 import { toast } from 'sonner';
 import { apiFetch } from '../../../../lib/auth';
 import { useAuthStore } from '../../../../store/authStore';
 import { fixFileUrl, API_HOST } from '../../../../lib/api';
+// Existing pages use formFileUrl alias for uploaded assets
+const formFileUrl = fixFileUrl;
 import {
   FtttProject,
   FtttPhase,
@@ -191,6 +193,7 @@ function SurveySection({ project, onRefresh, continueMode = false }: { project: 
   const [newSiteCode, setNewSiteCode] = useState('');
   const [selectedSiteId, setSelectedSiteId] = useState('');
   const [siteBusy, setSiteBusy] = useState(false);
+  const [confirmDeleteSurveySiteId, setConfirmDeleteSurveySiteId] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   // C7.1: default to supporting_file (Foto removed)
   const [fileType, setFileType] = useState<'supporting_file' | 'survey_evidence' | 'operational_notes'>('supporting_file');
@@ -282,6 +285,18 @@ function SurveySection({ project, onRefresh, continueMode = false }: { project: 
       }, user?.id);
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
       toast.success(status === 'DONE' ? 'Site ditandai selesai survey' : 'Status site dikembalikan');
+      onRefresh();
+    } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
+    finally { setSiteBusy(false); }
+  };
+
+  const handleDeleteSurveySite = async (siteId: string) => {
+    setSiteBusy(true);
+    try {
+      const res = await apiFetch(`/fttt-projects/${project.id}/survey-sites/${siteId}`, { method: 'DELETE' }, user?.id);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal menghapus site');
+      toast.success('Site dihapus');
+      setConfirmDeleteSurveySiteId(null);
       onRefresh();
     } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
     finally { setSiteBusy(false); }
@@ -391,17 +406,50 @@ function SurveySection({ project, onRefresh, continueMode = false }: { project: 
                   <div style={{ fontSize: 10, color: '#8c959f' }}>{s._count?.uploads ?? 0} evidence</div>
                 </div>
                 {canManageSites && (
-                  <button type="button" disabled={siteBusy}
-                    onClick={() => void handleMarkSite(s.id, s.status === 'DONE' ? 'PENDING' : 'DONE')}
-                    style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid #D0D7DE', background: '#fff', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
-                    {s.status === 'DONE' ? 'Batalkan' : 'Tandai Selesai'}
-                  </button>
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                    <button type="button" disabled={siteBusy}
+                      onClick={() => void handleMarkSite(s.id, s.status === 'DONE' ? 'PENDING' : 'DONE')}
+                      style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid #D0D7DE', background: '#fff', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+                      {s.status === 'DONE' ? 'Batalkan' : 'Tandai Selesai'}
+                    </button>
+                    <button type="button" disabled={siteBusy || s.status === 'DONE' || (s._count?.uploads ?? 0) > 0}
+                      title={s.status === 'DONE' || (s._count?.uploads ?? 0) > 0 ? 'Site tidak dapat dihapus karena sudah memiliki aktivitas/transaksi' : 'Hapus Site'}
+                      onClick={() => setConfirmDeleteSurveySiteId(s.id)}
+                      style={{
+                        padding: '4px 10px', borderRadius: 6, border: '1px solid #D0D7DE', background: '#fff', fontSize: 11, fontWeight: 600,
+                        cursor: s.status === 'DONE' || (s._count?.uploads ?? 0) > 0 ? 'not-allowed' : 'pointer',
+                        color: s.status === 'DONE' || (s._count?.uploads ?? 0) > 0 ? '#8c959f' : '#cf222e',
+                        opacity: s.status === 'DONE' || (s._count?.uploads ?? 0) > 0 ? 0.6 : 1,
+                      }}>
+                      Delete Site
+                    </button>
+                  </div>
                 )}
               </div>
             ))}
           </div>
         )}
       </div>
+
+      {confirmDeleteSurveySiteId && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+          <div style={{ background: '#fff', borderRadius: 12, padding: 24, maxWidth: 440, width: '100%', boxShadow: '0 8px 24px rgba(0,0,0,0.12)' }}>
+            <h3 style={{ margin: '0 0 8px', fontSize: 16, fontWeight: 700 }}>Hapus Site</h3>
+            <p style={{ margin: '0 0 16px', fontSize: 13, color: '#57606a', lineHeight: 1.5 }}>
+              Apakah Anda yakin ingin menghapus Site ini?<br />
+              Seluruh data yang berkaitan dengan Site ini akan ikut dihapus dan tindakan ini tidak dapat dibatalkan.
+            </p>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button type="button" onClick={() => setConfirmDeleteSurveySiteId(null)}
+                style={{ padding: '8px 16px', borderRadius: 8, border: '1px solid #D0D7DE', background: '#fff', cursor: 'pointer' }}>Batal</button>
+              <button type="button" disabled={siteBusy} onClick={() => void handleDeleteSurveySite(confirmDeleteSurveySiteId)}
+                style={{ padding: '8px 16px', borderRadius: 8, border: 'none', background: '#cf222e', color: '#fff', fontWeight: 600, cursor: 'pointer' }}>
+                {siteBusy ? 'Menghapus…' : 'Hapus'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Survey state banners */}
       {isPendingReview && (
@@ -601,6 +649,7 @@ function SiteInitiationSection({
   const [financeSiteSearch, setFinanceSiteSearch] = useState('');
   const [adding, setAdding] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   const filteredAvailable = useMemo(() => {
     const q = financeSiteSearch.trim().toLowerCase();
@@ -646,12 +695,12 @@ function SiteInitiationSection({
   };
 
   const handleDeleteSite = async (siteId: string) => {
-    if (!confirm('Hapus site ini?')) return;
     setDeletingId(siteId);
     try {
       const res = await apiFetch(`/fttt-projects/sites/${siteId}`, { method: 'DELETE' }, user?.id);
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal menghapus site');
       toast.success('Site dihapus');
+      setConfirmDeleteId(null);
       void load(); onRefresh();
     } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
     finally { setDeletingId(null); }
@@ -730,7 +779,7 @@ function SiteInitiationSection({
               <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                 <Link href={`/fttt-projects/${s.id}`} style={{ fontSize: 11, color: '#0969DA' }}>Lihat ↗</Link>
                 {canManage && (
-                  <button type="button" disabled={deletingId === s.id} onClick={() => void handleDeleteSite(s.id)}
+                  <button type="button" disabled={deletingId === s.id} onClick={() => setConfirmDeleteId(s.id)}
                     style={{ fontSize: 11, color: '#cf222e', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
                     {deletingId === s.id ? 'Menghapus…' : 'Delete Site'}
                   </button>
@@ -738,6 +787,26 @@ function SiteInitiationSection({
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {confirmDeleteId && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+          <div style={{ background: '#fff', borderRadius: 12, padding: 24, maxWidth: 440, width: '100%', boxShadow: '0 8px 24px rgba(0,0,0,0.12)' }}>
+            <h3 style={{ margin: '0 0 8px', fontSize: 16, fontWeight: 700 }}>Hapus Site</h3>
+            <p style={{ margin: '0 0 16px', fontSize: 13, color: '#57606a', lineHeight: 1.5 }}>
+              Apakah Anda yakin ingin menghapus Site ini?<br />
+              Seluruh data yang berkaitan dengan Site ini akan ikut dihapus dan tindakan ini tidak dapat dibatalkan.
+            </p>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button type="button" onClick={() => setConfirmDeleteId(null)}
+                style={{ padding: '8px 16px', borderRadius: 8, border: '1px solid #D0D7DE', background: '#fff', cursor: 'pointer' }}>Batal</button>
+              <button type="button" disabled={deletingId === confirmDeleteId} onClick={() => void handleDeleteSite(confirmDeleteId)}
+                style={{ padding: '8px 16px', borderRadius: 8, border: 'none', background: '#cf222e', color: '#fff', fontWeight: 600, cursor: 'pointer' }}>
+                {deletingId === confirmDeleteId ? 'Menghapus…' : 'Hapus'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
@@ -1838,7 +1907,7 @@ function SCurveMini({ title, data, dataWeekly, keys, money }: {
   );
 }
 
-function TransactionLogSection({ project, onRefresh, userRole }: { project: FtttProject; onRefresh: () => void; userRole: string }) {
+function TransactionLogSection({ project, onRefresh, userRole, highlightTxId }: { project: FtttProject; onRefresh: () => void; userRole: string; highlightTxId?: string | null }) {
   const { user } = useAuthStore();
   const isPm = userRole === 'PM_FTTT' || userRole === 'GENERAL_MANAGER';
   const fp = project.financeProject ?? null;
@@ -1856,6 +1925,7 @@ function TransactionLogSection({ project, onRefresh, userRole }: { project: Fttt
   } | null>(null);
   const [disburseId, setDisburseId] = useState<string | null>(null);
   const [disburseDate, setDisburseDate] = useState('');
+  const [disburseFiles, setDisburseFiles] = useState<File[]>([]);
   const [disbursing, setDisbursing] = useState(false);
   const [openCat, setOpenCat] = useState<FtttCostCategory | null>(null);
   const [form, setForm] = useState({ aktivitas: '', uom: '', qty: '', price: '', remarks: '', expectedNeedDate: '', reason: '' });
@@ -1870,6 +1940,12 @@ function TransactionLogSection({ project, onRefresh, userRole }: { project: Fttt
   const [planRows, setPlanRows] = useState<{ targetDate: string; plannedBudget: string; plannedProgressPct: string }[]>([]);
   const [hasBaselinePlan, setHasBaselinePlan] = useState(false);
   const [savingPlan, setSavingPlan] = useState(false);
+  const highlightRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!highlightTxId || !highlightRef.current) return;
+    highlightRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, [highlightTxId, txns.length]);
 
   const formatBudgetInput = (raw: string) => {
     const digits = raw.replace(/\D/g, '');
@@ -1960,12 +2036,12 @@ function TransactionLogSection({ project, onRefresh, userRole }: { project: Fttt
   };
 
   const handleAccept = async (id: string) => {
-    if (!scheduledReleaseAt) { toast.error('Isi Rencana Tanggal Pencairan'); return; }
+    if (!scheduledReleaseAt) { toast.error('Isi Tanggal Persetujuan'); return; }
     setReviewing(true);
     try {
       const res = await apiFetch(`/fttt-projects/transactions/${id}/accept`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scheduledReleaseAt: new Date(scheduledReleaseAt).toISOString() }),
+        body: JSON.stringify({ scheduledReleaseAt }),
       }, user?.id);
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
       toast.success('Financial Request disetujui');
@@ -2002,24 +2078,22 @@ function TransactionLogSection({ project, onRefresh, userRole }: { project: Fttt
 
   const handleDisburse = async (id: string) => {
     if (!disburseDate) { toast.error('Isi Tanggal Dana Keluar'); return; }
+    if (disburseFiles.length < 1) { toast.error('Upload Bukti Transfer wajib minimal 1 file'); return; }
     const today = new Date();
     const max = new Date(today); max.setDate(max.getDate() + 14);
-    const todayStr = today.toISOString().slice(0, 10);
     const maxStr = max.toISOString().slice(0, 10);
     if (disburseDate > maxStr) { toast.error('Tanggal Dana Keluar maksimal 14 hari dari hari ini'); return; }
     setDisbursing(true);
     try {
+      const fd = new FormData();
+      fd.append('disbursedAt', disburseDate);
+      disburseFiles.forEach((f) => fd.append('files', f));
       const res = await apiFetch(`/fttt-projects/transactions/${id}/disburse`, {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ disbursedAt: new Date(disburseDate + 'T12:00:00').toISOString() }),
+        method: 'PUT', body: fd,
       }, user?.id);
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal');
-      toast.success(
-        disburseDate > todayStr
-          ? 'Dana keluar dijadwalkan — budget berkurang pada tanggal tersebut'
-          : 'Tanggal Dana Keluar tersimpan — budget diperbarui',
-      );
-      setDisburseId(null); setDisburseDate('');
+      toast.success('Dana Keluar tersimpan — budget diperbarui secara real-time');
+      setDisburseId(null); setDisburseDate(''); setDisburseFiles([]);
       onRefresh(); void loadScurve();
     } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
     finally { setDisbursing(false); }
@@ -2100,22 +2174,39 @@ function TransactionLogSection({ project, onRefresh, userRole }: { project: Fttt
             ) : catTxns.map((t) => {
               const total = Number(t.total);
               const bobot = rab > 0 ? (total / rab) * 100 : 0;
-              const nowMs = Date.now();
               const hasDate = !!t.disbursedAt;
-              const realized = hasDate && new Date(t.disbursedAt!).getTime() <= nowMs;
-              const scheduled = hasDate && !realized;
+              // Stable v1: disbursed = realized immediately (no future hold / noon delay)
+              const realized = hasDate;
               // Integra V1: legacy transactions (no `reason`) skip the Financial Request review gate
               const isFinancialRequest = !!t.reason;
               const pendingReview = isFinancialRequest && t.requestStatus === 'PENDING_REVIEW';
               const accepted = !isFinancialRequest || t.requestStatus === 'ACCEPTED';
               const declined = isFinancialRequest && t.requestStatus === 'DECLINED';
+              const isHighlight = highlightTxId === t.id;
               return (
-                <div key={t.id} style={{ padding: '8px 12px', borderBottom: '1px solid #F0F3F6', fontSize: 12 }}>
+                <div
+                  key={t.id}
+                  ref={isHighlight ? highlightRef : undefined}
+                  id={`fttt-tx-${t.id}`}
+                  style={{
+                    padding: '8px 12px',
+                    borderBottom: '1px solid #F0F3F6',
+                    fontSize: 12,
+                    background: isHighlight ? '#DDF4FF' : undefined,
+                    outline: isHighlight ? '2px solid #0969DA' : undefined,
+                    borderRadius: isHighlight ? 8 : undefined,
+                  }}
+                >
                   <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
                     <span style={{ fontWeight: 600 }}>{t.aktivitas}
-                      <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: realized ? '#1a7f37' : scheduled ? '#0969DA' : '#9a6700', background: realized ? '#DAFBE1' : scheduled ? '#DDF4FF' : '#FFF8C5', padding: '1px 6px', borderRadius: 999 }}>
-                        {realized ? 'Terealisasi' : scheduled ? 'Terjadwal' : 'Menunggu Dana Keluar'}
+                      <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: realized ? '#1a7f37' : '#9a6700', background: realized ? '#DAFBE1' : '#FFF8C5', padding: '1px 6px', borderRadius: 999 }}>
+                        {realized ? 'Dana Keluar' : 'Menunggu Dana Keluar'}
                       </span>
+                      {t.createdPhase && (
+                        <span style={{ marginLeft: 4, fontSize: 10, fontWeight: 700, color: '#57606a', background: '#F6F8FA', padding: '1px 6px', borderRadius: 999, border: '1px solid #D0D7DE' }}>
+                          {FTTT_PHASE_LABELS[t.createdPhase] ?? t.createdPhase}
+                        </span>
+                      )}
                       {t.priority && (
                         <span style={{ marginLeft: 4, fontSize: 10, fontWeight: 700, color: '#fff', background: FTTT_PRIORITY_COLORS[t.priority] ?? '#57606a', padding: '1px 6px', borderRadius: 999 }}>
                           {FTTT_PRIORITY_LABELS[t.priority] ?? t.priority}
@@ -2145,19 +2236,33 @@ function TransactionLogSection({ project, onRefresh, userRole }: { project: Fttt
                   )}
                   {isFinancialRequest && t.requestStatus === 'ACCEPTED' && t.scheduledReleaseAt && !hasDate && (
                     <div style={{ fontSize: 10, color: '#1a7f37', marginTop: 2 }}>
-                      ✓ Disetujui{t.reviewedBy?.name ? ` oleh ${t.reviewedBy.name}` : ''} · Rencana pencairan: {new Date(t.scheduledReleaseAt).toLocaleDateString('id-ID')}
+                      ✓ Disetujui{t.reviewedBy?.name ? ` oleh ${t.reviewedBy.name}` : ''} · Tanggal Persetujuan: {new Date(t.scheduledReleaseAt).toLocaleDateString('id-ID')}
                     </div>
                   )}
                   {hasDate && (
-                    <div style={{ fontSize: 10, color: realized ? '#1a7f37' : '#0969DA', marginTop: 2 }}>
-                      💵 Dana keluar: {fmtDT(t.disbursedAt!)}{t.disbursedBy?.name ? ` · ${t.disbursedBy.name}` : ''}{scheduled ? ' (menunggu tanggal)' : ''}
+                    <div style={{ fontSize: 10, color: '#1a7f37', marginTop: 2 }}>
+                      {'💵'} Dana keluar: {new Date(t.disbursedAt!).toLocaleDateString('id-ID')}{t.disbursedBy?.name ? ` · ${t.disbursedBy.name}` : ''}
+                      {(t.transferProofs?.length
+                        ? t.transferProofs
+                        : t.transferProofUrl
+                          ? [{ id: 'legacy', fileUrl: t.transferProofUrl, originalFileName: 'Bukti Transfer' as string | null }]
+                          : []
+                      ).map((p, idx) => (
+                        <span key={p.id}>
+                          {' · '}
+                          <a href={formFileUrl(p.fileUrl)} target="_blank" rel="noopener noreferrer" style={{ color: '#0969DA' }}>
+                            {p.originalFileName || `Bukti ${idx + 1}`}
+                          </a>
+                        </span>
+                      ))}
                     </div>
                   )}
                   {isFinance && pendingReview && (
                     <div style={{ marginTop: 6, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
                       {reviewId === t.id && reviewAction === 'accept' ? (
                         <>
-                          <input type="datetime-local" value={scheduledReleaseAt} onChange={(e) => setScheduledReleaseAt(e.target.value)}
+                          <label style={{ fontSize: 11, color: '#57606a' }}>Tanggal Persetujuan</label>
+                          <input type="date" value={scheduledReleaseAt} onChange={(e) => setScheduledReleaseAt(e.target.value)}
                             style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 11 }} />
                           <button type="button" disabled={reviewing} onClick={() => void handleAccept(t.id)}
                             style={{ padding: '4px 10px', borderRadius: 6, border: 'none', background: '#1a7f37', color: '#fff', fontWeight: 700, fontSize: 11, cursor: 'pointer' }}>
@@ -2179,7 +2284,7 @@ function TransactionLogSection({ project, onRefresh, userRole }: { project: Fttt
                         </>
                       ) : (
                         <>
-                          <button type="button" onClick={() => { setReviewId(t.id); setReviewAction('accept'); setScheduledReleaseAt(''); }}
+                          <button type="button" onClick={() => { setReviewId(t.id); setReviewAction('accept'); setScheduledReleaseAt(new Date().toISOString().slice(0, 10)); }}
                             style={{ padding: '4px 10px', borderRadius: 6, border: 'none', background: '#1a7f37', color: '#fff', fontWeight: 600, fontSize: 11, cursor: 'pointer' }}>
                             ✓ Accept
                           </button>
@@ -2192,30 +2297,61 @@ function TransactionLogSection({ project, onRefresh, userRole }: { project: Fttt
                     </div>
                   )}
                   {!hasDate && isFinance && accepted && !pendingReview && (
-                    <div style={{ marginTop: 6, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 6 }}>
                       {disburseId === t.id ? (
                         <>
-                          <input type="date" value={disburseDate}
-                            max={(() => { const d = new Date(); d.setDate(d.getDate() + 14); return d.toISOString().slice(0, 10); })()}
-                            onChange={(e) => {
-                              const v = e.target.value;
-                              const max = new Date(); max.setDate(max.getDate() + 14);
-                              const maxStr = max.toISOString().slice(0, 10);
-                              // Integra V10: allow backdate (same as Tanggal Disetujui); only cap future +14d
-                              if (v && v > maxStr) { toast.error('Tanggal Dana Keluar maksimal 14 hari dari hari ini'); return; }
-                              setDisburseDate(v);
-                            }}
-                            style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 11 }} />
-                          <button type="button" disabled={disbursing} onClick={() => void handleDisburse(t.id)}
-                            style={{ padding: '4px 10px', borderRadius: 6, border: 'none', background: '#1a7f37', color: '#fff', fontWeight: 700, fontSize: 11, cursor: 'pointer' }}>
-                            {disbursing ? '…' : 'Simpan Tanggal Dana Keluar'}
-                          </button>
-                          <button type="button" onClick={() => { setDisburseId(null); setDisburseDate(''); }}
-                            style={{ fontSize: 11, background: 'none', border: 'none', color: '#57606a', cursor: 'pointer' }}>Batal</button>
+                          <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                            <input type="date" value={disburseDate}
+                              max={(() => { const d = new Date(); d.setDate(d.getDate() + 14); return d.toISOString().slice(0, 10); })()}
+                              onChange={(e) => {
+                                const v = e.target.value;
+                                const max = new Date(); max.setDate(max.getDate() + 14);
+                                const maxStr = max.toISOString().slice(0, 10);
+                                if (v && v > maxStr) { toast.error('Tanggal Dana Keluar maksimal 14 hari dari hari ini'); return; }
+                                setDisburseDate(v);
+                              }}
+                              style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 11 }} />
+                            <input type="file" multiple accept=".jpg,.jpeg,.png,.pdf,image/jpeg,image/png,application/pdf"
+                              onChange={(e) => {
+                                const picked = Array.from(e.target.files ?? []);
+                                if (!picked.length) return;
+                                setDisburseFiles((prev) => {
+                                  const names = new Set(prev.map((f) => `${f.name}:${f.size}`));
+                                  const next = [...prev];
+                                  for (const f of picked) {
+                                    const key = `${f.name}:${f.size}`;
+                                    if (!names.has(key)) next.push(f);
+                                  }
+                                  return next;
+                                });
+                                e.target.value = '';
+                              }}
+                              style={{ fontSize: 11, maxWidth: 220 }} />
+                            <button type="button" disabled={disbursing} onClick={() => void handleDisburse(t.id)}
+                              style={{ padding: '4px 10px', borderRadius: 6, border: 'none', background: '#1a7f37', color: '#fff', fontWeight: 700, fontSize: 11, cursor: 'pointer' }}>
+                              {disbursing ? '…' : 'Submit Dana Keluar'}
+                            </button>
+                            <button type="button" onClick={() => { setDisburseId(null); setDisburseDate(''); setDisburseFiles([]); }}
+                              style={{ fontSize: 11, background: 'none', border: 'none', color: '#57606a', cursor: 'pointer' }}>Batal</button>
+                          </div>
+                          {disburseFiles.length > 0 && (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                              {disburseFiles.map((f, idx) => (
+                                <div key={`${f.name}-${f.size}-${idx}`} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color: '#374151' }}>
+                                  <span>📎 {f.name}</span>
+                                  <button type="button"
+                                    onClick={() => setDisburseFiles((prev) => prev.filter((_, i) => i !== idx))}
+                                    style={{ fontSize: 10, color: '#cf222e', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
+                                    Hapus
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
                         </>
                       ) : (
-                        <button type="button" onClick={() => { setDisburseId(t.id); setDisburseDate(new Date().toISOString().slice(0, 10)); }}
-                          style={{ padding: '4px 10px', borderRadius: 6, border: 'none', background: '#0969DA', color: '#fff', fontWeight: 600, fontSize: 11, cursor: 'pointer' }}>
+                        <button type="button" onClick={() => { setDisburseId(t.id); setDisburseDate(new Date().toISOString().slice(0, 10)); setDisburseFiles([]); }}
+                          style={{ padding: '4px 10px', borderRadius: 6, border: 'none', background: '#0969DA', color: '#fff', fontWeight: 600, fontSize: 11, cursor: 'pointer', alignSelf: 'flex-start' }}>
                           + Tanggal Dana Keluar
                         </button>
                       )}
@@ -2295,7 +2431,7 @@ function TransactionLogSection({ project, onRefresh, userRole }: { project: Fttt
   );
 }
 
-function ImplementationSection({ project, onRefresh, userRole }: { project: FtttProject; onRefresh: () => void; userRole: string }) {
+function ImplementationSection({ project, onRefresh, userRole, highlightTxId }: { project: FtttProject; onRefresh: () => void; userRole: string; highlightTxId?: string | null }) {
   const { user } = useAuthStore();
   const isAdmin      = userRole === 'ADMIN' || userRole === 'GENERAL_MANAGER';
   const isSurveyor   = userRole === 'SURVEYOR_FTTT';
@@ -2338,9 +2474,12 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
   const [markingDone, setMarkingDone] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<string>('');
   // Integra V2: Daily Log tab is shown for both Galian and KU — Transaction Log / Log Aktivitas remain company-wide
-  const [implTab, setImplTab] = useState<'daily' | 'transaction' | 'activity'>(implType ? 'daily' : 'activity');
+  const [implTab, setImplTab] = useState<'daily' | 'transaction' | 'activity'>(highlightTxId ? 'transaction' : (implType ? 'daily' : 'activity'));
   // Re-sync default tab once implType becomes known after initial mount (method-first selector)
-  useEffect(() => { if (implType) setImplTab('daily'); }, [implType]);
+  useEffect(() => {
+    if (highlightTxId) setImplTab('transaction');
+    else if (implType) setImplTab('daily');
+  }, [implType, highlightTxId]);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const LOG_LABELS: Record<string, string> = {
@@ -2621,7 +2760,7 @@ function ImplementationSection({ project, onRefresh, userRole }: { project: Fttt
         ))}
       </div>
 
-      {implTab === 'transaction' && <TransactionLogSection project={project} onRefresh={onRefresh} userRole={userRole} />}
+      {implTab === 'transaction' && <TransactionLogSection project={project} onRefresh={onRefresh} userRole={userRole} highlightTxId={highlightTxId} />}
 
       {/* Integra V2: Folder-based Daily Log — shown for both Galian and KU */}
       {implTab === 'daily' && (
@@ -3550,8 +3689,10 @@ function ClosingSection({ project, onRefresh, userRole }: { project: FtttProject
 }
 
 // ─── Main Detail Page ─────────────────────────────────────────────────────────
-export default function FtttProjectDetailPage() {
+function FtttProjectDetailPageInner() {
   const { id } = useParams<{ id: string }>();
+  const searchParams = useSearchParams();
+  const highlightTxId = searchParams.get('tx');
   const { user } = useAuthStore();
   const [project, setProject] = useState<FtttProject | null>(null);
   const [readiness, setReadiness] = useState<{ ready: boolean; blockedReasons: string[] } | null>(null);
@@ -3951,12 +4092,20 @@ export default function FtttProjectDetailPage() {
 
               {/* Implementation phase */}
               {project.currentPhase === 'IMPLEMENTATION' && (
-                <ImplementationSection project={project} onRefresh={load} userRole={userRole} />
+                <ImplementationSection project={project} onRefresh={load} userRole={userRole} highlightTxId={highlightTxId} />
               )}
 
               {/* CLOSING phase — BAST II, evidence, notes (C6-TI3: Admin-only + maintenance gate) */}
               {project.currentPhase === 'CLOSING' && (
                 <ClosingSection project={project} onRefresh={load} userRole={userRole} />
+              )}
+
+              {/* Stable v2: Transaction Log on all operational phases except Implementation (already inside ImplementationSection tabs) */}
+              {['SURVEY', 'PREPARATION', 'DOCUMENTATION', 'RECONCILIATION', 'CLOSING'].includes(project.currentPhase) && (
+                <div style={{ marginTop: 16, borderTop: '1px solid #EAEEF2', paddingTop: 12 }}>
+                  <p style={{ margin: '0 0 10px', fontWeight: 700, fontSize: 14 }}>💰 Transaction Log</p>
+                  <TransactionLogSection project={project} onRefresh={load} userRole={userRole} highlightTxId={highlightTxId} />
+                </div>
               )}
 
               {!['SURVEY', 'PREPARATION', 'PROCUREMENT', 'DOCUMENTATION', 'RECONCILIATION', 'IMPLEMENTATION', 'CLOSING'].includes(project.currentPhase) && (
@@ -3998,5 +4147,13 @@ export default function FtttProjectDetailPage() {
         </div>
       )}
     </div>
+  );
+}
+
+export default function FtttProjectDetailPage() {
+  return (
+    <Suspense fallback={<div style={{ padding: 40, textAlign: 'center', color: '#57606a' }}>Memuat project…</div>}>
+      <FtttProjectDetailPageInner />
+    </Suspense>
   );
 }
