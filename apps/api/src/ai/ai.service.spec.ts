@@ -183,9 +183,12 @@ describe('PermaTrax AI chatbot (logic)', () => {
         aggregate: jest.fn().mockResolvedValue({
           _sum: {
             totalBudget: 12540000000,
+            materialBudget: 8000000000,
+            jasaBudget: 4540000000,
             materialSpent: 3000000000,
             jasaSpent: 1820000000,
           },
+          _count: 18,
         }),
         findFirst: jest.fn(async ({ orderBy }: any) => {
           if (orderBy?.totalBudget === 'desc') {
@@ -1522,5 +1525,168 @@ describe('PermaTrax AI chatbot (logic)', () => {
     const last = await ai.chat(user, 'Yang terakhir.', start.conversationId);
     expect(last.answer).toMatch(/S3|LastOne/i);
     expect(last.toolTraces).toHaveLength(0);
+  });
+
+  // --- PAI Enhancement V8 (FNC-001 … FNC-005) ---
+
+  it('FNC-001/002: Berapa ACTIVE? returns status count, not Finance Summary', async () => {
+    const prisma = makePrisma();
+    (prisma as any).financeProject.count = jest.fn(async ({ where }: any) => {
+      if (where?.status === 'ACTIVE') return 74;
+      if (where?.status === 'CLOSED') return 2;
+      return 0;
+    });
+    const { ai } = makeServices(prisma);
+    const start = await ai.chat(user, 'Aku mau bahas Finance Project.');
+    const res = await ai.chat(user, 'Berapa ACTIVE?', start.conversationId);
+    expect(res.intent).toBe('data');
+    expect(res.answer).toMatch(/ACTIVE Project\s*[–-]\s*74/i);
+    expect(res.answer).not.toMatch(/Total Budget Finance Project/i);
+    expect(res.answer).not.toMatch(/Budget project yang mana/i);
+  });
+
+  it('FNC-001/002: Ada over budget? returns aggregate count, not clarify', async () => {
+    const prisma = makePrisma();
+    (prisma as any).financeProject.count = jest.fn(async ({ where }: any) => {
+      if (where?.isOverbudget) return 0;
+      return 18;
+    });
+    const { ai } = makeServices(prisma);
+    const start = await ai.chat(user, 'Aku mau bahas Finance Project.');
+    const res = await ai.chat(user, 'Ada over budget?', start.conversationId);
+    expect(['data', 'analytics']).toContain(res.intent);
+    expect(res.answer).toMatch(/Over Budget\s*[–-]\s*0/i);
+    expect(res.answer).not.toMatch(/Budget project yang mana/i);
+    expect(res.answer).not.toMatch(/Total Budget Finance Project/i);
+  });
+
+  it('FNC-001/002: Material Budget? returns material aggregate, not summary dump', async () => {
+    const prisma = makePrisma();
+    const { ai } = makeServices(prisma);
+    const start = await ai.chat(user, 'Aku mau bahas Finance Project.');
+    const res = await ai.chat(user, 'Material Budget?', start.conversationId);
+    expect(res.intent).toBe('data');
+    expect(res.answer).toMatch(/Material Budget/i);
+    expect(res.answer).toMatch(/Rp|8\.000|8000000000/i);
+    expect(res.answer).not.toMatch(/Total Budget Finance Project \(/i);
+  });
+
+  it('FNC-003: search by project name / partial keyword (not code-only)', async () => {
+    const prisma = makePrisma();
+    (prisma as any).financeProject.findMany = jest.fn(async ({ where }: any) => {
+      const or = where?.OR as Array<Record<string, any>> | undefined;
+      const hit = or?.some(
+        (c) =>
+          c?.name?.contains?.toLowerCase?.().includes('alpha') ||
+          c?.description?.contains?.toLowerCase?.().includes('alpha') ||
+          c?.parent?.name?.contains?.toLowerCase?.().includes('alpha'),
+      );
+      if (hit || where?.AND) {
+        return [
+          {
+            code: 'SEG-2026-009',
+            name: 'Alpha Cluster West',
+            description: 'Site Alpha area',
+            totalBudget: 1200000000,
+            materialBudget: 700000000,
+            jasaBudget: 500000000,
+            materialSpent: 100000000,
+            jasaSpent: 50000000,
+            status: 'ACTIVE',
+            hierarchyLevel: 'SEGMENT',
+            isOverbudget: false,
+            poCustomerNumber: 'PO-ALPHA-1',
+            parent: null,
+          },
+        ];
+      }
+      return [];
+    });
+    const { ai } = makeServices(prisma);
+    const start = await ai.chat(user, 'Aku mau bahas Finance Project.');
+    const res = await ai.chat(user, 'Cari project Alpha', start.conversationId);
+    expect(res.intent).toBe('data');
+    expect(res.answer).toMatch(/Alpha Cluster West|SEG-2026-009/i);
+    expect(res.answer).not.toMatch(/Total Budget Finance Project \(/i);
+  });
+
+  it('FNC-003: empty business search does not become Finance Summary', async () => {
+    const prisma = makePrisma();
+    (prisma as any).financeProject.findMany = jest.fn().mockResolvedValue([]);
+    const { ai } = makeServices(prisma);
+    const start = await ai.chat(user, 'Aku mau bahas Finance Project.');
+    const res = await ai.chat(
+      user,
+      'Cari project NamaTidakAdaXYZ',
+      start.conversationId,
+    );
+    expect(res.answer).toMatch(/tidak ditemukan|kata kunci/i);
+    expect(res.answer).not.toMatch(/Total Budget Finance Project \(/i);
+    expect(res.answer).not.toMatch(/Pencarian nama spesifik kosong/i);
+  });
+
+  it('FNC-004: realisasi terbesar ranks by realization, not totalBudget only', async () => {
+    const prisma = makePrisma();
+    (prisma as any).financeProject.findMany = jest.fn().mockResolvedValue([
+      {
+        code: 'A1',
+        name: 'Low Realisasi High Budget',
+        totalBudget: 9000000000,
+        materialBudget: 1,
+        jasaBudget: 1,
+        materialSpent: 1000000,
+        jasaSpent: 0,
+        status: 'ACTIVE',
+        hierarchyLevel: 'SITE',
+        isOverbudget: false,
+      },
+      {
+        code: 'B2',
+        name: 'High Realisasi',
+        totalBudget: 2000000000,
+        materialBudget: 1,
+        jasaBudget: 1,
+        materialSpent: 1500000000,
+        jasaSpent: 400000000,
+        status: 'ACTIVE',
+        hierarchyLevel: 'SEGMENT',
+        isOverbudget: false,
+      },
+    ]);
+    const { ai } = makeServices(prisma);
+    const start = await ai.chat(user, 'Aku mau bahas Finance Project.');
+    const res = await ai.chat(
+      user,
+      'Top realisasi terbesar',
+      start.conversationId,
+    );
+    expect(res.answer).toMatch(/Realisasi terbesar/i);
+    expect(res.answer.indexOf('B2')).toBeLessThan(res.answer.indexOf('A1'));
+  });
+
+  it('FNC-005: ACTIVE SITE multi-filter runs finance analytics, not Guide', async () => {
+    const prisma = makePrisma();
+    (prisma as any).financeProject.count = jest.fn(async ({ where }: any) => {
+      if (where?.status === 'ACTIVE' && where?.hierarchyLevel === 'SITE') return 11;
+      if (where?.hierarchyLevel === 'SITE') return 11;
+      return 18;
+    });
+    (prisma as any).financeProject.aggregate = jest.fn().mockResolvedValue({
+      _sum: {
+        totalBudget: 1000000000,
+        materialBudget: 600000000,
+        jasaBudget: 400000000,
+        materialSpent: 100000000,
+        jasaSpent: 50000000,
+      },
+      _count: 11,
+    });
+    const { ai } = makeServices(prisma);
+    const start = await ai.chat(user, 'Aku mau bahas Finance Project.');
+    const res = await ai.chat(user, 'ACTIVE SITE', start.conversationId);
+    expect(res.intent).toBe('data');
+    expect(res.toolTraces.some((t) => t.name === 'finance_analytics')).toBe(true);
+    expect(res.answer).toMatch(/SITE|Total Project|11/i);
+    expect(res.answer).not.toMatch(/User Guide|Apa itu Finance Project/i);
   });
 });

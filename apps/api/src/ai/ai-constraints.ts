@@ -9,7 +9,7 @@ export function extractConstraintsFromText(text: string): ActiveConstraintSet {
   const m = normalizeId(text);
   const out: ActiveConstraintSet = { ...EMPTY_CONSTRAINTS, extra: [] };
 
-  if (/\b(aktif|active)\b/.test(m) && !/(non.?arsip|seluruh|semua|closed)/.test(m)) {
+  if (/\b(aktif|active)\b/.test(m) && !/(non.?arsip|seluruh|semua|closed|archived)/.test(m)) {
     out.status = 'ACTIVE';
   } else if (/(non.?arsip|non.?archived|active\s*\+\s*closed)/.test(m)) {
     out.status = 'NON_ARCHIVED';
@@ -21,6 +21,7 @@ export function extractConstraintsFromText(text: string): ActiveConstraintSet {
     out.status = 'NON_ARCHIVED';
   }
 
+  // PAI-FNC-005: hierarchy from bare SITE/SEGMENT (+ status/filter)
   if (/\b(site)\b/.test(m) && !/(site-\d|website)/.test(m)) {
     out.hierarchy = 'SITE';
   } else if (/\b(segment)\b/.test(m)) {
@@ -29,14 +30,23 @@ export function extractConstraintsFromText(text: string): ActiveConstraintSet {
     out.hierarchy = 'STANDALONE';
   }
 
-  if (/(terbesar|top\s*\d*|ranking|paling besar)/.test(m)) {
+  if (/(terbesar|top\s*\d*|ranking|paling besar|paling tinggi)/.test(m)) {
     out.ranking = 'top';
-  } else if (/(terkecil|paling kecil|paling rendah.*budget)/.test(m)) {
+  } else if (/(terkecil|paling kecil|paling rendah)/.test(m)) {
     out.ranking = 'smallest';
   } else if (/(paling sedikit|terendah|hampir habis)/.test(m)) {
     out.ranking = 'lowest_stock';
   } else if (/(paling banyak|tertinggi)/.test(m) && /(stok|stock|barang)/.test(m)) {
     out.ranking = 'highest_stock';
+  }
+
+  // PAI-FNC-004: carry ranking metric hint in extra
+  if (out.ranking === 'top' || out.ranking === 'smallest') {
+    if (/(realisasi|spent)/.test(m)) out.extra!.push('metric:realization');
+    else if (/(sisa|remaining)/.test(m)) out.extra!.push('metric:remaining');
+    else if (/(material)/.test(m)) out.extra!.push('metric:materialBudget');
+    else if (/(jasa|service)/.test(m)) out.extra!.push('metric:jasaBudget');
+    else if (/(over\s*budget|overbudget)/.test(m)) out.extra!.push('metric:overbudget');
   }
 
   const owner = extractOwnerName(text);
@@ -59,12 +69,32 @@ export function buildConstrainedFinanceQuery(
     (/(terbesar|top\s*\d*)/i.test(lastDataQuery || '') ? 'top' : null) ||
     (/(terkecil)/i.test(lastDataQuery || '') ? 'smallest' : null);
 
+  const metricHint =
+    constraints.extra?.find((e) => e.startsWith('metric:'))?.replace('metric:', '') ||
+    '';
+  const metricPhrase =
+    metricHint === 'realization'
+      ? 'realisasi'
+      : metricHint === 'remaining'
+        ? 'sisa budget'
+        : metricHint === 'materialBudget'
+          ? 'material budget'
+          : metricHint === 'jasaBudget'
+            ? 'jasa budget'
+            : metricHint === 'overbudget'
+              ? 'over budget'
+              : 'budget';
+
   if (ranking === 'top') {
-    parts.push('Top 10 Finance Project budget terbesar');
+    parts.push(`Top 10 Finance Project ${metricPhrase} terbesar`);
   } else if (ranking === 'smallest') {
-    parts.push('Top 10 Finance Project budget terkecil');
+    parts.push(`Top 10 Finance Project ${metricPhrase} terkecil`);
   } else if (constraints.projectNeedle) {
     parts.push(`Budget project ${constraints.projectNeedle}`);
+  } else if (constraints.status === 'CLOSED') {
+    parts.push('Berapa CLOSED?');
+  } else if (constraints.status === 'ARCHIVED') {
+    parts.push('Berapa ARCHIVED?');
   } else {
     parts.push('Berapa nominal total budget project aktif saat ini?');
   }
@@ -75,6 +105,10 @@ export function buildConstrainedFinanceQuery(
   }
   if (constraints.status === 'ACTIVE' || !constraints.status) {
     parts.push('[SCOPE_ACTIVE]');
+  } else if (constraints.status === 'CLOSED') {
+    parts.push('[SCOPE_CLOSED]');
+  } else if (constraints.status === 'ARCHIVED') {
+    parts.push('[SCOPE_ARCHIVED]');
   } else if (constraints.status === 'NON_ARCHIVED') {
     parts.push('[BROADER_RETRY]');
   }
@@ -82,6 +116,29 @@ export function buildConstrainedFinanceQuery(
     parts.push(`milik ${constraints.ownerName}`);
   }
   return parts.join(' ');
+}
+
+/** Append constraint tags for first-pass finance tool calls (PAI-FNC-005). */
+export function appendFinanceConstraintTags(
+  message: string,
+  constraints: ActiveConstraintSet,
+): string {
+  const tags: string[] = [];
+  if (constraints.hierarchy && !/\[HIERARCHY_/i.test(message)) {
+    tags.push(`[HIERARCHY_${constraints.hierarchy}]`);
+  }
+  if (constraints.status === 'ACTIVE' && !/\[SCOPE_ACTIVE\]/i.test(message)) {
+    tags.push('[SCOPE_ACTIVE]');
+  } else if (constraints.status === 'CLOSED' && !/\[SCOPE_CLOSED\]/i.test(message)) {
+    tags.push('[SCOPE_CLOSED]');
+  } else if (
+    constraints.status === 'ARCHIVED' &&
+    !/\[SCOPE_ARCHIVED\]/i.test(message)
+  ) {
+    tags.push('[SCOPE_ARCHIVED]');
+  }
+  if (!tags.length) return message;
+  return `${message} ${tags.join(' ')}`.trim();
 }
 
 /** Build stock tool message from constraints. */

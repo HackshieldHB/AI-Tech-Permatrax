@@ -33,10 +33,12 @@ import {
   isAttributeFollowUp,
   isConversationStateFollowUp,
   isExplicitModuleSwitch,
+  isFinanceFilterOrAggregateQuery,
   isModuleDataRankingQuery,
   isOrdinalReference,
   isPicOrRequestorQuery,
   isUnsupportedDataQuery,
+  detectFinanceMode,
   needsScopeClarification,
   refineRecoveryQuery,
   resolveActiveReference,
@@ -50,6 +52,7 @@ import {
   type UnknownKind,
 } from './ai-nlu';
 import {
+  appendFinanceConstraintTags,
   buildConstrainedDomainQuery,
   extractConstraintsFromText,
   hasUsableConstraint,
@@ -330,7 +333,8 @@ export class AiService {
       (hasConversationalReference(text) || isContextDependentFollowUp(text)) &&
       session.activeTopic &&
       !isOrdinalReference(text) &&
-      !isAttributeFollowUp(text)
+      !isAttributeFollowUp(text) &&
+      !isFinanceFilterOrAggregateQuery(text)
     ) {
       if (intent === 'faq' || intent === 'howto' || intent === 'navigation') {
         intent =
@@ -350,11 +354,16 @@ export class AiService {
         effectiveText = `${lockedReplay}\n(konteks referensi: ${text})`;
       } else if (
         session.activeTopic === 'finance' &&
-        !/budget|berapa|jumlah|project/i.test(effectiveText)
+        !/budget|berapa|jumlah|project|material|jasa|realisasi|sisa|over|active|closed|archived/i.test(
+          effectiveText,
+        )
       ) {
+        // PAI-FNC-001: bare follow-ups with Active Object keep object scope;
+        // without object, do not force Total Budget summary for metric words
+        // (handled by detectFinanceMetric on the original text).
         effectiveText = session.activeObject
           ? `Total budget project ${session.activeObject} berapa?\n(konteks: ${text})`
-          : `Berapa nominal total budget project aktif saat ini?\n(konteks: ${text})`;
+          : effectiveText;
       } else if (session.activeTopic === 'stock') {
         effectiveText = `Barang yang paling sedikit di stok\n(konteks referensi: ${text})`;
         intent = 'analytics';
@@ -1108,9 +1117,11 @@ export class AiService {
       useTools &&
       session.activeTopic === 'finance' &&
       !toolNames.includes('finance_analytics') &&
-      /budget|project|proyek|berapa|jumlah|total|terbesar|terkecil|over/i.test(
+      (/budget|project|proyek|berapa|jumlah|total|terbesar|terkecil|over|material|jasa|realisasi|sisa|active|closed|archived|site|segment/i.test(
         effectiveText,
-      )
+      ) ||
+        isFinanceFilterOrAggregateQuery(text) ||
+        isFinanceFilterOrAggregateQuery(effectiveText))
     ) {
       toolNames.unshift('finance_analytics');
     }
@@ -1128,9 +1139,21 @@ export class AiService {
       toolNames.unshift('search_stock');
     }
 
+    // PAI-FNC-005: first-pass multi-filter — append constraint tags before tools
+    let toolMessage = effectiveText;
+    if (
+      toolNames.includes('finance_analytics') &&
+      hasUsableConstraint(session.constraints)
+    ) {
+      toolMessage = appendFinanceConstraintTags(
+        effectiveText,
+        session.constraints,
+      );
+    }
+
     const toolTraces =
       toolNames.length > 0
-        ? await this.tools.runTools(toolNames, user, effectiveText)
+        ? await this.tools.runTools(toolNames, user, toolMessage)
         : [];
 
     const hasUsefulTools = toolTraces.some(
@@ -1140,13 +1163,30 @@ export class AiService {
         !/tidak ditemukan|tidak ada finance project berstatus/i.test(t.summary),
     );
     const hasToolAttempt = toolTraces.some((t) => t.ok && t.summary);
+    const wasSearchMode = detectFinanceMode(toolMessage) === 'search';
 
     // BHV-007: classify failure BEFORE any FAQ / overview dump
     if (useTools && hasToolAttempt && !hasUsefulTools) {
       const kind = classifyFailureFromTools(toolTraces);
-      // Broader retry once if search empty under finance topic
+      // PAI-FNC-003: empty business search must NOT become Finance Summary
+      if (wasSearchMode && kind === 'retrieval_failed') {
+        return reply(
+          toolTraces.map((t) => t.summary).join('\n\n') ||
+            'Project tidak ditemukan untuk kata kunci tersebut. Coba nama site, segment, client/PO, atau kode project.',
+          {
+            toolTraces,
+            strategy: 'search',
+            patch: {
+              activeTopic: 'finance',
+              lastFailureKind: 'retrieval_failed',
+            },
+          },
+        );
+      }
+      // Broader retry once if search empty under finance topic (non-search modes)
       if (
         kind === 'retrieval_failed' &&
+        !wasSearchMode &&
         (session.activeTopic === 'finance' ||
           /finance|project|proyek/i.test(effectiveText))
       ) {

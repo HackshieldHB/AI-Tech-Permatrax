@@ -225,6 +225,15 @@ export function isContextDependentFollowUp(text: string): boolean {
   ) {
     return true;
   }
+  // PAI-FNC-001: status/metric aggregates are standalone intents, not soft follow-ups
+  if (
+    /^(berapa\s+)?(active|aktif|closed|archived|arsip)\??$/.test(m) ||
+    /(over\s*budget|overbudget)/.test(m) ||
+    /^(material|jasa)(\s*budget)?\??$/.test(m) ||
+    /^(sisa(\s*budget)?|realisasi|remaining)\??$/.test(m)
+  ) {
+    return false;
+  }
   if (
     m.length <= 48 &&
     /^(berapa|brapa|budgetnya|statusnya|realisasinya|detail|yang mana|hitung|tampilkan|lagi|ulangi|material|sisa)/.test(

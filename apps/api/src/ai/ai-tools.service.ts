@@ -3,7 +3,9 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import type { AuthUser } from '../auth/types/auth-user.types';
 import {
+  detectFinanceMetric,
   detectFinanceMode,
+  detectRankingMetric,
   extractHierarchyConstraint,
   extractOwnerName,
   extractProjectNeedle,
@@ -13,6 +15,7 @@ import {
   isFinanceBudgetQuery,
   meaningfulTokens,
   normalizeId,
+  type FinanceRankingMetric,
 } from './ai-nlu';
 
 export type ToolTrace = {
@@ -317,28 +320,60 @@ export class AiToolsService {
     }
 
     const mode = detectFinanceMode(message);
+    const metric = detectFinanceMetric(message);
+    const rankingMetric = detectRankingMetric(message);
     const broaderScope =
       /\[broader_retry\]|\[scope_non_archived\]|\[scope_all\]/i.test(message) ||
       /non.?arsip|non.?archived|termasuk closed|active\s*\+\s*closed/i.test(
         message,
       );
+    const mNorm = normalizeId(message);
+    const forceClosed =
+      /\[scope_closed\]/i.test(message) ||
+      (/\bclosed\b/.test(mNorm) &&
+        (mode === 'status_count' ||
+          mode === 'summary' ||
+          mode === 'metric_aggregate'));
+    const forceArchived =
+      /\[scope_archived\]/i.test(message) ||
+      (/\b(archived|arsip)\b/.test(mNorm) && mode === 'status_count');
     const forceActive =
       /\[scope_active\]/i.test(message) ||
-      (/\baktif\b|\bactive\b/.test(normalizeId(message)) && !broaderScope);
-    // Default summary → ACTIVE, unless broader retry / explicit non-archived
-    const wantActive =
-      !broaderScope && (forceActive || (mode === 'summary' && !broaderScope));
+      (/\baktif\b|\bactive\b/.test(mNorm) &&
+        !broaderScope &&
+        !forceClosed &&
+        !forceArchived &&
+        mode !== 'status_count');
 
     const hierarchyLevel = extractHierarchyConstraint(message);
 
+    let statusWhere: Prisma.FinanceProjectWhereInput['status'] = {
+      not: 'ARCHIVED',
+    };
+    if (forceArchived || metric === 'status_archived') statusWhere = 'ARCHIVED';
+    else if (forceClosed || metric === 'status_closed') statusWhere = 'CLOSED';
+    else if (
+      !broaderScope &&
+      (forceActive ||
+        metric === 'status_active' ||
+        (mode === 'summary' && !forceClosed && !forceArchived) ||
+        mode === 'metric_aggregate' ||
+        mode === 'top_budget' ||
+        mode === 'smallest')
+    ) {
+      statusWhere = 'ACTIVE';
+    }
+
     const baseWhere: Prisma.FinanceProjectWhereInput = {
-      status: wantActive ? 'ACTIVE' : { not: 'ARCHIVED' },
+      status: statusWhere,
       ...(hierarchyLevel ? { hierarchyLevel } : {}),
     };
 
-    // Correction / broader strategy: status breakdown + sample names + aggregate
     if (/\[broader_retry\]/i.test(message)) {
-      return this.financeBroaderRetry(user, baseWhere);
+      return this.financeBroaderRetry(user, {
+        ...baseWhere,
+        status: { not: 'ARCHIVED' },
+      });
     }
 
     if (!this.canSeeAllFinance(user.role)) {
@@ -364,25 +399,47 @@ export class AiToolsService {
       }
     }
 
+    if (mode === 'status_count') {
+      const statusLabel =
+        metric === 'status_closed'
+          ? 'CLOSED'
+          : metric === 'status_archived'
+            ? 'ARCHIVED'
+            : 'ACTIVE';
+      const count = await this.prisma.financeProject.count({
+        where: {
+          ...baseWhere,
+          status: statusLabel,
+          ...(hierarchyLevel ? { hierarchyLevel } : {}),
+        },
+      });
+      return {
+        name: 'finance_analytics',
+        ok: true,
+        summary: `${statusLabel} Project – ${count} Project`,
+        data: { status: statusLabel, count, mode: 'status_count' },
+      };
+    }
+
+    if (mode === 'metric_aggregate' && metric) {
+      return this.financeMetricAggregate(baseWhere, metric, hierarchyLevel);
+    }
+
     if (mode === 'search') {
       const needle =
         extractProjectNeedle(message) || extractSearchNeedle(message);
       if (needle) {
         const tokens = meaningfulTokens(needle);
         const parts = tokens.length > 0 ? tokens : [needle];
-        if (parts.length > 1) {
-          baseWhere.AND = parts.map((p) => ({
-            OR: [
-              { name: { contains: p, mode: 'insensitive' as const } },
-              { code: { contains: p, mode: 'insensitive' as const } },
-            ],
-          }));
-        } else {
-          baseWhere.OR = [
-            { name: { contains: parts[0], mode: 'insensitive' } },
-            { code: { contains: parts[0], mode: 'insensitive' } },
-          ];
-        }
+        const attrOr = (p: string): Prisma.FinanceProjectWhereInput[] => [
+          { name: { contains: p, mode: 'insensitive' } },
+          { code: { contains: p, mode: 'insensitive' } },
+          { description: { contains: p, mode: 'insensitive' } },
+          { poCustomerNumber: { contains: p, mode: 'insensitive' } },
+          { parent: { name: { contains: p, mode: 'insensitive' } } },
+          { parent: { code: { contains: p, mode: 'insensitive' } } },
+        ];
+        baseWhere.OR = parts.flatMap((p) => attrOr(p));
         delete (baseWhere as { status?: unknown }).status;
         baseWhere.status = { not: 'ARCHIVED' };
       }
@@ -423,42 +480,12 @@ export class AiToolsService {
     }
 
     if (mode === 'top_budget' || mode === 'smallest') {
-      const rows = await this.prisma.financeProject.findMany({
-        where: baseWhere,
-        select: {
-          code: true,
-          name: true,
-          totalBudget: true,
-          materialSpent: true,
-          jasaSpent: true,
-          status: true,
-          hierarchyLevel: true,
-        },
-        orderBy: { totalBudget: mode === 'top_budget' ? 'desc' : 'asc' },
-        take: 10,
-      });
-      if (rows.length === 0) {
-        return {
-          name: 'finance_analytics',
-          ok: true,
-          summary: 'Belum ada Finance Project yang cocok untuk ranking.',
-        };
-      }
-      const hierLabel = hierarchyLevel ? ` (${hierarchyLevel} saja)` : '';
-      const title =
-        mode === 'top_budget'
-          ? `Top 10 Finance Project — budget terbesar${hierLabel}`
-          : `Top 10 Finance Project — budget terkecil${hierLabel}`;
-      const lines = rows.map((r, i) => {
-        const spent = Number(r.materialSpent) + Number(r.jasaSpent);
-        return `${i + 1}. ${r.code} ${r.name} — ${fmtIdr(Number(r.totalBudget))} (realisasi ${fmtIdr(spent)}) [${r.hierarchyLevel}]`;
-      });
-      return {
-        name: 'finance_analytics',
-        ok: true,
-        summary: [title, ...lines, `Data per ${fmtDateId()}.`].join('\n'),
-        data: rows,
-      };
+      return this.financeRankingList(
+        baseWhere,
+        rankingMetric,
+        mode === 'top_budget' ? 'desc' : 'asc',
+        hierarchyLevel,
+      );
     }
 
     if (mode === 'search') {
@@ -467,6 +494,7 @@ export class AiToolsService {
         select: {
           code: true,
           name: true,
+          description: true,
           totalBudget: true,
           materialBudget: true,
           jasaBudget: true,
@@ -475,6 +503,8 @@ export class AiToolsService {
           status: true,
           hierarchyLevel: true,
           isOverbudget: true,
+          poCustomerNumber: true,
+          parent: { select: { code: true, name: true } },
         },
         take: 10,
         orderBy: { updatedAt: 'desc' },
@@ -483,7 +513,9 @@ export class AiToolsService {
         return {
           name: 'finance_analytics',
           ok: true,
-          summary: 'Project tidak ditemukan di database (non-ARCHIVED).',
+          summary:
+            'Project tidak ditemukan di database untuk kata kunci tersebut (non-ARCHIVED). Coba nama site, segment, client/PO, atau kode project.',
+          data: { mode: 'search', count: 0 },
         };
       }
       const lines = rows.map((r) => {
@@ -492,30 +524,41 @@ export class AiToolsService {
         return [
           `${r.code} — ${r.name}`,
           `• Status: ${r.status} (${r.hierarchyLevel})`,
+          r.parent ? `• Parent: ${r.parent.code} ${r.parent.name}` : null,
+          r.poCustomerNumber ? `• PO/Client: ${r.poCustomerNumber}` : null,
           `• Total Budget: ${fmtIdr(budget)}`,
           `• Material budget: ${fmtIdr(Number(r.materialBudget ?? 0))} | Jasa budget: ${fmtIdr(Number(r.jasaBudget ?? 0))}`,
           `• Realisasi: ${fmtIdr(spent)} | Sisa: ${fmtIdr(budget - spent)}`,
-          r.isOverbudget ? `• ⚠ Over budget` : null,
+          r.isOverbudget ? `• Over budget` : null,
         ]
           .filter(Boolean)
           .join('\n');
       });
+      const header =
+        rows.length > 1
+          ? `Ditemukan ${rows.length} project — pilih salah satu (sebutkan kode):\n`
+          : '';
       return {
         name: 'finance_analytics',
         ok: true,
-        summary: lines.join('\n\n'),
+        summary: header + lines.join('\n\n'),
         data: rows,
       };
     }
 
-    // summary / by_owner / overbudget list aggregate
     const where = baseWhere;
     const [count, agg, biggest, smallest, siteCount, segmentCount, overCount] =
       await Promise.all([
         this.prisma.financeProject.count({ where }),
         this.prisma.financeProject.aggregate({
           where,
-          _sum: { totalBudget: true, materialSpent: true, jasaSpent: true },
+          _sum: {
+            totalBudget: true,
+            materialBudget: true,
+            jasaBudget: true,
+            materialSpent: true,
+            jasaSpent: true,
+          },
         }),
         this.prisma.financeProject.findFirst({
           where,
@@ -539,10 +582,19 @@ export class AiToolsService {
       ]);
 
     const totalBudget = Number(agg._sum.totalBudget ?? 0);
+    const materialBudget = Number(agg._sum.materialBudget ?? 0);
+    const jasaBudget = Number(agg._sum.jasaBudget ?? 0);
     const realized =
       Number(agg._sum.materialSpent ?? 0) + Number(agg._sum.jasaSpent ?? 0);
     const remaining = totalBudget - realized;
-    const statusLabel = wantActive ? 'ACTIVE' : 'non-ARCHIVED';
+    const statusLabel =
+      statusWhere === 'ACTIVE'
+        ? 'ACTIVE'
+        : statusWhere === 'CLOSED'
+          ? 'CLOSED'
+          : statusWhere === 'ARCHIVED'
+            ? 'ARCHIVED'
+            : 'non-ARCHIVED';
 
     if (count === 0) {
       return {
@@ -561,6 +613,7 @@ export class AiToolsService {
         ? `• Filter hierarki : ${hierarchyLevel}`
         : `• Segment : ${segmentCount} | Site : ${siteCount}`,
       `• Total Budget : ${fmtIdr(totalBudget)}`,
+      `• Material Budget : ${fmtIdr(materialBudget)} | Jasa Budget : ${fmtIdr(jasaBudget)}`,
       `• Total Realisasi : ${fmtIdr(realized)}`,
       `• Total Sisa Budget : ${fmtIdr(remaining)}`,
       `• Over budget : ${overCount} project`,
@@ -582,6 +635,8 @@ export class AiToolsService {
       data: {
         count,
         totalBudget,
+        materialBudget,
+        jasaBudget,
         realized,
         remaining,
         siteCount,
@@ -590,6 +645,167 @@ export class AiToolsService {
         biggest,
         smallest,
       },
+    };
+  }
+
+  /** PAI-FNC-002: emit one aggregate metric without full Finance Summary dump. */
+  private async financeMetricAggregate(
+    baseWhere: Prisma.FinanceProjectWhereInput,
+    metric: NonNullable<ReturnType<typeof detectFinanceMetric>>,
+    hierarchyLevel: 'SITE' | 'SEGMENT' | 'STANDALONE' | null,
+  ): Promise<ToolTrace> {
+    const hierNote = hierarchyLevel ? ` (${hierarchyLevel})` : '';
+    if (metric === 'overbudget_count') {
+      const count = await this.prisma.financeProject.count({
+        where: { ...baseWhere, isOverbudget: true },
+      });
+      return {
+        name: 'finance_analytics',
+        ok: true,
+        summary: `Over Budget – ${count} Project${hierNote}`,
+        data: { metric, count },
+      };
+    }
+
+    const agg = await this.prisma.financeProject.aggregate({
+      where: baseWhere,
+      _sum: {
+        totalBudget: true,
+        materialBudget: true,
+        jasaBudget: true,
+        materialSpent: true,
+        jasaSpent: true,
+      },
+      _count: true,
+    });
+    const totalBudget = Number(agg._sum.totalBudget ?? 0);
+    const materialBudget = Number(agg._sum.materialBudget ?? 0);
+    const jasaBudget = Number(agg._sum.jasaBudget ?? 0);
+    const realized =
+      Number(agg._sum.materialSpent ?? 0) + Number(agg._sum.jasaSpent ?? 0);
+    const remaining = totalBudget - realized;
+    const count = agg._count;
+
+    const lines: Record<string, string> = {
+      material_budget: `Material Budget${hierNote} – ${fmtIdr(materialBudget)} (${count} project)`,
+      jasa_budget: `Jasa Budget${hierNote} – ${fmtIdr(jasaBudget)} (${count} project)`,
+      realization: `Total Realisasi${hierNote} – ${fmtIdr(realized)} (${count} project)`,
+      remaining: `Remaining Budget${hierNote} – ${fmtIdr(remaining)} (${count} project)`,
+      total_budget: `Total Budget${hierNote} – ${fmtIdr(totalBudget)} (${count} project)`,
+    };
+    return {
+      name: 'finance_analytics',
+      ok: true,
+      summary:
+        lines[metric] || `Metric ${metric}: tersedia untuk ${count} project`,
+      data: {
+        metric,
+        count,
+        totalBudget,
+        materialBudget,
+        jasaBudget,
+        realized,
+        remaining,
+      },
+    };
+  }
+
+  /** PAI-FNC-004: dynamic ranking by metric + direction. */
+  private async financeRankingList(
+    baseWhere: Prisma.FinanceProjectWhereInput,
+    rankingMetric: FinanceRankingMetric,
+    dir: 'asc' | 'desc',
+    hierarchyLevel: 'SITE' | 'SEGMENT' | 'STANDALONE' | null,
+  ): Promise<ToolTrace> {
+    const where: Prisma.FinanceProjectWhereInput = {
+      ...baseWhere,
+      ...(rankingMetric === 'overbudget' ? { isOverbudget: true } : {}),
+    };
+    const rows = await this.prisma.financeProject.findMany({
+      where,
+      select: {
+        code: true,
+        name: true,
+        totalBudget: true,
+        materialBudget: true,
+        jasaBudget: true,
+        materialSpent: true,
+        jasaSpent: true,
+        status: true,
+        hierarchyLevel: true,
+        isOverbudget: true,
+      },
+      take: 40,
+    });
+    if (rows.length === 0) {
+      return {
+        name: 'finance_analytics',
+        ok: true,
+        summary: 'Belum ada Finance Project yang cocok untuk ranking.',
+      };
+    }
+
+    const scored = rows.map((r) => {
+      const totalBudget = Number(r.totalBudget);
+      const materialBudget = Number(r.materialBudget ?? 0);
+      const jasaBudget = Number(r.jasaBudget ?? 0);
+      const realization = Number(r.materialSpent) + Number(r.jasaSpent);
+      const remaining = totalBudget - realization;
+      const overAmount = Math.max(0, realization - totalBudget);
+      let sortValue = totalBudget;
+      if (rankingMetric === 'realization') sortValue = realization;
+      else if (rankingMetric === 'remaining') sortValue = remaining;
+      else if (rankingMetric === 'materialBudget') sortValue = materialBudget;
+      else if (rankingMetric === 'jasaBudget') sortValue = jasaBudget;
+      else if (rankingMetric === 'overbudget') sortValue = overAmount;
+      return {
+        r,
+        sortValue,
+        totalBudget,
+        realization,
+        remaining,
+        materialBudget,
+        jasaBudget,
+        overAmount,
+      };
+    });
+    scored.sort((a, b) =>
+      dir === 'desc' ? b.sortValue - a.sortValue : a.sortValue - b.sortValue,
+    );
+    const top = scored.slice(0, 10);
+    const hierLabel = hierarchyLevel ? ` (${hierarchyLevel} saja)` : '';
+    const metricLabel: Record<FinanceRankingMetric, string> = {
+      totalBudget: 'Total Budget',
+      realization: 'Realisasi',
+      remaining: 'Sisa Budget',
+      materialBudget: 'Material Budget',
+      jasaBudget: 'Jasa Budget',
+      overbudget: 'Over Budget',
+    };
+    const dirLabel = dir === 'desc' ? 'terbesar' : 'terkecil';
+    const title = `Top 10 Finance Project — ${metricLabel[rankingMetric]} ${dirLabel}${hierLabel}`;
+    const lines = top.map((item, i) => {
+      const val =
+        rankingMetric === 'realization'
+          ? item.realization
+          : rankingMetric === 'remaining'
+            ? item.remaining
+            : rankingMetric === 'materialBudget'
+              ? item.materialBudget
+              : rankingMetric === 'jasaBudget'
+                ? item.jasaBudget
+                : rankingMetric === 'overbudget'
+                  ? item.overAmount
+                  : item.totalBudget;
+      // Include Realisasi + Status so Active Object attribute follow-ups
+      // (CSM-002) resolve from the dataset without a live re-query.
+      return `${i + 1}. ${item.r.code} ${item.r.name} — ${fmtIdr(val)} (budget ${fmtIdr(item.totalBudget)}; realisasi ${fmtIdr(item.realization)}; status ${item.r.status}) [${item.r.hierarchyLevel}]`;
+    });
+    return {
+      name: 'finance_analytics',
+      ok: true,
+      summary: [title, ...lines, `Data per ${fmtDateId()}.`].join('\n'),
+      data: { rankingMetric, dir, rows: top.map((t) => t.r) },
     };
   }
 

@@ -629,11 +629,19 @@ export function isAmbiguousQuery(text: string): boolean {
       return true;
     }
   }
+  // PAI-FNC-001: over-budget / material / status metrics are clear aggregates — not clarify
+  if (
+    /(over\s*budget|overbudget|material|jasa|realisasi|sisa\s*budget|remaining|\bactive\b|\bclosed\b|\barchived\b)/.test(
+      m,
+    )
+  ) {
+    return false;
+  }
   // Noun phrase only, no question verb / metric
   if (
     words.length <= 4 &&
     /(budget|approval|status|project|proyek|dana)/.test(m) &&
-    !/(berapa|brapa|jumlah|total|cara|gimana|bagaimana|dimana|siapa|kapan|cari|tampilkan|list|bisa|tolong|ajuin|ajukan|aktif|active|maksud)/.test(
+    !/(berapa|brapa|jumlah|total|cara|gimana|bagaimana|dimana|siapa|kapan|cari|tampilkan|list|bisa|tolong|ajuin|ajukan|aktif|active|maksud|over|material|jasa|realisasi|sisa)/.test(
       m,
     )
   ) {
@@ -843,6 +851,7 @@ export function classifyPaIntent(text: string): PaIntent {
   if (
     isFinanceBudgetQuery(text) ||
     isProjectCountQuery(text) ||
+    isFinanceFilterOrAggregateQuery(text) ||
     /(berapa|brapa|jumlah|total|nominal|cari|tampilkan|list|summary|ringkas|siapa|status(nya)?)/.test(
       m,
     ) ||
@@ -855,6 +864,37 @@ export function classifyPaIntent(text: string): PaIntent {
 
   if (/(apa itu|jelaskan|pengertian)/.test(m)) return 'faq';
   return 'faq';
+}
+
+/** PAI-FNC-001/005: status / hierarchy / metric tokens as data filters, not Guide. */
+export function isFinanceFilterOrAggregateQuery(text: string): boolean {
+  const m = normalizeId(text);
+  if (
+    /^(berapa\s+)?(active|aktif|closed|archived|arsip)\??$/.test(m) ||
+    /(berapa|jumlah|ada).*(active|aktif|closed|archived|arsip)/.test(m) ||
+    /(over\s*budget|overbudget)/.test(m) ||
+    /^(material|jasa|realisasi|sisa(\s*budget)?)\??$/.test(m) ||
+    /(material|jasa)\s*(budget|anggaran)/.test(m) ||
+    /(budget|anggaran)\s*(material|jasa)/.test(m)
+  ) {
+    return true;
+  }
+  // Multi-filter: ACTIVE SITE / CLOSED SEGMENT / ACTIVE + SEGMENT
+  if (
+    /\b(active|aktif|closed|archived)\b/.test(m) &&
+    /\b(site|segment|standalone)\b/.test(m)
+  ) {
+    return true;
+  }
+  if (
+    /\b(site|segment|standalone)\b/.test(m) &&
+    /(filter|hanya|berdasarkan|tampilkan|list|daftar|project|budget|active|aktif)/.test(
+      m,
+    )
+  ) {
+    return true;
+  }
+  return false;
 }
 
 /** "berapa project tersedia" / count inventory — not a named search. */
@@ -875,6 +915,7 @@ export function isProjectCountQuery(text: string): boolean {
 export function isFinanceBudgetQuery(text: string): boolean {
   const m = normalizeId(text);
   if (isProjectCountQuery(text)) return true;
+  if (isFinanceFilterOrAggregateQuery(text)) return true;
   if (/(finance\s*project|proyek\s*finance|project\s*finance|fp\b)/.test(m)) {
     return true;
   }
@@ -900,7 +941,7 @@ export function isFinanceBudgetQuery(text: string): boolean {
   }
   if (
     /(top\s*\d*|terbesar|terkecil|over\s*budget|overbudget)/.test(m) &&
-    /(budget|project|proyek|finance|realisasi)/.test(m)
+    /(budget|project|proyek|finance|realisasi|sisa|material|jasa)/.test(m)
   ) {
     return true;
   }
@@ -910,8 +951,38 @@ export function isFinanceBudgetQuery(text: string): boolean {
   if (/(berapa|jumlah).*(site|segment)/.test(m)) {
     return true;
   }
+  // PAI-FNC-003: business-attribute search cues
+  if (
+    /(cari|tampilkan|list|daftar|lihat).*(project|proyek|site|segment|client|finance)/.test(
+      m,
+    ) ||
+    /(project|proyek|site|segment).*(bernama|atas nama|client|pelanggan)/.test(m)
+  ) {
+    return true;
+  }
   return false;
 }
+
+/** Single-metric / status aggregate (PAI-FNC-001/002). */
+export type FinanceMetric =
+  | 'status_active'
+  | 'status_closed'
+  | 'status_archived'
+  | 'overbudget_count'
+  | 'material_budget'
+  | 'jasa_budget'
+  | 'realization'
+  | 'remaining'
+  | 'total_budget';
+
+/** Ranking field for dynamic ORDER BY (PAI-FNC-004). */
+export type FinanceRankingMetric =
+  | 'totalBudget'
+  | 'realization'
+  | 'remaining'
+  | 'materialBudget'
+  | 'jasaBudget'
+  | 'overbudget';
 
 export type FinanceMode =
   | 'summary'
@@ -920,7 +991,99 @@ export type FinanceMode =
   | 'overbudget'
   | 'search'
   | 'by_owner'
-  | 'hierarchy_counts';
+  | 'hierarchy_counts'
+  | 'status_count'
+  | 'metric_aggregate'
+  | 'ranking';
+
+export function detectFinanceMetric(text: string): FinanceMetric | null {
+  const m = normalizeId(text);
+  // Status counts — "Berapa ACTIVE?" / "CLOSED?" / "Ada ARCHIVED?"
+  if (
+    (/\b(archived|arsip)\b/.test(m) &&
+      /(berapa|jumlah|ada|count)|^archived\??$|^arsip\??$/.test(m)) ||
+    /^berapa\s+(archived|arsip)\??$/.test(m)
+  ) {
+    return 'status_archived';
+  }
+  if (
+    (/\b(closed|ditutup)\b/.test(m) &&
+      /(berapa|jumlah|ada|count)|^closed\??$/.test(m)) ||
+    /^berapa\s+closed\??$/.test(m)
+  ) {
+    return 'status_closed';
+  }
+  if (
+    (/\b(active|aktif)\b/.test(m) &&
+      /(berapa|jumlah|ada|count)|^active\??$|^aktif\??$/.test(m) &&
+      !/(budget|anggaran|realisasi|material|jasa|sisa|top|terbesar|terkecil)/.test(
+        m,
+      )) ||
+    /^berapa\s+(active|aktif)\??$/.test(m)
+  ) {
+    return 'status_active';
+  }
+  // Over-budget count (not ranking list)
+  if (
+    /(over\s*budget|overbudget)/.test(m) &&
+    !/(top|terbesar|terkecil|ranking|daftar|list|paling)/.test(m)
+  ) {
+    return 'overbudget_count';
+  }
+  if (
+    /(material).*(budget|anggaran)|(budget|anggaran).*material|\bmaterial\b\s*(budget|anggaran)?\??$/.test(
+      m,
+    ) &&
+    !/(spent|realisasi|terpakai|terbesar|terkecil|top)/.test(m)
+  ) {
+    return 'material_budget';
+  }
+  if (
+    /(jasa|service).*(budget|anggaran)|(budget|anggaran).*(jasa|service)|\bjasa\b\s*(budget|anggaran)?\??$/.test(
+      m,
+    ) &&
+    !/(spent|realisasi|terpakai|terbesar|terkecil|top)/.test(m)
+  ) {
+    return 'jasa_budget';
+  }
+  if (
+    /(realisasi|spent|terpakai)/.test(m) &&
+    !/(terbesar|terkecil|top|ranking|paling)/.test(m)
+  ) {
+    return 'realization';
+  }
+  if (
+    /(sisa\s*budget|remaining(\s*budget)?|sisa\b)/.test(m) &&
+    !/(terbesar|terkecil|top|ranking|paling)/.test(m)
+  ) {
+    return 'remaining';
+  }
+  return null;
+}
+
+export function detectRankingMetric(text: string): FinanceRankingMetric {
+  const m = normalizeId(text);
+  if (/(over\s*budget|overbudget)/.test(m)) return 'overbudget';
+  if (/(realisasi|spent|terpakai)/.test(m)) return 'realization';
+  if (/(sisa\s*budget|remaining|sisa\b)/.test(m)) return 'remaining';
+  if (/(material)/.test(m)) return 'materialBudget';
+  if (/(jasa|service)/.test(m)) return 'jasaBudget';
+  return 'totalBudget';
+}
+
+export function wantsFinanceFullSummary(text: string): boolean {
+  const m = normalizeId(text);
+  return (
+    /(ringkas|summary|overview|keseluruhan|semua metrik)/.test(m) ||
+    /(finance\s*project).*(total budget|budget).*(keseluruhan|semua|per hari)/.test(
+      m,
+    ) ||
+    /(total budget|nominal total).*(keseluruhan|semua project|project aktif|aktif saat)/.test(
+      m,
+    ) ||
+    /(berapa|hitung).*(nominal\s*)?total budget.*(aktif|keseluruhan|semua)/.test(m)
+  );
+}
 
 const WEAK_NEEDLES = new Set([
   'sudah',
@@ -972,13 +1135,23 @@ export function extractProjectNeedle(text: string): string | null {
   const quoted = text.match(/["“](.+?)["”]/);
   if (quoted?.[1]?.trim()) return quoted[1].trim();
 
+  // PAI-FNC-001/002: metric phrases are never project needles
+  if (detectFinanceMetric(text) && !/\b((?:SITE|SEG|FIN)-\d{4}-\d+)\b/i.test(text)) {
+    return null;
+  }
+  if (
+    /^(material|jasa|realisasi|sisa|remaining|over)(\s+budget)?\??$/i.test(m)
+  ) {
+    return null;
+  }
+
   const named = text.match(
     /(?:project|proyek|segment|site|finance\s*project)\s+(.+?)(?:\s+(?:berapa|brapa|total|budget|anggaran|nominal|status|duit|tersedia|yang)|[?.!]|$)/i,
   );
   if (named?.[1]) {
     const cleaned = named[1]
       .replace(
-        /\b(segment|site|finance|project|proyek|aktif|active|yang|ini|dong|yah|ya|semua|seluruh|keseluruhan|total|saat|sekarang|hari|sudah|ada|tersedia|berdasarkan)\b/gi,
+        /\b(segment|site|finance|project|proyek|aktif|active|yang|ini|dong|yah|ya|semua|seluruh|keseluruhan|total|saat|sekarang|hari|sudah|ada|tersedia|berdasarkan|material|jasa)\b/gi,
         ' ',
       )
       .replace(/\s+/g, ' ')
@@ -1004,11 +1177,13 @@ export function extractProjectNeedle(text: string): string | null {
     if (beforeBudget?.[1]) {
       const cleaned = beforeBudget[1]
         .replace(
-          /\b(total|berapa|brapa|jumlah|project|proyek|segment|site|finance|yang|ini|aktif|active|nominal|sudah|ada)\b/gi,
+          /\b(total|berapa|brapa|jumlah|project|proyek|segment|site|finance|yang|ini|aktif|active|nominal|sudah|ada|material|jasa|realisasi|sisa|remaining|over)\b/gi,
           ' ',
         )
         .replace(/\s+/g, ' ')
         .trim();
+      // PAI-FNC-001: "Material Budget" → cleaned empty — not a project name
+      if (/^(material|jasa|realisasi|sisa|over)$/i.test(cleaned)) return null;
       const tokens = meaningfulTokens(cleaned).filter((t) => !WEAK_NEEDLES.has(t));
       if (cleaned.length >= 3 && tokens.length > 0) {
         return tokens.join(' ');
@@ -1019,7 +1194,7 @@ export function extractProjectNeedle(text: string): string | null {
   return null;
 }
 
-/** Hierarchy constraint from recovery refine / user filter (PAI-RSN-003 V5/V6). */
+/** Hierarchy constraint from recovery refine / user filter (PAI-RSN-003 V5/V6 + FNC-005). */
 export function extractHierarchyConstraint(
   text: string,
 ): 'SITE' | 'SEGMENT' | 'STANDALONE' | null {
@@ -1027,11 +1202,15 @@ export function extractHierarchyConstraint(
   if (/\[HIERARCHY_SEGMENT\]/i.test(text)) return 'SEGMENT';
   if (/\[HIERARCHY_STANDALONE\]/i.test(text)) return 'STANDALONE';
   const m = normalizeId(text);
-  // Combined ranking + bare hierarchy in one utterance: "Yang terbesar. SEGMENT."
+  // PAI-FNC-005: bare SITE/SEGMENT with status or filter glue
   if (
     /\b(segment)\b/.test(m) &&
     (/(berdasarkan|filter|hanya|level|hierarki|maksud|bukan)/.test(m) ||
-      /(terbesar|terkecil|top\s*\d*|ranking|budget)/.test(m))
+      /(terbesar|terkecil|top\s*\d*|ranking|budget|active|aktif|closed|archived|list|daftar|tampilkan)/.test(
+        m,
+      ) ||
+      /^(active|aktif|closed)\s+segment/.test(m) ||
+      /^segment\s+(active|aktif|closed)/.test(m))
   ) {
     return 'SEGMENT';
   }
@@ -1039,13 +1218,19 @@ export function extractHierarchyConstraint(
     /\b(site)\b/.test(m) &&
     !/(site-\d|website)/.test(m) &&
     (/(berdasarkan|filter|hanya|level|hierarki|maksud|bukan)/.test(m) ||
-      /(terbesar|terkecil|top\s*\d*|ranking|budget)/.test(m))
+      /(terbesar|terkecil|top\s*\d*|ranking|budget|active|aktif|closed|archived|list|daftar|tampilkan)/.test(
+        m,
+      ) ||
+      /^(active|aktif|closed)\s+site/.test(m) ||
+      /^site\s+(active|aktif|closed)/.test(m))
   ) {
     return 'SITE';
   }
   if (
     /\b(standalone)\b/.test(m) &&
-    /(berdasarkan|filter|hanya|level|hierarki|maksud|bukan|terbesar)/.test(m)
+    /(berdasarkan|filter|hanya|level|hierarki|maksud|bukan|terbesar|active|aktif)/.test(
+      m,
+    )
   ) {
     return 'STANDALONE';
   }
@@ -1054,9 +1239,39 @@ export function extractHierarchyConstraint(
 
 export function detectFinanceMode(text: string): FinanceMode {
   const m = normalizeId(text);
-  if (/(over\s*budget|overbudget)/.test(m)) return 'overbudget';
-  if (/(top\s*\d*|terbesar|ranking|paling besar)/.test(m)) return 'top_budget';
-  if (/(terkecil|paling kecil|paling rendah.*budget)/.test(m)) return 'smallest';
+
+  // PAI-FNC-004: ranking with dynamic metric (before generic overbudget/summary)
+  const wantsRank =
+    /(top\s*\d*|terbesar|terkecil|ranking|paling besar|paling kecil|paling tinggi|paling rendah)/.test(
+      m,
+    );
+  if (wantsRank) {
+    if (/(terkecil|paling kecil|paling rendah|ascending|terendah)/.test(m)) {
+      return 'smallest';
+    }
+    return 'top_budget';
+  }
+
+  // PAI-FNC-001/002: single-metric / status aggregate before summary
+  const metric = detectFinanceMetric(text);
+  if (metric?.startsWith('status_')) return 'status_count';
+  if (metric === 'overbudget_count') return 'metric_aggregate';
+  if (
+    metric &&
+    !wantsFinanceFullSummary(text) &&
+    !extractProjectNeedle(text)
+  ) {
+    return 'metric_aggregate';
+  }
+
+  // Legacy overbudget filter mode only when listing over-budget projects
+  if (
+    /(over\s*budget|overbudget)/.test(m) &&
+    /(list|daftar|tampilkan|project|yang)/.test(m)
+  ) {
+    return 'overbudget';
+  }
+
   if (/(milik|punya)\s+[a-z]{2,}/.test(m)) return 'by_owner';
 
   // Count of projects / availability → summary (never empty "search")
@@ -1075,9 +1290,9 @@ export function detectFinanceMode(text: string): FinanceMode {
   if (/\b(site|seg|fin)-\d+/i.test(m)) {
     return 'search';
   }
-  // "cari X" only when X looks like a real needle
-  if (/\bcari\b/.test(m)) {
-    const n = extractSearchNeedle(text);
+  // "cari X" / business-attribute search
+  if (/\bcari\b/.test(m) || /(tampilkan|list|daftar).*(project|site|segment)/.test(m)) {
+    const n = extractSearchNeedle(text) || extractProjectNeedle(text);
     if (n && !WEAK_NEEDLES.has(n.toLowerCase()) && meaningfulTokens(n).length > 0) {
       return 'search';
     }
@@ -1085,6 +1300,16 @@ export function detectFinanceMode(text: string): FinanceMode {
   if (/(berapa|jumlah).*(site|segment)/.test(m) && !/budget|anggaran/.test(m)) {
     return 'hierarchy_counts';
   }
+
+  // PAI-FNC-005: multi-filter without explicit metric → filtered summary
+  if (
+    extractHierarchyConstraint(text) &&
+    /\b(active|aktif|closed|archived)\b/.test(m)
+  ) {
+    return 'summary';
+  }
+
+  if (wantsFinanceFullSummary(text)) return 'summary';
   return 'summary';
 }
 
@@ -1098,14 +1323,31 @@ export function extractSearchNeedle(text: string): string | null {
   if (code) return code[1];
   const quoted = text.match(/["“](.+?)["”]/);
   if (quoted) return quoted[1].trim();
-  const afterCari = text.match(/\bcari\s+(.+)$/i);
+  const afterCari = text.match(
+    /\b(?:cari|tampilkan|list|daftar|lihat)\s+(?:project|proyek|site|segment|client)?\s*(.+)$/i,
+  );
   if (afterCari) {
     const cleaned = afterCari[1]
-      .replace(/\b(project|proyek|finance|dong|yah|ya)\b/gi, ' ')
+      .replace(
+        /\b(project|proyek|finance|dong|yah|ya|bernama|atas nama|client|pelanggan|yang)\b/gi,
+        ' ',
+      )
       .replace(/\s+/g, ' ')
       .trim();
     const tokens = meaningfulTokens(cleaned).filter((t) => !WEAK_NEEDLES.has(t));
     return tokens.length > 0 ? tokens.join(' ') : null;
+  }
+  // PAI-FNC-003: "site/segment/client <Name>" without code
+  const attrName = text.match(
+    /\b(?:site|segment|client|pelanggan|nama)\s+([A-Za-z0-9][\w.-]*(?:\s+[A-Za-z0-9][\w.-]*){0,6})/i,
+  );
+  if (attrName?.[1]) {
+    const cleaned = attrName[1]
+      .replace(/\b(active|aktif|closed|budget|berapa)\b/gi, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const tokens = meaningfulTokens(cleaned).filter((t) => !WEAK_NEEDLES.has(t));
+    if (tokens.length > 0) return tokens.join(' ');
   }
   return null;
 }
