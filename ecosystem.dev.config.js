@@ -48,7 +48,11 @@ module.exports = {
         NODE_ENV: 'production',
         PORT: 3002,
         BASE_PATH: '/Permatrax',   // serves under aitech-ilt.co.id/Permatrax
+        NEXT_PUBLIC_BASE_PATH: '/Permatrax',
         API_URL: 'http://localhost:3003',
+        // Also bake these at `pnpm build` via apps/web/.env.local (Next inlines NEXT_PUBLIC_*)
+        NEXT_PUBLIC_API_URL: 'https://aitech-ilt.co.id/Permatrax/api',
+        NEXT_PUBLIC_FILES_URL: 'https://aitech-ilt.co.id/Permatrax/api/files',
       },
       error_file: '/var/log/pm2/permatrax-dev-web-error.log',
       out_file: '/var/log/pm2/permatrax-dev-web-out.log',
