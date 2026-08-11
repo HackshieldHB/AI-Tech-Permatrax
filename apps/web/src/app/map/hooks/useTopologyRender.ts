@@ -12,10 +12,12 @@ import {
   assignHomepassToOdps,
   clusterHomepassForOdp,
   formatCoverageToast,
+  redistributeHomepassLoads,
+  resolveCoverageRadiusM,
   resolveMaxOdpCap,
   resolveOdpTargetCount,
   summarizeCoverage,
-  unservedClusterCentroid,
+  unservedClusterCentroidAt,
   type CoverageReport,
   type HpPoint,
 } from '../utils/odpHomepassCoverage';
@@ -170,14 +172,17 @@ async function backendSnap(
   }
 }
 
-// FIX: get OSM buildings via backend proxy
+// FIX: get OSM buildings via backend proxy (returns source for JLM V2 detection UX)
 async function backendBuildings(
   apiBase: string, // FIX
   token: string, // FIX
   lat: number, // FIX
   lon: number, // FIX
   radiusM: number, // FIX
-): Promise<Array<{ lng: number; lat: number; osmId: number; type: string }>> {
+): Promise<{
+  buildings: Array<{ lng: number; lat: number; osmId: number; type: string }>;
+  source: string;
+}> {
   try {
     const res = await fetch(
       `${apiBase}/map/buildings?lat=${lat}&lon=${lon}&radius=${Math.min(radiusM, 2000)}`, // FIX
@@ -186,14 +191,17 @@ async function backendBuildings(
           Authorization: `Bearer ${token}`, // FIX
           'ngrok-skip-browser-warning': 'true', // FIX
         }, // FIX
-        signal: AbortSignal.timeout(25000), // FIX
+        signal: AbortSignal.timeout(45000), // FIX: align with Nest @TimeoutMs(45000)
       },
     ); // FIX
     if (!res.ok) throw new Error(`buildings HTTP ${res.status}`); // FIX
     const data = await res.json(); // FIX
-    return data.buildings || []; // FIX
+    return {
+      buildings: data.buildings || [],
+      source: typeof data.source === 'string' ? data.source : 'OSM Overpass',
+    };
   } catch {
-    return []; // FIX: empty — fallback to synthetic
+    return { buildings: [], source: 'error' };
   }
 }
 
@@ -880,9 +888,10 @@ export function useTopologyRender(args: {
         const spacingM = result.equipment.odp.spacingM || 65; // FIX
         // JLM Issue 3B: per-ODP port capacity — caps how many homepass each ODP serves
         const odpCapacityVal = result.equipment.odp.capacity || 8; // 8 or 16 ports
-        const COVERAGE_RADIUS_M = Math.max(250, spacingM * 3); // homepass beyond this = Tidak Tercover
         const radiusM =
           result.summary.coverageRadiusMeters ?? result.summary.areaRadiusMeters ?? 300; // FIX
+        // JLM V2: drop radius scales with area (still capped) — not hard 250 forever
+        const COVERAGE_RADIUS_M = resolveCoverageRadiusM(spacingM, radiusM);
 
         const polygonPoints =
           drawnPolygon && drawnPolygon.length >= 3 ? drawnPolygon : null; // FIX
@@ -903,6 +912,7 @@ export function useTopologyRender(args: {
           type: 'kmz-customer',
         }));
         let osmBuildingsRaw: Array<{ lng: number; lat: number; osmId: number; type: string }>;
+        let buildingsSource = 'KMZ';
         if (kmzCustomers.length > 0) {
           toast.info(`③ Memakai ${kmzCustomers.length} titik pelanggan dari KMZ...`);
           osmBuildingsRaw = kmzCustomers;
@@ -916,16 +926,18 @@ export function useTopologyRender(args: {
               ) + 100;
           }
           queryRadius = Math.min(queryRadius, 2000);
-          osmBuildingsRaw = await backendBuildings(
+          const fetched = await backendBuildings(
             apiBase,
             authToken,
             target[1],
             target[0],
             queryRadius,
           );
+          osmBuildingsRaw = fetched.buildings;
+          buildingsSource = fetched.source;
         }
 
-        const osmBuildings = osmBuildingsRaw.filter((b) => {
+        let osmBuildings = osmBuildingsRaw.filter((b) => {
           if (boundary.type === 'polygon') {
             return isPointInPolygon(b.lng, b.lat, boundary.points);
           }
@@ -937,6 +949,51 @@ export function useTopologyRender(args: {
             boundary.radiusM,
           );
         });
+
+        // JLM V2 Homepass Detection: synthetic densitas fallback when OSM empty/error
+        let usedSyntheticHomepass = false;
+        if (kmzCustomers.length === 0 && osmBuildings.length === 0) {
+          const estimated = Math.max(
+            0,
+            Math.min(400, Number(result.homepass?.estimated) || Number(result.equipment?.odp?.count) * odpCapacityVal || 24),
+          );
+          if (estimated > 0) {
+            const synth = syntheticInsideBoundary(
+              target[0],
+              target[1],
+              estimated,
+              boundary.type === 'polygon'
+                ? { type: 'polygon', points: boundary.points }
+                : { type: 'circle', radiusM: boundary.radiusM },
+              Math.round(target[0] * 1000 + target[1] * 1000),
+            );
+            osmBuildings = synth.map((p, i) => ({
+              lng: p.lng,
+              lat: p.lat,
+              osmId: -(i + 1),
+              type: 'synthetic',
+            }));
+            usedSyntheticHomepass = osmBuildings.length > 0;
+            if (usedSyntheticHomepass) {
+              toast.warning(
+                buildingsSource === 'error'
+                  ? `③ OSM gagal diambil — memakai ${osmBuildings.length} Homepass estimasi densitas`
+                  : `③ OSM kosong di area — memakai ${osmBuildings.length} Homepass estimasi densitas`,
+              );
+            } else {
+              toast.warning(
+                '③ Tidak ada Homepass terdeteksi (OSM kosong/gagal & estimasi tidak bisa ditempatkan). Unggah KMZ pelanggan jika tersedia.',
+              );
+            }
+          } else {
+            toast.warning(
+              '③ Tidak ada Homepass terdeteksi di area. Unggah KMZ pelanggan atau perbesar Polygon/Radius.',
+            );
+          }
+        } else if (kmzCustomers.length === 0) {
+          toast.info(`③ ${osmBuildings.length} Homepass dari OSM (${buildingsSource})`);
+        }
+
         const hpPoints: HpPoint[] = osmBuildings.map((b) => ({ lng: b.lng, lat: b.lat }));
 
         const odpCount = resolveOdpTargetCount(apiOdpEstimate, hpPoints.length, odpCapacityVal);
@@ -1025,10 +1082,12 @@ export function useTopologyRender(args: {
             hpPoints.length > 500
               ? hpPoints.filter((_, i) => i % Math.ceil(hpPoints.length / 500) === 0)
               : hpPoints;
-          const clusters = clusterHomepassForOdp(clusterSource, odpCapacityVal).slice(
-            0,
-            gapFillTarget + 4,
-          );
+          const clusters = clusterHomepassForOdp(
+            clusterSource,
+            odpCapacityVal,
+            90,
+            Math.min(200, COVERAGE_RADIUS_M * 0.75),
+          ).slice(0, gapFillTarget + 4);
           const placedBatch = await mapPool(clusters, SNAP_CONCURRENCY, async (cluster) =>
             refineOdpCandidate(
               apiBase,
@@ -1096,13 +1155,26 @@ export function useTopologyRender(args: {
           }
         }
 
-        // Coverage completion loop — capped tightly to avoid API storms / endless spinner
-        const runAssign = () =>
-          assignHomepassToOdps(hpPoints, odpPositions, odpCapacityVal, COVERAGE_RADIUS_M);
+        // Coverage completion loop — try next unserved pocket on snap failure (JLM V2)
+        const runAssign = () => {
+          const first = assignHomepassToOdps(
+            hpPoints,
+            odpPositions,
+            odpCapacityVal,
+            COVERAGE_RADIUS_M,
+          );
+          return redistributeHomepassLoads(
+            first.assignments,
+            odpPositions,
+            odpCapacityVal,
+            COVERAGE_RADIUS_M,
+          );
+        };
 
         let { assignments: assignedHomepass, odpLoad } = runAssign();
         let coveragePass = 0;
-        const maxCoveragePasses = 6;
+        const maxCoveragePasses = 12;
+        let seedIndex = 0;
         while (
           assignedHomepass.some((h) => !h.covered) &&
           odpPositions.length < maxOdpCap &&
@@ -1112,7 +1184,13 @@ export function useTopologyRender(args: {
           const unservedPts = assignedHomepass
             .filter((h) => !h.covered)
             .map((h) => ({ lng: h.coords[0], lat: h.coords[1] }));
-          const seed = unservedClusterCentroid(unservedPts, odpCapacityVal);
+          const seed = unservedClusterCentroidAt(
+            unservedPts,
+            odpCapacityVal,
+            seedIndex,
+            Math.min(200, COVERAGE_RADIUS_M * 0.75),
+          );
+          seedIndex += 1;
           if (!seed) break;
           let placed = await refineOdpCandidate(
             apiBase,
@@ -1148,11 +1226,19 @@ export function useTopologyRender(args: {
               },
             );
           }
-          if (!placed) break;
+          // JLM V2: don't abort whole loop on one failed seed — try next pocket
+          if (!placed) continue;
+          const tooClose = odpPositions.some(
+            (e) => haversineM(placed![1], placed![0], e[1], e[0]) < MIN_ODP_SEP_M * 0.75,
+          );
+          if (tooClose) continue;
           odpPositions.push(placed);
           odpAddedForCoverage += 1;
           ({ assignments: assignedHomepass, odpLoad } = runAssign());
         }
+
+        // Final redistribution pass after gap-fill
+        ({ assignments: assignedHomepass, odpLoad } = runAssign());
 
         if (odpAddedForCoverage > 0) {
           toast.info(`④ Ditambah ${odpAddedForCoverage} ODP untuk menutup Homepass belum terlayani`);
@@ -1252,11 +1338,14 @@ export function useTopologyRender(args: {
           odpAddedForCoverage,
         );
 
+        const syntheticKeys = new Set(
+          osmBuildings.filter((b) => b.type === 'synthetic').map((b) => `${b.lng},${b.lat}`),
+        );
         // Export shape for KMZ + Excel (Tercover/Tidak Tercover)
         const homepassExport = validHomepass.map((h) => ({
           lng: h.coords[0], // FIX
           lat: h.coords[1], // FIX
-          isOsm: true, // FIX
+          isOsm: !syntheticKeys.has(`${h.coords[0]},${h.coords[1]}`),
           odpIndex: h.covered ? h.odpIdx + 1 : undefined, // FIX
           covered: h.covered, // FIX
         })); // FIX

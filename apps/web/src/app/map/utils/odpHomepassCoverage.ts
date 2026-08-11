@@ -71,12 +71,13 @@ function pickDensestSeed(remaining: HpPoint[], neighborRadiusM: number): number 
 
 /**
  * Greedy Homepass packing: grow clusters up to `capacity` around densest seeds.
- * Returns one centroid per cluster (candidate ODP positions).
+ * Stops packing a member when farther than maxClusterRadiusM (JLM V2).
  */
 export function clusterHomepassForOdp(
   points: HpPoint[],
   capacity: number,
   neighborRadiusM = 90,
+  maxClusterRadiusM = 180,
 ): Array<{ centroid: [number, number]; members: HpPoint[] }> {
   const cap = Math.max(1, capacity);
   const remaining = points.map((p) => ({ ...p }));
@@ -89,7 +90,7 @@ export function clusterHomepassForOdp(
 
     while (members.length < cap && remaining.length > 0) {
       const c = centroidOf(members);
-      let nearestIdx = 0;
+      let nearestIdx = -1;
       let nearestDist = Infinity;
       for (let i = 0; i < remaining.length; i++) {
         const d = haversineMeters(c[1], c[0], remaining[i].lat, remaining[i].lng);
@@ -98,7 +99,8 @@ export function clusterHomepassForOdp(
           nearestIdx = i;
         }
       }
-      // Prefer tight clusters; still pack remote leftovers into their own ODPs
+      // JLM V2: do not stretch one cluster beyond drop-cable reach
+      if (nearestIdx < 0 || nearestDist > maxClusterRadiusM) break;
       members.push(remaining[nearestIdx]);
       remaining.splice(nearestIdx, 1);
     }
@@ -121,11 +123,25 @@ export function resolveOdpTargetCount(
 }
 
 /** Soft ceiling so completion loop cannot explode ODP count / API storms. */
-export function resolveMaxOdpCap(targetCount: number, actualHomepass: number, capacity: number): number {
+export function resolveMaxOdpCap(
+  targetCount: number,
+  actualHomepass: number,
+  capacity: number,
+): number {
   const byCapacity =
     actualHomepass > 0 ? Math.ceil(actualHomepass / Math.max(1, capacity)) : targetCount;
-  const soft = Math.max(targetCount, byCapacity) + Math.max(4, Math.ceil(byCapacity * 0.2));
-  return Math.min(soft, Math.max(byCapacity + 12, 36));
+  const soft = Math.max(targetCount, byCapacity) + Math.max(6, Math.ceil(byCapacity * 0.25));
+  return Math.min(soft, Math.max(byCapacity + 16, 48));
+}
+
+/** Drop coverage radius — scale slightly for large areas without becoming unbounded. */
+export function resolveCoverageRadiusM(
+  spacingM: number,
+  areaRadiusM: number,
+): number {
+  const base = Math.max(250, spacingM * 3);
+  const scaled = Math.min(420, Math.max(base, areaRadiusM * 0.28));
+  return Math.round(scaled);
 }
 
 export function assignHomepassToOdps(
@@ -186,16 +202,73 @@ export function assignHomepassToOdps(
   return { assignments, odpLoad };
 }
 
+/**
+ * JLM V2 Dynamic Redistribution: move CAPACITY-unserved HP onto under-filled ODPs
+ * still within coverage radius (one-pass rebalance).
+ */
+export function redistributeHomepassLoads(
+  assignments: HpAssignment[],
+  odpPositions: [number, number][],
+  odpCapacity: number,
+  coverageRadiusM: number,
+): { assignments: HpAssignment[]; odpLoad: number[] } {
+  const next = assignments.map((a) => ({ ...a }));
+  const odpLoad = odpPositions.map(() => 0);
+  for (const a of next) {
+    if (a.covered && a.odpIdx >= 0) odpLoad[a.odpIdx] += 1;
+  }
+
+  for (let i = 0; i < next.length; i++) {
+    const a = next[i];
+    if (a.covered) continue;
+    if (a.reason !== 'CAPACITY' && a.reason !== 'DISTANCE') continue;
+
+    let best = -1;
+    let bestDist = Infinity;
+    odpPositions.forEach(([oLng, oLat], oi) => {
+      if (odpLoad[oi] >= odpCapacity) return;
+      const d = haversineMeters(a.coords[1], a.coords[0], oLat, oLng);
+      if (d > coverageRadiusM) return;
+      if (d < bestDist) {
+        best = oi;
+        bestDist = d;
+      }
+    });
+    if (best >= 0) {
+      odpLoad[best] += 1;
+      next[i] = { coords: a.coords, odpIdx: best, covered: true };
+    }
+  }
+
+  return { assignments: next, odpLoad };
+}
+
 /** Centroid of the largest remaining unserved pocket (for gap-fill ODP). */
 export function unservedClusterCentroid(
   unserved: HpPoint[],
   capacity: number,
+  maxClusterRadiusM = 180,
 ): [number, number] | null {
   if (unserved.length === 0) return null;
-  const clusters = clusterHomepassForOdp(unserved, capacity);
+  const clusters = clusterHomepassForOdp(unserved, capacity, 90, maxClusterRadiusM);
   if (clusters.length === 0) return null;
   clusters.sort((a, b) => b.members.length - a.members.length);
   return clusters[0].centroid;
+}
+
+/** N-th unserved pocket centroid (skip failed seeds without aborting gap-fill). */
+export function unservedClusterCentroidAt(
+  unserved: HpPoint[],
+  capacity: number,
+  index: number,
+  maxClusterRadiusM = 180,
+): [number, number] | null {
+  if (unserved.length === 0) return null;
+  const clusters = clusterHomepassForOdp(unserved, capacity, 90, maxClusterRadiusM);
+  if (clusters.length === 0) return null;
+  clusters.sort((a, b) => b.members.length - a.members.length);
+  const c = clusters[index % clusters.length];
+  return c ? c.centroid : null;
 }
 
 export function summarizeCoverage(
@@ -225,10 +298,22 @@ export function summarizeCoverage(
   };
 }
 
-export function formatCoverageToast(report: CoverageReport, capacity: number): {
+export function formatCoverageToast(
+  report: CoverageReport,
+  capacity: number,
+): {
   ok: boolean;
   message: string;
 } {
+  // JLM V2: never claim "cakupan lengkap" when Homepass detection produced 0
+  if (report.totalHomepass <= 0) {
+    return {
+      ok: false,
+      message:
+        '⚠️ Topologi selesai tanpa Homepass terdeteksi di area. ' +
+        'OSM mungkin kosong/gagal — coba lagi, unggah KMZ pelanggan, atau perbesar area.',
+    };
+  }
   const base =
     `${report.odpPlaced} ODP · ${report.covered} tercover / ${report.totalHomepass} homepass` +
     ` (kapasitas 1:${capacity})`;
