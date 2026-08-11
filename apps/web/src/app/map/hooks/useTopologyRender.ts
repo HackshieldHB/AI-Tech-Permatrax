@@ -281,9 +281,13 @@ async function computeOdpAlongRoads(
     return ALL_DIRECTIONS[idx];
   });
 
-  const routeResults = await Promise.allSettled(
-    selectedDirs.map((d) => backendRoute(apiBase, token, odcLng, odcLat, d.edgeLng, d.edgeLat)), // FIX
-  ); // FIX
+  const routeResults = await mapPool(selectedDirs, 3, async (d) => {
+    try {
+      return await backendRoute(apiBase, token, odcLng, odcLat, d.edgeLng, d.edgeLat);
+    } catch {
+      return null;
+    }
+  });
 
   // FIX: place ODPs along each route at spacingM intervals
   const allPositions: [number, number][] = []; // FIX
@@ -291,7 +295,7 @@ async function computeOdpAlongRoads(
   const odpsPerDir = Math.ceil(odpCount / numDirections); // FIX
 
   routeResults.forEach((result, i) => {
-    if (result.status !== 'fulfilled' || !result.value?.coordinates?.length) {
+    if (!result?.coordinates?.length) {
       // FIX: fallback straight line for this direction
       const d = selectedDirs[i]; // FIX
       const pts = placeOdpsAlongRoute(
@@ -310,7 +314,7 @@ async function computeOdpAlongRoads(
       return; // FIX
     } // FIX
 
-    const coords = result.value.coordinates; // FIX
+    const coords = result.coordinates; // FIX
     // FIX: place ODPs at regular intervals along this road route
     const pts = placeOdpsAlongRoute(coords, odpsPerDir, spacingM); // FIX
     pts.forEach((p) => allPositions.push(p)); // FIX
@@ -568,7 +572,26 @@ function isInsideBoundary(lng: number, lat: number, boundary: AreaBoundary): boo
   return isPointInCircle(lng, lat, boundary.centerLng, boundary.centerLat, boundary.radiusM);
 }
 
-/** Snap → boundary → building clearance → min separation. Returns null if unsalvageable. */
+/** Soft concurrency pool — avoids nginx permatrax_api rate-limit storms. */
+async function mapPool<T, R>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  const runners = Array.from({ length: Math.max(1, concurrency) }, async () => {
+    while (next < items.length) {
+      const i = next;
+      next += 1;
+      results[i] = await worker(items[i], i);
+    }
+  });
+  await Promise.all(runners);
+  return results;
+}
+
+/** Snap → boundary → soft clearance. Max 2 network snaps (was up to 9). */
 async function refineOdpCandidate(
   apiBase: string,
   token: string,
@@ -576,39 +599,52 @@ async function refineOdpCandidate(
   boundary: AreaBoundary,
   buildings: HpPoint[],
   existing: [number, number][],
-  opts?: { minSepM?: number; buildingClearanceM?: number },
+  opts?: { minSepM?: number; buildingClearanceM?: number; skipBuildingClearance?: boolean },
 ): Promise<[number, number] | null> {
   const minSepM = opts?.minSepM ?? 30;
-  const buildingClearanceM = opts?.buildingClearanceM ?? 12;
-  const tryPoint = async (raw: [number, number]): Promise<[number, number] | null> => {
-    const snapped = await backendSnap(apiBase, token, raw[0], raw[1]);
-    const clamped = verifyOdpInBoundary(snapped, boundary);
-    if (!isInsideBoundary(clamped[0], clamped[1], boundary)) return null;
-    const nearBuilding = buildings.some(
-      (b) => haversineM(clamped[1], clamped[0], b.lat, b.lng) < buildingClearanceM,
-    );
-    if (nearBuilding) return null;
-    const nearOdp = existing.some(
-      (e) => haversineM(clamped[1], clamped[0], e[1], e[0]) < minSepM,
-    );
-    if (nearOdp) return null;
-    return clamped;
+  const buildingClearanceM = opts?.buildingClearanceM ?? 8;
+  const skipBuilding = opts?.skipBuildingClearance === true;
+
+  const accept = (p: [number, number]): [number, number] | null => {
+    if (!isInsideBoundary(p[0], p[1], boundary)) return null;
+    if (
+      !skipBuilding &&
+      buildings.some((b) => haversineM(p[1], p[0], b.lat, b.lng) < buildingClearanceM)
+    ) {
+      return null;
+    }
+    if (existing.some((e) => haversineM(p[1], p[0], e[1], e[0]) < minSepM)) return null;
+    return p;
   };
 
-  const direct = await tryPoint(seed);
-  if (direct) return direct;
+  // 1 network snap only
+  const snapped = await backendSnap(apiBase, token, seed[0], seed[1]);
+  const clamped = verifyOdpInBoundary(snapped, boundary);
+  const ok = accept(clamped);
+  if (ok) return ok;
 
-  for (let attempt = 1; attempt <= 8; attempt++) {
-    const bearing = ((attempt * 45) * Math.PI) / 180;
-    const dM = buildingClearanceM + attempt * 6;
+  // Local nudges without extra snap (avoid rate-limit); one optional re-snap on best nudge
+  let bestNudge: [number, number] | null = null;
+  for (let attempt = 1; attempt <= 6; attempt++) {
+    const bearing = ((attempt * 60) * Math.PI) / 180;
+    const dM = Math.max(buildingClearanceM, 10) + attempt * 8;
     const dLat = (dM / 6371000) * (180 / Math.PI) * Math.cos(bearing);
     const dLng =
       ((dM / 6371000) * (180 / Math.PI) * Math.sin(bearing)) /
       Math.max(0.2, Math.cos((seed[1] * Math.PI) / 180));
-    const rescued = await tryPoint([seed[0] + dLng, seed[1] + dLat]);
-    if (rescued) return rescued;
+    const nudged = verifyOdpInBoundary([seed[0] + dLng, seed[1] + dLat], boundary);
+    const localOk = accept(nudged);
+    if (localOk) {
+      bestNudge = localOk;
+      break;
+    }
   }
-  return null;
+  if (!bestNudge) return null;
+
+  // Optional second snap on the nudged point
+  const reSnapped = await backendSnap(apiBase, token, bestNudge[0], bestNudge[1]);
+  const reClamped = verifyOdpInBoundary(reSnapped, boundary);
+  return accept(reClamped) ?? bestNudge;
 }
 
 function polygonMaxRadiusFromCenter(
@@ -975,27 +1011,47 @@ export function useTopologyRender(args: {
           toast.info(`④ Menempatkan ${odpCount} ODP Homepass-first (cluster → snap jalan)...`);
         }
 
-        const BUILDING_CLEARANCE_M = 12;
+        const BUILDING_CLEARANCE_M = 6;
         const MIN_ODP_SEP_M = 30;
+        const SNAP_CONCURRENCY = 3;
         let odpPositions: [number, number][] = [...lockedExistingOdps];
         let spokeRoutes: [number, number][][] = [];
         let odpAddedForCoverage = 0;
 
-        // Primary: one ODP candidate per Homepass cluster (centroid)
+        // Primary: Homepass-first — place up to gapFillTarget cluster centroids (batched snaps)
         if (gapFillTarget > 0 && hpPoints.length > 0) {
-          const clusters = clusterHomepassForOdp(hpPoints, odpCapacityVal);
-          for (const cluster of clusters) {
-            if (odpPositions.length >= odpCount) break;
-            const placed = await refineOdpCandidate(
+          // Cap clustering cost on dense OSM extracts
+          const clusterSource =
+            hpPoints.length > 500
+              ? hpPoints.filter((_, i) => i % Math.ceil(hpPoints.length / 500) === 0)
+              : hpPoints;
+          const clusters = clusterHomepassForOdp(clusterSource, odpCapacityVal).slice(
+            0,
+            gapFillTarget + 4,
+          );
+          const placedBatch = await mapPool(clusters, SNAP_CONCURRENCY, async (cluster) =>
+            refineOdpCandidate(
               apiBase,
               authToken,
               cluster.centroid,
               boundary,
               hpPoints,
               odpPositions,
-              { minSepM: MIN_ODP_SEP_M, buildingClearanceM: BUILDING_CLEARANCE_M },
+              {
+                minSepM: MIN_ODP_SEP_M,
+                buildingClearanceM: BUILDING_CLEARANCE_M,
+                // Homepass-first seeds sit among buildings — don't reject every candidate
+                skipBuildingClearance: true,
+              },
+            ),
+          );
+          for (const p of placedBatch) {
+            if (!p) continue;
+            if (odpPositions.length >= odpCount) break;
+            const tooClose = odpPositions.some(
+              (e) => haversineM(p[1], p[0], e[1], e[0]) < MIN_ODP_SEP_M,
             );
-            if (placed) odpPositions.push(placed);
+            if (!tooClose) odpPositions.push(p);
           }
         }
 
@@ -1012,31 +1068,45 @@ export function useTopologyRender(args: {
             radiusM,
           );
           spokeRoutes = computed.routes;
-          for (const raw of computed.positions) {
+          const roadPlaced = await mapPool(
+            computed.positions.slice(0, stillNeed + 4),
+            SNAP_CONCURRENCY,
+            async (raw) =>
+              refineOdpCandidate(
+                apiBase,
+                authToken,
+                raw,
+                boundary,
+                hpPoints,
+                odpPositions,
+                {
+                  minSepM: MIN_ODP_SEP_M,
+                  buildingClearanceM: BUILDING_CLEARANCE_M,
+                  skipBuildingClearance: false,
+                },
+              ),
+          );
+          for (const p of roadPlaced) {
+            if (!p) continue;
             if (odpPositions.length >= odpCount) break;
-            const placed = await refineOdpCandidate(
-              apiBase,
-              authToken,
-              raw,
-              boundary,
-              hpPoints,
-              odpPositions,
-              { minSepM: MIN_ODP_SEP_M, buildingClearanceM: BUILDING_CLEARANCE_M },
+            const tooClose = odpPositions.some(
+              (e) => haversineM(p[1], p[0], e[1], e[0]) < MIN_ODP_SEP_M,
             );
-            if (placed) odpPositions.push(placed);
+            if (!tooClose) odpPositions.push(p);
           }
         }
 
-        // Coverage completion loop: add ODP near largest unserved pocket until covered or cap
+        // Coverage completion loop — capped tightly to avoid API storms / endless spinner
         const runAssign = () =>
           assignHomepassToOdps(hpPoints, odpPositions, odpCapacityVal, COVERAGE_RADIUS_M);
 
         let { assignments: assignedHomepass, odpLoad } = runAssign();
         let coveragePass = 0;
+        const maxCoveragePasses = 6;
         while (
           assignedHomepass.some((h) => !h.covered) &&
           odpPositions.length < maxOdpCap &&
-          coveragePass < 24
+          coveragePass < maxCoveragePasses
         ) {
           coveragePass += 1;
           const unservedPts = assignedHomepass
@@ -1044,37 +1114,42 @@ export function useTopologyRender(args: {
             .map((h) => ({ lng: h.coords[0], lat: h.coords[1] }));
           const seed = unservedClusterCentroid(unservedPts, odpCapacityVal);
           if (!seed) break;
-          const placed = await refineOdpCandidate(
+          let placed = await refineOdpCandidate(
             apiBase,
             authToken,
             seed,
             boundary,
             hpPoints,
             odpPositions,
-            { minSepM: MIN_ODP_SEP_M, buildingClearanceM: BUILDING_CLEARANCE_M },
+            {
+              minSepM: MIN_ODP_SEP_M,
+              buildingClearanceM: BUILDING_CLEARANCE_M,
+              skipBuildingClearance: true,
+            },
           );
           if (!placed) {
-            // Nudge seed farther from existing ODPs and retry once per pass
             const bearing = ((coveragePass * 37) * Math.PI) / 180;
-            const dM = 40 + coveragePass * 5;
+            const dM = 40 + coveragePass * 8;
             const dLat = (dM / 6371000) * (180 / Math.PI) * Math.cos(bearing);
             const dLng =
               ((dM / 6371000) * (180 / Math.PI) * Math.sin(bearing)) /
               Math.max(0.2, Math.cos((seed[1] * Math.PI) / 180));
-            const retry = await refineOdpCandidate(
+            placed = await refineOdpCandidate(
               apiBase,
               authToken,
               [seed[0] + dLng, seed[1] + dLat],
               boundary,
               hpPoints,
               odpPositions,
-              { minSepM: MIN_ODP_SEP_M * 0.8, buildingClearanceM: BUILDING_CLEARANCE_M },
+              {
+                minSepM: MIN_ODP_SEP_M * 0.75,
+                buildingClearanceM: BUILDING_CLEARANCE_M,
+                skipBuildingClearance: true,
+              },
             );
-            if (!retry) break;
-            odpPositions.push(retry);
-          } else {
-            odpPositions.push(placed);
           }
+          if (!placed) break;
+          odpPositions.push(placed);
           odpAddedForCoverage += 1;
           ({ assignments: assignedHomepass, odpLoad } = runAssign());
         }
@@ -1083,7 +1158,7 @@ export function useTopologyRender(args: {
           toast.info(`④ Ditambah ${odpAddedForCoverage} ODP untuk menutup Homepass belum terlayani`);
         }
 
-        // ── STEP ⑤: Distribution — cascade chain routing ──
+        // ── STEP ⑤: Distribution — cascade chain routing (throttled) ──
         toast.info('⑤ Menghitung jalur distribusi (cascade)...'); // FIX
 
         const cascadeRoutes = buildCascadeRoutes(
@@ -1093,22 +1168,43 @@ export function useTopologyRender(args: {
           spacingM,
         );
 
-        const distRouteResults = await Promise.allSettled(
-          cascadeRoutes.map(([from, to]) =>
-            backendRoute(apiBase, authToken, from[0], from[1], to[0], to[1]),
-          ),
-        );
-
-        const distRoutes: [number, number][][] = distRouteResults.map((r, i) =>
-          r.status === 'fulfilled' && r.value?.coordinates?.length
-            ? r.value.coordinates
-            : ([cascadeRoutes[i][0], cascadeRoutes[i][1]] as [number, number][]),
-        );
-        const distRouteIsStraight: boolean[] = distRouteResults.map((r) =>
-          r.status === 'fulfilled'
-            ? r.value?.source === 'straight' || (r.value?.coordinates?.length ?? 0) <= 2
-            : true,
-        );
+        // Prefer 1 multi-route call when chain is short; else throttle parallel /map/route
+        let distRoutes: [number, number][][] = [];
+        let distRouteIsStraight: boolean[] = [];
+        if (cascadeRoutes.length > 0 && cascadeRoutes.length <= 12) {
+          const waypoints: Array<[number, number]> = [cascadeRoutes[0][0]];
+          cascadeRoutes.forEach(([, to]) => waypoints.push(to));
+          const segments = await backendMultiRoute(apiBase, authToken, waypoints);
+          if (segments.length === cascadeRoutes.length) {
+            distRoutes = segments.map((s, i) =>
+              s.coordinates?.length
+                ? s.coordinates
+                : ([cascadeRoutes[i][0], cascadeRoutes[i][1]] as [number, number][]),
+            );
+            distRouteIsStraight = distRoutes.map((coords) => coords.length <= 2);
+          }
+        }
+        if (distRoutes.length === 0) {
+          const distRouteResults = await mapPool(cascadeRoutes, 3, async ([from, to]) => {
+            try {
+              return await backendRoute(apiBase, authToken, from[0], from[1], to[0], to[1]);
+            } catch {
+              return {
+                coordinates: [from, to] as [number, number][],
+                distanceM: 0,
+                source: 'straight' as const,
+              };
+            }
+          });
+          distRoutes = distRouteResults.map((r, i) =>
+            r?.coordinates?.length
+              ? r.coordinates
+              : ([cascadeRoutes[i][0], cascadeRoutes[i][1]] as [number, number][]),
+          );
+          distRouteIsStraight = distRouteResults.map((r) =>
+            r?.source === 'straight' || (r?.coordinates?.length ?? 0) <= 2,
+          );
+        }
 
         // Preserve homepass coordinates carried across recalculations (keep their ODP if valid)
         const preservedHomepass = Array.isArray(result.homepassPoints) ? result.homepassPoints : [];

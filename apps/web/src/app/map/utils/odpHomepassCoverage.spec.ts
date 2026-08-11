@@ -78,6 +78,6 @@ describe('odpHomepassCoverage', () => {
 
   it('caps max ODP soft ceiling', () => {
     expect(resolveMaxOdpCap(5, 40, 8)).toBeGreaterThanOrEqual(5);
-    expect(resolveMaxOdpCap(5, 40, 8)).toBeLessThanOrEqual(80);
+    expect(resolveMaxOdpCap(5, 40, 8)).toBeLessThanOrEqual(36);
   });
 });

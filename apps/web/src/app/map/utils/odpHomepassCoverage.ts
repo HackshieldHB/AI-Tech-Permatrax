@@ -120,12 +120,12 @@ export function resolveOdpTargetCount(
   return Math.max(1, apiEstimateCount || 0, byCapacity);
 }
 
-/** Soft ceiling so completion loop cannot explode ODP count. */
+/** Soft ceiling so completion loop cannot explode ODP count / API storms. */
 export function resolveMaxOdpCap(targetCount: number, actualHomepass: number, capacity: number): number {
   const byCapacity =
     actualHomepass > 0 ? Math.ceil(actualHomepass / Math.max(1, capacity)) : targetCount;
-  const soft = Math.max(targetCount, byCapacity) + Math.max(8, Math.ceil(byCapacity * 0.35));
-  return Math.min(soft, Math.max(byCapacity + 40, 80));
+  const soft = Math.max(targetCount, byCapacity) + Math.max(4, Math.ceil(byCapacity * 0.2));
+  return Math.min(soft, Math.max(byCapacity + 12, 36));
 }
 
 export function assignHomepassToOdps(
