@@ -64,6 +64,16 @@ export type TopoExportData = {
   straightRouteCount?: number;
   /** Locked existing ODPs (from KMZ / manual) that were not regenerated */
   existingOdpCount?: number;
+  /** JLM Homepass coverage: served/unserved + reason codes after Kalkulasi AI */
+  coverageReport?: {
+    totalHomepass: number;
+    covered: number;
+    unserved: number;
+    reasons: { CAPACITY: number; DISTANCE: number; NO_ODP: number };
+    odpPlaced: number;
+    odpTarget: number;
+    odpAddedForCoverage: number;
+  };
 }; // FIX
 
 // FIX: shape of POST /map/calculate response (enhanced FTTH topology)

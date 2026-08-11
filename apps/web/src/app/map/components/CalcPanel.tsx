@@ -814,6 +814,49 @@ export function CalcPanel(props: CalcPanelProps) {
                           manual.
                         </div>
                       )}
+                      {topoExportData?.coverageReport && (
+                        <div
+                          style={{
+                            fontSize: 11,
+                            marginTop: 6,
+                            lineHeight: 1.45,
+                            color:
+                              topoExportData.coverageReport.unserved > 0 ? '#B45309' : '#166534',
+                          }}
+                        >
+                          Homepass: {topoExportData.coverageReport.covered}/
+                          {topoExportData.coverageReport.totalHomepass} tercover ·{' '}
+                          {topoExportData.coverageReport.odpPlaced} ODP
+                          {topoExportData.coverageReport.unserved > 0 && (
+                            <>
+                              {' '}
+                              · {topoExportData.coverageReport.unserved} belum terlayani
+                              {(topoExportData.coverageReport.reasons.CAPACITY > 0 ||
+                                topoExportData.coverageReport.reasons.DISTANCE > 0 ||
+                                topoExportData.coverageReport.reasons.NO_ODP > 0) && (
+                                <>
+                                  {' '}
+                                  (
+                                  {[
+                                    topoExportData.coverageReport.reasons.CAPACITY
+                                      ? `${topoExportData.coverageReport.reasons.CAPACITY} kapasitas`
+                                      : null,
+                                    topoExportData.coverageReport.reasons.DISTANCE
+                                      ? `${topoExportData.coverageReport.reasons.DISTANCE} jarak`
+                                      : null,
+                                    topoExportData.coverageReport.reasons.NO_ODP
+                                      ? `${topoExportData.coverageReport.reasons.NO_ODP} tanpa ODP`
+                                      : null,
+                                  ]
+                                    .filter(Boolean)
+                                    .join(', ')}
+                                  )
+                                </>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      )}
                     </div>
 
                     {/* FIX: Export buttons — show after calculation */}
