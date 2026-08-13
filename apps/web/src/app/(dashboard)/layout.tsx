@@ -20,6 +20,7 @@ import { useAuthStore } from '../../store/authStore';
 import { ProfileAvatar } from '../../components/ProfileAvatar';
 import { useNotificationStore } from '../../store/notificationStore';
 import { ErrorBoundary } from '../../components/ErrorBoundary';
+import { PermatraxChatbot } from '../../components/ai-chatbot/PermatraxChatbot';
 
 const jakarta = Plus_Jakarta_Sans({
   subsets: ['latin'],
@@ -119,7 +120,16 @@ const NAV_ITEMS: NavItem[] = [
     label: 'FTTT Projects',
     icon: Database,
     section: 'OPERASIONAL',
-    roles: ['PM_FTTT', 'SURVEYOR_FTTT', 'ADMIN', 'GENERAL_MANAGER', 'ADMIN_STOCK', 'FINANCE'],
+    // PAI V9 URGENT: PM Senior = read-only monitoring (API view-all; mutations stay PM_FTTT/Admin/GM)
+    roles: [
+      'PM_FTTT',
+      'PM_SENIOR',
+      'SURVEYOR_FTTT',
+      'ADMIN',
+      'GENERAL_MANAGER',
+      'ADMIN_STOCK',
+      'FINANCE',
+    ],
   },
   {
     href: '/approval-dana',
@@ -217,7 +227,8 @@ const NAV_ITEMS: NavItem[] = [
     label: 'Finance Projects',
     icon: PiggyBank,
     section: 'DASHBOARD',
-    roles: ['FINANCE', 'GENERAL_MANAGER', 'ADMIN', 'OPERATIONAL_MANAGER'], // FIX 8
+    // PAI V9 URGENT: PM Senior view/monitor FTTH+FTTT finance hierarchy (manage stays Finance/GM)
+    roles: ['FINANCE', 'GENERAL_MANAGER', 'ADMIN', 'OPERATIONAL_MANAGER', 'PM_SENIOR'],
   },
   { href: '/settings', label: 'Pengaturan', icon: Settings, section: 'MANAJEMEN', gmOnly: true },
   { href: '/guide', label: 'Panduan', icon: HelpCircle, section: 'UTILITAS' },
@@ -1214,12 +1225,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         </main>
       </div>
 
-      {/* FIX: floating banner shown only when backend is unreachable — tells the user exactly what to do */}
+      {/* FIX: floating banner shown only when backend is unreachable — above chatbot FAB */}
       {backendStatus === 'error' && (
         <div
           style={{
             position: 'fixed',
-            bottom: 16,
+            bottom: 84,
             right: 16,
             zIndex: 9999,
             padding: '12px 18px',
@@ -1258,6 +1269,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           </button>
         </div>
       )}
+
+      <PermatraxChatbot />
     </div>
   );
 }

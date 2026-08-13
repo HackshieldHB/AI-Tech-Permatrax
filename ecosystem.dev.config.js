@@ -48,7 +48,11 @@ module.exports = {
         NODE_ENV: 'production',
         PORT: 3002,
         BASE_PATH: '/Permatrax',   // serves under aitech-ilt.co.id/Permatrax
+        NEXT_PUBLIC_BASE_PATH: '/Permatrax',
         API_URL: 'http://localhost:3003',
+        // Also bake these at `pnpm build` via apps/web/.env.local (Next inlines NEXT_PUBLIC_*)
+        NEXT_PUBLIC_API_URL: 'https://aitech-ilt.co.id/Permatrax/api',
+        NEXT_PUBLIC_FILES_URL: 'https://aitech-ilt.co.id/Permatrax/api/files',
       },
       error_file: '/var/log/pm2/permatrax-dev-web-error.log',
       out_file: '/var/log/pm2/permatrax-dev-web-out.log',
@@ -82,6 +86,10 @@ module.exports = {
         UPLOAD_DIR: '/var/www/permatrax-dev/uploads',
         FILE_BASE_URL: 'https://aitech-ilt.co.id/Permatrax/api/files',
         MAX_FILE_SIZE: '52428800',
+        // PAI P3: optional Ollama slot fill (heuristic always remains fallback)
+        PAI_SLOT_FILL: 'true',
+        OLLAMA_URL: 'http://127.0.0.1:11434',
+        OLLAMA_MODEL: 'llama3.2',
       },
       error_file: '/var/log/pm2/permatrax-dev-api-error.log',
       out_file: '/var/log/pm2/permatrax-dev-api-out.log',

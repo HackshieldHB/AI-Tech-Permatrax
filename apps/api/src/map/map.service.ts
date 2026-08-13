@@ -699,7 +699,7 @@ export class MapService {
     }); // FIX
   }
 
-  // FIX: get OSM buildings in radius via Overpass API
+  // FIX: get OSM buildings in radius via Overpass API (multi-mirror + relations)
   async getBuildings(
     lat: number,
     lon: number,
@@ -711,85 +711,98 @@ export class MapService {
   }> {
     // FIX: cache key
     const r = Math.min(radiusM, 2000); // FIX: cap at 2km
-    const cacheKey = `map:buildings:${lat.toFixed(4)},${lon.toFixed(4)},${r}`; // FIX
+    const cacheKey = `map:buildings:v2:${lat.toFixed(4)},${lon.toFixed(4)},${r}`; // FIX
     const cached = await this.redisJsonGet<{
       buildings: Array<{ lng: number; lat: number; osmId: number; type: string }>;
       total: number;
       source: string;
     }>(cacheKey); // FIX
-    if (cached) {
+    if (cached && cached.source !== 'error') {
       this.logger.debug(`Buildings cache HIT: ${cacheKey} (${cached.total} bldg)`); // FIX
       return cached; // FIX
     }
 
-    // FIX: Overpass query for buildings + residential areas
+    // JLM V2: include relations + residential; multi-mirror for Indonesia sparse coverage
     const query = `
-      [out:json][timeout:20];
+      [out:json][timeout:25];
       (
         way["building"](around:${r},${lat},${lon});
         node["building"](around:${r},${lat},${lon});
+        relation["building"](around:${r},${lat},${lon});
         way["building:use"="residential"](around:${r},${lat},${lon});
         way["landuse"="residential"](around:${r},${lat},${lon});
       );
       out center;
-    `; // FIX
+    `;
 
-    try {
-      const res = await fetch('https://overpass-api.de/api/interpreter', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'User-Agent': 'PermaTrax-GIS/1.0',
-        },
-        body: `data=${encodeURIComponent(query)}`,
-        signal: AbortSignal.timeout(22000),
-      }); // FIX
+    const mirrors = [
+      'https://overpass-api.de/api/interpreter',
+      'https://overpass.kumi.systems/api/interpreter',
+      'https://overpass.openstreetmap.ru/api/interpreter',
+    ];
 
-      if (!res.ok) throw new Error(`Overpass HTTP ${res.status}`); // FIX
-      const data = await res.json(); // FIX
-
-      const buildings = (data.elements || [])
-        .filter((el: { type?: string; lat?: number; lon?: number; center?: { lat: number; lon: number } }) => {
-          // FIX: get center coordinates
-          if (el.type === 'node') return el.lat != null && el.lon != null; // FIX
-          return el.center != null && el.center.lat != null && el.center.lon != null; // FIX
+    const parseBuildings = (data: {
+      elements?: Array<{
+        id: number;
+        type?: string;
+        lat?: number;
+        lon?: number;
+        center?: { lat: number; lon: number };
+        tags?: { building?: string; landuse?: string };
+      }>;
+    }) =>
+      (data.elements || [])
+        .filter((el) => {
+          if (el.type === 'node') return el.lat != null && el.lon != null;
+          return el.center != null && el.center.lat != null && el.center.lon != null;
         })
-        .map(
-          (el: {
-            id: number;
-            type?: string;
-            lat?: number;
-            lon?: number;
-            center?: { lat: number; lon: number };
-            tags?: { building?: string; landuse?: string };
-          }) => {
-            const latOut = el.lat ?? el.center!.lat; // FIX
-            const lonOut = el.lon ?? el.center!.lon; // FIX
-            return {
-              lng: lonOut,
-              lat: latOut,
-              osmId: el.id,
-              type: el.tags?.building || el.tags?.landuse || 'yes',
-            }; // FIX
+        .map((el) => {
+          const latOut = el.lat ?? el.center!.lat;
+          const lonOut = el.lon ?? el.center!.lon;
+          return {
+            lng: lonOut,
+            lat: latOut,
+            osmId: el.id,
+            type: el.tags?.building || el.tags?.landuse || 'yes',
+          };
+        });
+
+    let lastErr = '';
+    for (const mirror of mirrors) {
+      try {
+        const res = await fetch(mirror, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'User-Agent': 'PermaTrax-GIS/1.0',
           },
-        ); // FIX
-
-      const result = {
-        buildings,
-        total: buildings.length,
-        source: 'OSM Overpass',
-      }; // FIX
-
-      // FIX: cache 30 minutes
-      await this.redisJsonSet(cacheKey, result, 1800); // FIX
-      this.logger.debug(`Overpass buildings: ${buildings.length} in ${r}m`); // FIX
-      return result; // FIX
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err); // FIX
-      this.logger.warn(`Overpass failed: ${msg}`); // FIX
-      // FIX: return empty — frontend will use synthetic fallback
-      return { buildings: [], total: 0, source: 'error' }; // FIX
+          body: `data=${encodeURIComponent(query)}`,
+          signal: AbortSignal.timeout(28000),
+        });
+        if (!res.ok) throw new Error(`Overpass HTTP ${res.status} (${mirror})`);
+        const data = await res.json();
+        const buildings = parseBuildings(data);
+        const result = {
+          buildings,
+          total: buildings.length,
+          source: buildings.length > 0 ? 'OSM Overpass' : 'OSM empty',
+        };
+        // Cache non-empty 30m. Do NOT cache empty — Overpass flakiness was poisoning
+        // Homepass placement into random densitas (JLM V4 Issue 1, esp. ODP 1:8).
+        if (buildings.length > 0) {
+          await this.redisJsonSet(cacheKey, result, 1800);
+        }
+        this.logger.debug(`Overpass buildings: ${buildings.length} in ${r}m via ${mirror}`);
+        return result;
+      } catch (err: unknown) {
+        lastErr = err instanceof Error ? err.message : String(err);
+        this.logger.warn(`Overpass mirror failed (${mirror}): ${lastErr}`);
+      }
     }
+
+    this.logger.warn(`Overpass all mirrors failed: ${lastErr}`);
+    // Do NOT cache errors — frontend may fall back to synthetic densitas
+    return { buildings: [], total: 0, source: 'error' };
   }
 
   // FIX: FTTH network calculation — corrected area/density, IDR, power budget (link margin)

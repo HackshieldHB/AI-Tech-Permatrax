@@ -8,6 +8,24 @@ import { API_BASE } from '../../../lib/api';
 import { useAuthStore } from '../../../store/authStore';
 import { useDesignStore } from '../../../store/useDesignStore';
 import { extractHomepassPoints } from '../utils/geojsonMapper';
+import {
+  assignHomepassToOdps,
+  clusterHomepassForOdp,
+  expandHomepassViaPeers,
+  formatCoverageToast,
+  redistributeHomepassLoads,
+  resolveCoverageGapFillPasses,
+  resolveCoverageRadiusM,
+  resolveMaxOdpCap,
+  resolveMaxPeerHopM,
+  resolveOdpTargetCount,
+  shouldUseSyntheticDensitasFallback,
+  summarizeCoverage,
+  unservedClusterCentroidAt,
+  type CoverageReport,
+  type HpAssignment,
+  type HpPoint,
+} from '../utils/odpHomepassCoverage';
 import type { FtthCalcApiResponse, TopoExportData } from './types';
 
 export type LastRenderedGeometry = {
@@ -38,6 +56,7 @@ const TOPO_LAYER_IDS = [
   'topo-dist-line', // FIX
   'topo-dist-line-straight', // GIS Issue 4: dashed fallback overlay
   'topo-drop-line', // FIX
+  'topo-drop-peer-line', // JLM V3: peer-to-peer Homepass drops
   'topo-homepass-circle', // FIX: reserved id if used
   'topo-homepass-label', // FIX: restore stored homepass labels
   'topo-ont-circle', // FIX
@@ -159,14 +178,17 @@ async function backendSnap(
   }
 }
 
-// FIX: get OSM buildings via backend proxy
+// FIX: get OSM buildings via backend proxy (returns source for JLM V2 detection UX)
 async function backendBuildings(
   apiBase: string, // FIX
   token: string, // FIX
   lat: number, // FIX
   lon: number, // FIX
   radiusM: number, // FIX
-): Promise<Array<{ lng: number; lat: number; osmId: number; type: string }>> {
+): Promise<{
+  buildings: Array<{ lng: number; lat: number; osmId: number; type: string }>;
+  source: string;
+}> {
   try {
     const res = await fetch(
       `${apiBase}/map/buildings?lat=${lat}&lon=${lon}&radius=${Math.min(radiusM, 2000)}`, // FIX
@@ -175,14 +197,17 @@ async function backendBuildings(
           Authorization: `Bearer ${token}`, // FIX
           'ngrok-skip-browser-warning': 'true', // FIX
         }, // FIX
-        signal: AbortSignal.timeout(25000), // FIX
+        signal: AbortSignal.timeout(45000), // FIX: align with Nest @TimeoutMs(45000)
       },
     ); // FIX
     if (!res.ok) throw new Error(`buildings HTTP ${res.status}`); // FIX
     const data = await res.json(); // FIX
-    return data.buildings || []; // FIX
+    return {
+      buildings: data.buildings || [],
+      source: typeof data.source === 'string' ? data.source : 'OSM Overpass',
+    };
   } catch {
-    return []; // FIX: empty — fallback to synthetic
+    return { buildings: [], source: 'error' };
   }
 }
 
@@ -227,11 +252,8 @@ function placeOdpsAlongRoute(
     placedAt += spacingM; // FIX
   }
 
-  // FIX: if route too short, add remaining at end
-  while (positions.length < odpCount) {
-    positions.push(routeCoords[routeCoords.length - 1]); // FIX
-  }
-
+  // JLM Issue 4: do NOT pad with duplicate endpoints (caused stacked ODPs).
+  // Short routes simply contribute fewer candidates; caller pads via other directions.
   return positions.slice(0, odpCount); // FIX
 }
 
@@ -265,13 +287,21 @@ async function computeOdpAlongRoads(
     }; // FIX
   }); // FIX
 
-  // FIX: get road routes from ODC to each direction
+  // JLM Issue 4: sample evenly around the compass (not a contiguous 0°–135° sector)
   const numDirections = Math.min(8, Math.max(4, Math.ceil(odpCount / 3))); // FIX
-  const selectedDirs = ALL_DIRECTIONS.slice(0, numDirections); // FIX
+  const step = ALL_DIRECTIONS.length / numDirections;
+  const selectedDirs = Array.from({ length: numDirections }, (_, i) => {
+    const idx = Math.min(ALL_DIRECTIONS.length - 1, Math.round(i * step) % ALL_DIRECTIONS.length);
+    return ALL_DIRECTIONS[idx];
+  });
 
-  const routeResults = await Promise.allSettled(
-    selectedDirs.map((d) => backendRoute(apiBase, token, odcLng, odcLat, d.edgeLng, d.edgeLat)), // FIX
-  ); // FIX
+  const routeResults = await mapPool(selectedDirs, 3, async (d) => {
+    try {
+      return await backendRoute(apiBase, token, odcLng, odcLat, d.edgeLng, d.edgeLat);
+    } catch {
+      return null;
+    }
+  });
 
   // FIX: place ODPs along each route at spacingM intervals
   const allPositions: [number, number][] = []; // FIX
@@ -279,7 +309,7 @@ async function computeOdpAlongRoads(
   const odpsPerDir = Math.ceil(odpCount / numDirections); // FIX
 
   routeResults.forEach((result, i) => {
-    if (result.status !== 'fulfilled' || !result.value?.coordinates?.length) {
+    if (!result?.coordinates?.length) {
       // FIX: fallback straight line for this direction
       const d = selectedDirs[i]; // FIX
       const pts = placeOdpsAlongRoute(
@@ -298,7 +328,7 @@ async function computeOdpAlongRoads(
       return; // FIX
     } // FIX
 
-    const coords = result.value.coordinates; // FIX
+    const coords = result.coordinates; // FIX
     // FIX: place ODPs at regular intervals along this road route
     const pts = placeOdpsAlongRoute(coords, odpsPerDir, spacingM); // FIX
     pts.forEach((p) => allPositions.push(p)); // FIX
@@ -314,11 +344,23 @@ async function computeOdpAlongRoads(
     if (!tooClose) deduped.push(pos); // FIX
   }); // FIX
 
-  // FIX: pad if dedupe removed too many
-  while (deduped.length < odpCount) {
-    const last = deduped[deduped.length - 1] ?? ([odcLng, odcLat] as [number, number]); // FIX
-    deduped.push(last); // FIX
-  } // FIX
+  // JLM Issue 4: if dedupe removed too many, sample extra points along longest routes
+  // instead of cloning the last coordinate (which stacked ODPs on one pole).
+  if (deduped.length < odpCount && allRoutes.length > 0) {
+    const longest = [...allRoutes].sort(
+      (a, b) =>
+        (b.length > 1 ? haversineM(b[0][1], b[0][0], b[b.length - 1][1], b[b.length - 1][0]) : 0) -
+        (a.length > 1 ? haversineM(a[0][1], a[0][0], a[a.length - 1][1], a[a.length - 1][0]) : 0),
+    )[0];
+    const extras = placeOdpsAlongRoute(longest, odpCount - deduped.length + 2, Math.max(40, spacingM * 0.75));
+    for (const p of extras) {
+      if (deduped.length >= odpCount) break;
+      const tooClose = deduped.some(
+        (existing) => haversineM(p[1], p[0], existing[1], existing[0]) < 30,
+      );
+      if (!tooClose) deduped.push(p);
+    }
+  }
 
   return {
     positions: deduped.slice(0, odpCount), // FIX
@@ -473,16 +515,33 @@ function verifyOdpInBoundary(
     return [(λ2 * 180) / Math.PI, (φ2 * 180) / Math.PI]; // FIX: [lng, lat]
   } // FIX
   if (isPointInPolygon(lng, lat, boundary.points)) return [lng, lat]; // FIX
-  let minDist = Infinity; // FIX
-  let nearest: [number, number] = boundary.points[0]; // FIX
-  boundary.points.forEach(([px, py]) => {
-    const d = haversineM(lat, lng, py, px); // FIX
+  // JLM Issue 4: clamp to nearest boundary EDGE (not vertex) so ODPs stay on
+  // the polygon perimeter instead of jumping to a far corner.
+  const ring = [...boundary.points];
+  if (
+    ring.length > 0 &&
+    (ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1])
+  ) {
+    ring.push(ring[0]);
+  }
+  let minDist = Infinity;
+  let nearest: [number, number] = boundary.points[0];
+  for (let i = 0; i < ring.length - 1; i++) {
+    const [x1, y1] = ring[i];
+    const [x2, y2] = ring[i + 1];
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const len2 = dx * dx + dy * dy;
+    const t = len2 > 0 ? Math.max(0, Math.min(1, ((lng - x1) * dx + (lat - y1) * dy) / len2)) : 0;
+    const px = x1 + t * dx;
+    const py = y1 + t * dy;
+    const d = haversineM(lat, lng, py, px);
     if (d < minDist) {
-      minDist = d; // FIX
-      nearest = [px, py]; // FIX
+      minDist = d;
+      nearest = [px, py];
     }
-  }); // FIX
-  return nearest; // FIX
+  }
+  return nearest;
 } // FIX
 
 // FIX: max distance from center to polygon vertices (meters) — sampling radius for syntheticInsideBoundary
@@ -516,6 +575,90 @@ function spreadStackedOdps(
     out.push(candidate);
   });
   return out;
+}
+
+type AreaBoundary =
+  | { type: 'polygon'; points: [number, number][] }
+  | { type: 'circle'; centerLng: number; centerLat: number; radiusM: number };
+
+function isInsideBoundary(lng: number, lat: number, boundary: AreaBoundary): boolean {
+  if (boundary.type === 'polygon') return isPointInPolygon(lng, lat, boundary.points);
+  return isPointInCircle(lng, lat, boundary.centerLng, boundary.centerLat, boundary.radiusM);
+}
+
+/** Soft concurrency pool — avoids nginx permatrax_api rate-limit storms. */
+async function mapPool<T, R>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  const runners = Array.from({ length: Math.max(1, concurrency) }, async () => {
+    while (next < items.length) {
+      const i = next;
+      next += 1;
+      results[i] = await worker(items[i], i);
+    }
+  });
+  await Promise.all(runners);
+  return results;
+}
+
+/** Snap → boundary → soft clearance. Max 2 network snaps (was up to 9). */
+async function refineOdpCandidate(
+  apiBase: string,
+  token: string,
+  seed: [number, number],
+  boundary: AreaBoundary,
+  buildings: HpPoint[],
+  existing: [number, number][],
+  opts?: { minSepM?: number; buildingClearanceM?: number; skipBuildingClearance?: boolean },
+): Promise<[number, number] | null> {
+  const minSepM = opts?.minSepM ?? 30;
+  const buildingClearanceM = opts?.buildingClearanceM ?? 8;
+  const skipBuilding = opts?.skipBuildingClearance === true;
+
+  const accept = (p: [number, number]): [number, number] | null => {
+    if (!isInsideBoundary(p[0], p[1], boundary)) return null;
+    if (
+      !skipBuilding &&
+      buildings.some((b) => haversineM(p[1], p[0], b.lat, b.lng) < buildingClearanceM)
+    ) {
+      return null;
+    }
+    if (existing.some((e) => haversineM(p[1], p[0], e[1], e[0]) < minSepM)) return null;
+    return p;
+  };
+
+  // 1 network snap only
+  const snapped = await backendSnap(apiBase, token, seed[0], seed[1]);
+  const clamped = verifyOdpInBoundary(snapped, boundary);
+  const ok = accept(clamped);
+  if (ok) return ok;
+
+  // Local nudges without extra snap (avoid rate-limit); one optional re-snap on best nudge
+  let bestNudge: [number, number] | null = null;
+  for (let attempt = 1; attempt <= 6; attempt++) {
+    const bearing = ((attempt * 60) * Math.PI) / 180;
+    const dM = Math.max(buildingClearanceM, 10) + attempt * 8;
+    const dLat = (dM / 6371000) * (180 / Math.PI) * Math.cos(bearing);
+    const dLng =
+      ((dM / 6371000) * (180 / Math.PI) * Math.sin(bearing)) /
+      Math.max(0.2, Math.cos((seed[1] * Math.PI) / 180));
+    const nudged = verifyOdpInBoundary([seed[0] + dLng, seed[1] + dLat], boundary);
+    const localOk = accept(nudged);
+    if (localOk) {
+      bestNudge = localOk;
+      break;
+    }
+  }
+  if (!bestNudge) return null;
+
+  // Optional second snap on the nudged point
+  const reSnapped = await backendSnap(apiBase, token, bestNudge[0], bestNudge[1]);
+  const reClamped = verifyOdpInBoundary(reSnapped, boundary);
+  return accept(reClamped) ?? bestNudge;
 }
 
 function polygonMaxRadiusFromCenter(
@@ -664,12 +807,22 @@ export function useTopologyRender(args: {
   polygonPoints: [number, number][];
   /** GIS Issue 5: titik pelanggan dari layer KMZ (menggantikan bangunan OSM bila terisi) */
   customerPoints?: [number, number][];
+  /** JLM hybrid: existing ODP/ODC/OLT from KMZ + Gambar Manual — locked, gap-fill only */
+  existingNetwork?: {
+    olt: [number, number][];
+    odc: [number, number][];
+    odp: [number, number][];
+  };
 }) {
-  const { mapRef, inputMode, polygonPoints, customerPoints } = args;
+  const { mapRef, inputMode, polygonPoints, customerPoints, existingNetwork } = args;
   const [renderingTopology, setRenderingTopology] = useState(false);
   const [topologyRendered, setTopologyRendered] = useState(false);
   const [topoExportData, setTopoExportData] = useState<TopoExportData | null>(null);
   const [lastRenderedGeometry, setLastRenderedGeometry] = useState<LastRenderedGeometry>(null);
+  /** Reuse last OSM/KMZ building Homepass when Overpass flakes (JLM V4 Issue 1 — esp. 1:8). */
+  const lastBuildingHomepassRef = useRef<
+    Array<{ lng: number; lat: number; osmId: number; type: string }>
+  >([]);
   const topoHandlersRef = useRef<
     Array<{
       layerId: string;
@@ -708,7 +861,10 @@ export function useTopologyRender(args: {
     }); // FIX
     setTopologyRendered(false); // FIX
     setLastRenderedGeometry(null);
-    useDesignStore.getState().clear();
+    setTopoExportData(null);
+    // JLM Issue 3: do NOT call useDesignStore.clear() — that wiped sketchTopology /
+    // manual nodes when Batalkan / remap / Hitung Ulang ran. Legend "clear" and
+    // remap only need map layers removed; design data stays until user explicitly clears.
   }, []);
 
   // FIX: render full FTTH topology on map (backend route/snap/buildings + road ODPs)
@@ -737,13 +893,15 @@ export function useTopologyRender(args: {
       const authToken = accessToken || cookieTok || winTok || ''; // FIX
 
       try {
-        const odpCount = result.equipment.odp.count; // FIX
+        // ── STEP ③: Homepass in-area FIRST, then Homepass-first ODP placement ──
+        const apiOdpEstimate = result.equipment.odp.count; // FIX
         const spacingM = result.equipment.odp.spacingM || 65; // FIX
         // JLM Issue 3B: per-ODP port capacity — caps how many homepass each ODP serves
         const odpCapacityVal = result.equipment.odp.capacity || 8; // 8 or 16 ports
-        const COVERAGE_RADIUS_M = Math.max(250, spacingM * 3); // homepass beyond this = Tidak Tercover
         const radiusM =
           result.summary.coverageRadiusMeters ?? result.summary.areaRadiusMeters ?? 300; // FIX
+        // JLM V2: drop radius scales with area (still capped) — not hard 250 forever
+        const COVERAGE_RADIUS_M = resolveCoverageRadiusM(spacingM, radiusM);
 
         const polygonPoints =
           drawnPolygon && drawnPolygon.length >= 3 ? drawnPolygon : null; // FIX
@@ -756,9 +914,166 @@ export function useTopologyRender(args: {
               centerLat: target[1], // FIX
             }; // FIX
 
-        // ── STEP ①: Snap ODC to nearest road ────────────
+        // Fetch Homepass before placing ODPs (actual count drives ODP target)
+        const kmzCustomers = (customerPoints ?? []).map(([lng, lat]) => ({
+          lng,
+          lat,
+          osmId: 0,
+          type: 'kmz-customer',
+        }));
+        let osmBuildingsRaw: Array<{ lng: number; lat: number; osmId: number; type: string }>;
+        let buildingsSource = 'KMZ';
+        if (kmzCustomers.length > 0) {
+          toast.info(`③ Memakai ${kmzCustomers.length} titik pelanggan dari KMZ...`);
+          osmBuildingsRaw = kmzCustomers;
+        } else {
+          toast.info('③ Mengambil Homepass/bangunan OSM dalam area...');
+          let queryRadius = radiusM + 200;
+          if (drawnPolygon && drawnPolygon.length >= 3) {
+            queryRadius =
+              Math.max(
+                ...drawnPolygon.map(([lng, lat]) => haversineM(target[1], target[0], lat, lng)),
+              ) + 100;
+          }
+          queryRadius = Math.min(queryRadius, 2000);
+          const fetched = await backendBuildings(
+            apiBase,
+            authToken,
+            target[1],
+            target[0],
+            queryRadius,
+          );
+          osmBuildingsRaw = fetched.buildings;
+          buildingsSource = fetched.source;
+          // JLM V4: one retry (slightly wider) when Overpass empty/error — avoids densitas scatter
+          if (osmBuildingsRaw.length === 0) {
+            const retryR = Math.min(Math.round(queryRadius * 1.25), 2000);
+            const retry = await backendBuildings(
+              apiBase,
+              authToken,
+              target[1],
+              target[0],
+              retryR,
+            );
+            if (retry.buildings.length > 0) {
+              osmBuildingsRaw = retry.buildings;
+              buildingsSource = retry.source;
+              queryRadius = retryR;
+            } else {
+              buildingsSource = retry.source || buildingsSource;
+            }
+          }
+        }
+
+        const inBoundary = (b: { lng: number; lat: number }) => {
+          if (boundary.type === 'polygon') {
+            return isPointInPolygon(b.lng, b.lat, boundary.points);
+          }
+          return isPointInCircle(
+            b.lng,
+            b.lat,
+            boundary.centerLng,
+            boundary.centerLat,
+            boundary.radiusM,
+          );
+        };
+
+        let osmBuildings = osmBuildingsRaw.filter(inBoundary);
+
+        // Reuse prior building Homepass when Overpass flakes (same session)
+        if (kmzCustomers.length === 0 && osmBuildings.length === 0 && lastBuildingHomepassRef.current.length > 0) {
+          const reused = lastBuildingHomepassRef.current.filter(inBoundary);
+          if (reused.length > 0) {
+            osmBuildings = reused;
+            buildingsSource = 'session-cache';
+            toast.info(`③ Memakai ${reused.length} Homepass bangunan dari kalkulasi sebelumnya`);
+          }
+        }
+
+        // JLM V2/V4: densitas fallback only when allowed (never for ODP 1:8 — Issue 1)
+        let usedSyntheticHomepass = false;
+        if (
+          kmzCustomers.length === 0 &&
+          osmBuildings.length === 0 &&
+          shouldUseSyntheticDensitasFallback(odpCapacityVal, false, 0)
+        ) {
+          const estimated = Math.max(
+            0,
+            Math.min(400, Number(result.homepass?.estimated) || Number(result.equipment?.odp?.count) * odpCapacityVal || 24),
+          );
+          if (estimated > 0) {
+            const synth = syntheticInsideBoundary(
+              target[0],
+              target[1],
+              estimated,
+              boundary.type === 'polygon'
+                ? { type: 'polygon', points: boundary.points }
+                : { type: 'circle', radiusM: boundary.radiusM },
+              Math.round(target[0] * 1000 + target[1] * 1000),
+            );
+            osmBuildings = synth.map((p, i) => ({
+              lng: p.lng,
+              lat: p.lat,
+              osmId: -(i + 1),
+              type: 'synthetic',
+            }));
+            usedSyntheticHomepass = osmBuildings.length > 0;
+            if (usedSyntheticHomepass) {
+              toast.warning(
+                buildingsSource === 'error'
+                  ? `③ OSM gagal diambil — memakai ${osmBuildings.length} Homepass estimasi densitas`
+                  : `③ OSM kosong di area — memakai ${osmBuildings.length} Homepass estimasi densitas`,
+              );
+            } else {
+              toast.warning(
+                '③ Tidak ada Homepass terdeteksi (OSM kosong/gagal & estimasi tidak bisa ditempatkan). Unggah KMZ pelanggan jika tersedia.',
+              );
+            }
+          } else {
+            toast.warning(
+              '③ Tidak ada Homepass terdeteksi di area. Unggah KMZ pelanggan atau perbesar Polygon/Radius.',
+            );
+          }
+        } else if (kmzCustomers.length === 0 && osmBuildings.length === 0) {
+          // JLM V4 Issue 1: 1:8 must stay on building coordinates — never random densitas
+          toast.warning(
+            odpCapacityVal === 8
+              ? '③ OSM kosong/gagal — kapasitas 1:8 membutuhkan Homepass pada bangunan. Unggah KMZ pelanggan atau coba Kalkulasi lagi.'
+              : '③ Tidak ada Homepass terdeteksi di area. Unggah KMZ pelanggan atau perbesar Polygon/Radius.',
+          );
+        } else if (kmzCustomers.length === 0) {
+          toast.info(`③ ${osmBuildings.length} Homepass dari OSM (${buildingsSource})`);
+        }
+
+        if (
+          osmBuildings.length > 0 &&
+          !osmBuildings.some((b) => b.type === 'synthetic')
+        ) {
+          lastBuildingHomepassRef.current = osmBuildings;
+        }
+
+        const hpPoints: HpPoint[] = osmBuildings.map((b) => ({ lng: b.lng, lat: b.lat }));
+
+        const odpCount = resolveOdpTargetCount(apiOdpEstimate, hpPoints.length, odpCapacityVal);
+        const maxOdpCap = resolveMaxOdpCap(odpCount, hpPoints.length, odpCapacityVal);
+        if (odpCount > apiOdpEstimate) {
+          toast.info(
+            `③ Homepass aktual ${hpPoints.length} → target ${odpCount} ODP (estimasi densitas ${apiOdpEstimate})`,
+          );
+        }
+
+        // ── STEP ①: Snap ODC to nearest road (prefer existing KMZ/manual ODC) ──
         toast.info('① Menempatkan ODC ke jalan terdekat...'); // FIX
-        const odcSnapped = await backendSnap(apiBase, authToken, target[0], target[1]); // FIX
+        const existingOdc = existingNetwork?.odc?.[0];
+        const odcSeed = existingOdc ?? target;
+        let odcSnapped = await backendSnap(apiBase, authToken, odcSeed[0], odcSeed[1]); // FIX
+        // Extra E: keep ODC inside polygon/circle after snap
+        odcSnapped = verifyOdpInBoundary(odcSnapped, boundary);
+        if (existingOdc) {
+          // Lock existing ODC position (still lightly verified in-boundary)
+          odcSnapped = verifyOdpInBoundary(existingOdc, boundary);
+          toast.info('① Memakai ODC existing dari KMZ / desain manual');
+        }
         const [odcLng, odcLat] = odcSnapped; // FIX
         const odcSnappedLng = odcLng; // FIX
         const odcSnappedLat = odcLat; // FIX
@@ -797,150 +1112,286 @@ export function useTopologyRender(args: {
           }
         }
 
-        // ── STEP ③: ODP placement along roads (linear) ──
-        toast.info(`③ Menghitung posisi ${odpCount} ODP di sepanjang jalan...`); // FIX
-
-        // FIX: use road-following distribution instead of spokes
-        const { positions: rawOdpPositions, routes: spokeRoutes } = await computeOdpAlongRoads(
-          apiBase, // FIX
-          authToken, // FIX
-          odcLng, // FIX
-          odcLat, // FIX
-          odpCount, // FIX
-          spacingM, // FIX
-          radiusM, // FIX
-        ); // FIX
-
-        // FIX: snap each ODP to nearest road
-        toast.info('③ Snap ODP ke jalan...'); // FIX
-        const snappedOdps = await Promise.all(
-          rawOdpPositions.map(([lng, lat]) => backendSnap(apiBase, authToken, lng, lat)), // FIX
-        ); // FIX
-
-        // FIX: verify each ODP is inside polygon boundary
-        const verifiedOdps = snappedOdps.map((odp) => verifyOdpInBoundary(odp, boundary)); // FIX
-        // GIS Issue 3: pastikan ODP tidak menumpuk di satu tiang/titik jalan
-        const odpPositions = spreadStackedOdps(verifiedOdps, rawOdpPositions);
-
-        // ── STEP ④: Distribution — cascade chain routing ──
-        toast.info('④ Menghitung jalur distribusi (cascade)...'); // FIX
-
-        // FIX: use cascade routing instead of star from ODC
-        const cascadeRoutes = buildCascadeRoutes(
-          [odcSnappedLng, odcSnappedLat], // FIX
-          odpPositions, // FIX
-          spokeRoutes || [], // FIX
-          spacingM, // FIX
-        ); // FIX
-
-        // FIX: get actual road routes for cascade segments
-        const distRouteResults = await Promise.allSettled(
-          cascadeRoutes.map(([from, to]) =>
-            backendRoute(apiBase, authToken, from[0], from[1], to[0], to[1]), // FIX
-          ), // FIX
-        ); // FIX
-
-        const distRoutes: [number, number][][] = distRouteResults.map((r, i) =>
-          r.status === 'fulfilled' && r.value?.coordinates?.length
-            ? r.value.coordinates
-            : ([cascadeRoutes[i][0], cascadeRoutes[i][1]] as [number, number][]), // FIX
-        ); // FIX
-        // GIS Issue 4: tandai segmen yang memakai fallback garis lurus (bukan
-        // rute jalan) agar tampil dashed — indikasi "perlu verifikasi lapangan"
-        const distRouteIsStraight: boolean[] = distRouteResults.map((r) =>
-          r.status === 'fulfilled' ? r.value?.source === 'straight' || (r.value?.coordinates?.length ?? 0) <= 2 : true,
-        );
-
-        // ── STEP ⑤: Get ALL buildings in polygon area ──
-        // GIS Issue 5: bila user menandai layer KMZ sebagai "Titik Pelanggan",
-        // pakai titik-titik itu sebagai homepass — bangunan OSM tidak di-fetch.
-        const kmzCustomers = (customerPoints ?? []).map(([lng, lat]) => ({
-          lng,
-          lat,
-          osmId: 0,
-          type: 'kmz-customer',
-        }));
-        let osmBuildingsRaw: Array<{ lng: number; lat: number; osmId: number; type: string }>;
-        if (kmzCustomers.length > 0) {
-          toast.info(`⑤ Memakai ${kmzCustomers.length} titik pelanggan dari KMZ...`); // GIS Issue 5
-          osmBuildingsRaw = kmzCustomers;
+        // ── STEP ④: ODP placement — existing lock + Homepass-first gap-fill ──
+        const lockedExistingOdps = (existingNetwork?.odp ?? [])
+          .map((p) => verifyOdpInBoundary(p, boundary))
+          .filter((p) => isInsideBoundary(p[0], p[1], boundary));
+        const gapFillTarget = Math.max(0, odpCount - lockedExistingOdps.length);
+        if (lockedExistingOdps.length > 0) {
+          toast.info(
+            `④ ${lockedExistingOdps.length} ODP existing dikunci` +
+              (gapFillTarget > 0 ? ` · menambah hingga ${gapFillTarget} ODP (Homepass-first)` : ' · kapasitas cukup'),
+          );
         } else {
-          toast.info('⑤ Mengambil bangunan OSM dalam area...'); // FIX
-
-          let queryRadius = radiusM + 200; // FIX: larger default capture radius
-          if (drawnPolygon && drawnPolygon.length >= 3) {
-            queryRadius =
-              Math.max(
-                ...drawnPolygon.map(([lng, lat]) =>
-                  haversineM(target[1], target[0], lat, lng), // FIX: centroid to vertex
-                ),
-              ) + 100; // FIX
-          } // FIX
-          queryRadius = Math.min(queryRadius, 2000); // FIX
-
-          osmBuildingsRaw = await backendBuildings(
-            apiBase, // FIX
-            authToken, // FIX
-            target[1], // FIX
-            target[0], // FIX
-            queryRadius, // FIX
-          ); // FIX
+          toast.info(`④ Menempatkan ${odpCount} ODP Homepass-first (cluster → snap jalan)...`);
         }
 
-        const osmBuildings = osmBuildingsRaw.filter((b) => {
-          if (boundary.type === 'polygon') {
-            return isPointInPolygon(b.lng, b.lat, boundary.points); // FIX
+        const BUILDING_CLEARANCE_M = 6;
+        const MIN_ODP_SEP_M = 30;
+        const SNAP_CONCURRENCY = 3;
+        let odpPositions: [number, number][] = [...lockedExistingOdps];
+        let spokeRoutes: [number, number][][] = [];
+        let odpAddedForCoverage = 0;
+
+        // Primary: Homepass-first — place up to gapFillTarget cluster centroids (batched snaps)
+        if (gapFillTarget > 0 && hpPoints.length > 0) {
+          // Cap clustering cost on dense OSM extracts
+          const clusterSource =
+            hpPoints.length > 500
+              ? hpPoints.filter((_, i) => i % Math.ceil(hpPoints.length / 500) === 0)
+              : hpPoints;
+          const clusters = clusterHomepassForOdp(
+            clusterSource,
+            odpCapacityVal,
+            90,
+            Math.min(200, COVERAGE_RADIUS_M * 0.75),
+          ).slice(0, gapFillTarget + 4);
+          const placedBatch = await mapPool(clusters, SNAP_CONCURRENCY, async (cluster) =>
+            refineOdpCandidate(
+              apiBase,
+              authToken,
+              cluster.centroid,
+              boundary,
+              hpPoints,
+              odpPositions,
+              {
+                minSepM: MIN_ODP_SEP_M,
+                buildingClearanceM: BUILDING_CLEARANCE_M,
+                // Homepass-first seeds sit among buildings — don't reject every candidate
+                skipBuildingClearance: true,
+              },
+            ),
+          );
+          for (const p of placedBatch) {
+            if (!p) continue;
+            if (odpPositions.length >= odpCount) break;
+            const tooClose = odpPositions.some(
+              (e) => haversineM(p[1], p[0], e[1], e[0]) < MIN_ODP_SEP_M,
+            );
+            if (!tooClose) odpPositions.push(p);
           }
-          return isPointInCircle(
-            b.lng, // FIX
-            b.lat, // FIX
-            boundary.centerLng, // FIX
-            boundary.centerLat, // FIX
-            boundary.radiusM, // FIX
-          ); // FIX
-        }); // FIX
+        }
 
-        // ── JLM Issue 3B: capacity-aware assignment — each ODP serves at most odpCapacityVal ──
-        const odpLoad: number[] = odpPositions.map(() => 0); // ports used per ODP
-        // Serve the tightest-clustered buildings first so they get the nearby ODP ports;
-        // spillover beyond capacity / coverage becomes "Tidak Tercover".
-        const buildingsByNeed = osmBuildings
-          .map((b) => {
-            let nearest = Infinity; // FIX
-            odpPositions.forEach(([oLng, oLat]) => {
-              const d = haversineM(b.lat, b.lng, oLat, oLng); // FIX
-              if (d < nearest) nearest = d; // FIX
-            }); // FIX
-            return { b, nearest }; // FIX
-          })
-          .sort((a, z) => a.nearest - z.nearest); // FIX
+        // Fallback: road-ray fill if Homepass-first under-produced (or no HP yet)
+        const stillNeed = Math.max(0, odpCount - odpPositions.length);
+        if (stillNeed > 0) {
+          const computed = await computeOdpAlongRoads(
+            apiBase,
+            authToken,
+            odcLng,
+            odcLat,
+            stillNeed + 2,
+            spacingM,
+            radiusM,
+          );
+          spokeRoutes = computed.routes;
+          const roadPlaced = await mapPool(
+            computed.positions.slice(0, stillNeed + 4),
+            SNAP_CONCURRENCY,
+            async (raw) =>
+              refineOdpCandidate(
+                apiBase,
+                authToken,
+                raw,
+                boundary,
+                hpPoints,
+                odpPositions,
+                {
+                  minSepM: MIN_ODP_SEP_M,
+                  buildingClearanceM: BUILDING_CLEARANCE_M,
+                  skipBuildingClearance: false,
+                },
+              ),
+          );
+          for (const p of roadPlaced) {
+            if (!p) continue;
+            if (odpPositions.length >= odpCount) break;
+            const tooClose = odpPositions.some(
+              (e) => haversineM(p[1], p[0], e[1], e[0]) < MIN_ODP_SEP_M,
+            );
+            if (!tooClose) odpPositions.push(p);
+          }
+        }
 
-        const assignedHomepass: Array<{ coords: [number, number]; odpIdx: number; covered: boolean }> = [];
-        buildingsByNeed.forEach(({ b }) => {
-          let chosen = -1; // FIX: nearest ODP that is in range AND has a free port
-          let chosenDist = Infinity; // FIX
-          odpPositions.forEach(([oLng, oLat], oi) => {
-            if (odpLoad[oi] >= odpCapacityVal) return; // ODP full — skip
-            const d = haversineM(b.lat, b.lng, oLat, oLng); // FIX
-            if (d <= COVERAGE_RADIUS_M && d < chosenDist) {
-              chosen = oi; // FIX
-              chosenDist = d; // FIX
+        // Coverage completion loop — try next unserved pocket on snap failure (JLM V2)
+        const runAssign = () => {
+          const first = assignHomepassToOdps(
+            hpPoints,
+            odpPositions,
+            odpCapacityVal,
+            COVERAGE_RADIUS_M,
+          );
+          return redistributeHomepassLoads(
+            first.assignments,
+            odpPositions,
+            odpCapacityVal,
+            COVERAGE_RADIUS_M,
+            { passes: 3 },
+          );
+        };
+
+        let { assignments: assignedHomepass, odpLoad } = runAssign();
+        const maxPeerHopMEarly = resolveMaxPeerHopM(COVERAGE_RADIUS_M);
+        // JLM V4 Issue 2: drain DISTANCE via peers before spending ODP gap-fill budget
+        {
+          const prePeer = expandHomepassViaPeers(
+            assignedHomepass,
+            odpLoad,
+            odpCapacityVal,
+            maxPeerHopMEarly,
+          );
+          assignedHomepass = prePeer.assignments;
+          odpLoad = prePeer.odpLoad;
+        }
+
+        const unservedBeforeGap = assignedHomepass.filter((h) => !h.covered).length;
+        const maxCoveragePasses = resolveCoverageGapFillPasses(
+          unservedBeforeGap,
+          odpCapacityVal,
+          maxOdpCap,
+          odpPositions.length,
+        );
+        let successAdds = 0;
+        let attempts = 0;
+        const maxAttempts = Math.max(maxCoveragePasses * 2, 24);
+        let seedIndex = 0;
+        while (
+          assignedHomepass.some((h) => !h.covered) &&
+          odpPositions.length < maxOdpCap &&
+          successAdds < maxCoveragePasses &&
+          attempts < maxAttempts
+        ) {
+          attempts += 1;
+          // Prefer CAPACITY pockets — peers already handled nearby DISTANCE
+          const capacityUnserved = assignedHomepass.filter(
+            (h) => !h.covered && h.reason === 'CAPACITY',
+          );
+          const unservedPts = (
+            capacityUnserved.length > 0
+              ? capacityUnserved
+              : assignedHomepass.filter((h) => !h.covered)
+          ).map((h) => ({ lng: h.coords[0], lat: h.coords[1] }));
+          const seed = unservedClusterCentroidAt(
+            unservedPts,
+            odpCapacityVal,
+            seedIndex,
+            Math.min(200, COVERAGE_RADIUS_M * 0.75),
+          );
+          seedIndex += 1;
+          if (!seed) break;
+          let placed = await refineOdpCandidate(
+            apiBase,
+            authToken,
+            seed,
+            boundary,
+            hpPoints,
+            odpPositions,
+            {
+              minSepM: MIN_ODP_SEP_M,
+              buildingClearanceM: BUILDING_CLEARANCE_M,
+              skipBuildingClearance: true,
+            },
+          );
+          if (!placed) {
+            const bearing = ((attempts * 37) * Math.PI) / 180;
+            const dM = 40 + attempts * 8;
+            const dLat = (dM / 6371000) * (180 / Math.PI) * Math.cos(bearing);
+            const dLng =
+              ((dM / 6371000) * (180 / Math.PI) * Math.sin(bearing)) /
+              Math.max(0.2, Math.cos((seed[1] * Math.PI) / 180));
+            placed = await refineOdpCandidate(
+              apiBase,
+              authToken,
+              [seed[0] + dLng, seed[1] + dLat],
+              boundary,
+              hpPoints,
+              odpPositions,
+              {
+                minSepM: MIN_ODP_SEP_M * 0.75,
+                buildingClearanceM: BUILDING_CLEARANCE_M,
+                skipBuildingClearance: true,
+              },
+            );
+          }
+          // Failed snap/tooClose does not consume success budget (JLM V4)
+          if (!placed) continue;
+          const tooClose = odpPositions.some(
+            (e) => haversineM(placed![1], placed![0], e[1], e[0]) < MIN_ODP_SEP_M * 0.75,
+          );
+          if (tooClose) continue;
+          odpPositions.push(placed);
+          odpAddedForCoverage += 1;
+          successAdds += 1;
+          ({ assignments: assignedHomepass, odpLoad } = runAssign());
+          const midPeer = expandHomepassViaPeers(
+            assignedHomepass,
+            odpLoad,
+            odpCapacityVal,
+            maxPeerHopMEarly,
+          );
+          assignedHomepass = midPeer.assignments;
+          odpLoad = midPeer.odpLoad;
+        }
+
+        // Final redistribution pass after gap-fill
+        ({ assignments: assignedHomepass, odpLoad } = runAssign());
+
+        if (odpAddedForCoverage > 0) {
+          toast.info(`④ Ditambah ${odpAddedForCoverage} ODP untuk menutup Homepass belum terlayani`);
+        }
+
+        // ── STEP ⑤: Distribution — cascade chain routing (throttled) ──
+        toast.info('⑤ Menghitung jalur distribusi (cascade)...'); // FIX
+
+        const cascadeRoutes = buildCascadeRoutes(
+          [odcSnappedLng, odcSnappedLat],
+          odpPositions,
+          spokeRoutes || [],
+          spacingM,
+        );
+
+        // Prefer 1 multi-route call when chain is short; else throttle parallel /map/route
+        let distRoutes: [number, number][][] = [];
+        let distRouteIsStraight: boolean[] = [];
+        if (cascadeRoutes.length > 0 && cascadeRoutes.length <= 12) {
+          const waypoints: Array<[number, number]> = [cascadeRoutes[0][0]];
+          cascadeRoutes.forEach(([, to]) => waypoints.push(to));
+          const segments = await backendMultiRoute(apiBase, authToken, waypoints);
+          if (segments.length === cascadeRoutes.length) {
+            distRoutes = segments.map((s, i) =>
+              s.coordinates?.length
+                ? s.coordinates
+                : ([cascadeRoutes[i][0], cascadeRoutes[i][1]] as [number, number][]),
+            );
+            distRouteIsStraight = distRoutes.map((coords) => coords.length <= 2);
+          }
+        }
+        if (distRoutes.length === 0) {
+          const distRouteResults = await mapPool(cascadeRoutes, 3, async ([from, to]) => {
+            try {
+              return await backendRoute(apiBase, authToken, from[0], from[1], to[0], to[1]);
+            } catch {
+              return {
+                coordinates: [from, to] as [number, number][],
+                distanceM: 0,
+                source: 'straight' as const,
+              };
             }
-          }); // FIX
-          if (chosen >= 0) {
-            odpLoad[chosen] += 1; // FIX
-            assignedHomepass.push({ coords: [b.lng, b.lat], odpIdx: chosen, covered: true }); // FIX
-          } else {
-            assignedHomepass.push({ coords: [b.lng, b.lat], odpIdx: -1, covered: false }); // Tidak Tercover
-          }
-        }); // FIX
+          });
+          distRoutes = distRouteResults.map((r, i) =>
+            r?.coordinates?.length
+              ? r.coordinates
+              : ([cascadeRoutes[i][0], cascadeRoutes[i][1]] as [number, number][]),
+          );
+          distRouteIsStraight = distRouteResults.map((r) =>
+            r?.source === 'straight' || (r?.coordinates?.length ?? 0) <= 2,
+          );
+        }
 
         // Preserve homepass coordinates carried across recalculations (keep their ODP if valid)
         const preservedHomepass = Array.isArray(result.homepassPoints) ? result.homepassPoints : [];
         const homepassKey = (c: [number, number]) => `${c[0]},${c[1]}`;
-        const validHomepass: Array<{ coords: [number, number]; odpIdx: number; covered: boolean }> = [
-          ...assignedHomepass,
-        ];
+        let validHomepass: HpAssignment[] = [...assignedHomepass];
         const seenHomepass = new Set(validHomepass.map((h) => homepassKey(h.coords)));
         preservedHomepass.forEach((hp) => {
           if (seenHomepass.has(homepassKey(hp.coords))) return; // FIX
@@ -949,17 +1400,59 @@ export function useTopologyRender(args: {
             typeof hp.odpIdx === 'number' && hp.odpIdx >= 0 && hp.odpIdx < odpPositions.length
               ? hp.odpIdx
               : -1; // FIX
-          if (idx >= 0) odpLoad[idx] += 1; // FIX
-          validHomepass.push({ coords: hp.coords, odpIdx: idx, covered: idx >= 0 }); // FIX
+          if (idx >= 0) {
+            if (odpLoad[idx] < odpCapacityVal) {
+              odpLoad[idx] += 1; // FIX
+              validHomepass.push({ coords: hp.coords, odpIdx: idx, covered: true }); // FIX
+            } else {
+              validHomepass.push({
+                coords: hp.coords,
+                odpIdx: -1,
+                covered: false,
+                reason: 'CAPACITY',
+              });
+            }
+          } else {
+            validHomepass.push({
+              coords: hp.coords,
+              odpIdx: -1,
+              covered: false,
+              reason: 'NO_ODP',
+            });
+          }
         }); // FIX
 
-        const osmCount = validHomepass.filter((h) => h.covered).length; // covered homepass total
+        // JLM V3: peer-to-peer expansion for remaining unserved only (no ODP/feeder changes)
+        const maxPeerHopM = resolveMaxPeerHopM(COVERAGE_RADIUS_M);
+        const peerExpansion = expandHomepassViaPeers(
+          validHomepass,
+          odpLoad,
+          odpCapacityVal,
+          maxPeerHopM,
+        );
+        validHomepass = peerExpansion.assignments;
+        odpLoad = peerExpansion.odpLoad;
+        if (peerExpansion.expanded > 0) {
+          toast.info(
+            `⑤+ Peer-to-peer: ${peerExpansion.expanded} Homepass terlayani via Homepass terdekat`,
+          );
+        }
 
+        const coverageReport: CoverageReport = summarizeCoverage(
+          validHomepass,
+          odpPositions.length,
+          odpCount,
+          odpAddedForCoverage,
+        );
+
+        const syntheticKeys = new Set(
+          osmBuildings.filter((b) => b.type === 'synthetic').map((b) => `${b.lng},${b.lat}`),
+        );
         // Export shape for KMZ + Excel (Tercover/Tidak Tercover)
         const homepassExport = validHomepass.map((h) => ({
           lng: h.coords[0], // FIX
           lat: h.coords[1], // FIX
-          isOsm: true, // FIX
+          isOsm: !syntheticKeys.has(`${h.coords[0]},${h.coords[1]}`),
           odpIndex: h.covered ? h.odpIdx + 1 : undefined, // FIX
           covered: h.covered, // FIX
         })); // FIX
@@ -1050,23 +1543,33 @@ export function useTopologyRender(args: {
           type: 'geojson', // FIX
           data: {
             type: 'FeatureCollection', // FIX
-            // JLM Issue 3B: only covered homepass have a drop cable to an ODP
+            // Direct ODP→HP drops + JLM V3 peer→HP cascade drops (unserved completion)
             features: validHomepass
-              .filter((hp) => hp.covered && odpPositions[hp.odpIdx]) // FIX
-              .map((hp) => ({
-                type: 'Feature' as const, // FIX
-                geometry: {
-                  type: 'LineString' as const, // FIX
-                  coordinates: [odpPositions[hp.odpIdx], hp.coords], // FIX
-                },
-                properties: {}, // FIX
-              })), // FIX
+              .filter((hp) => hp.covered && hp.odpIdx >= 0 && odpPositions[hp.odpIdx]) // FIX
+              .map((hp) => {
+                const peer =
+                  hp.viaPeer &&
+                  typeof hp.peerIdx === 'number' &&
+                  validHomepass[hp.peerIdx]?.covered
+                    ? validHomepass[hp.peerIdx]
+                    : null;
+                const from = peer ? peer.coords : odpPositions[hp.odpIdx];
+                return {
+                  type: 'Feature' as const, // FIX
+                  geometry: {
+                    type: 'LineString' as const, // FIX
+                    coordinates: [from, hp.coords], // FIX
+                  },
+                  properties: { viaPeer: peer ? 1 : 0 }, // FIX
+                };
+              }), // FIX
           },
         }); // FIX
         safeAddLayer({
           id: 'topo-drop-line', // FIX
           type: 'line', // FIX
           source: 'topo-drop', // FIX
+          filter: ['!=', ['get', 'viaPeer'], 1],
           paint: {
             'line-color': '#111827', // FIX: drop dark gray
             'line-width': 0.8, // FIX
@@ -1074,6 +1577,18 @@ export function useTopologyRender(args: {
             'line-dasharray': [2, 2], // FIX
           },
         }); // FIX
+        safeAddLayer({
+          id: 'topo-drop-peer-line',
+          type: 'line',
+          source: 'topo-drop',
+          filter: ['==', ['get', 'viaPeer'], 1],
+          paint: {
+            'line-color': '#DC2626', // JLM V3 illustration: peer cascade in red
+            'line-width': 1.2,
+            'line-opacity': 0.85,
+            'line-dasharray': [1.5, 1.5],
+          },
+        });
 
         if (closurePoints.length > 0) {
           // FIX: Closure along feeder
@@ -1476,6 +1991,8 @@ export function useTopologyRender(args: {
           ); // FIX
         }
 
+        const straightRouteCount = distRouteIsStraight.filter(Boolean).length;
+
         // FIX: store for KMZ + Excel export (JLM Issue 1/2/3A)
         setTopoExportData({
           backbone, // FIX
@@ -1488,6 +2005,9 @@ export function useTopologyRender(args: {
           polePoints: polePointsForExport, // JLM Issue B: auto-planned poles
           odpLoad, // JLM Issue 3A: per-ODP load
           odpCapacity: odpCapacityVal, // JLM Issue 3A
+          straightRouteCount,
+          existingOdpCount: lockedExistingOdps.length,
+          coverageReport,
         }); // FIX
 
         setTopologyRendered(true); // FIX
@@ -1500,10 +2020,14 @@ export function useTopologyRender(args: {
           feederCoords,
           distRoutes,
         });
-        toast.success(
-          `✅ Topologi selesai: ${odpPositions.length} ODP · ` + // FIX
-            `${osmCount} tercover / ${validHomepass.length} homepass (kapasitas 1:${odpCapacityVal})`, // FIX
-        ); // FIX
+        const existingNote =
+          lockedExistingOdps.length > 0 ? ` · ${lockedExistingOdps.length} ODP existing` : '';
+        const straightNote =
+          straightRouteCount > 0 ? ` · ${straightRouteCount} jalur fallback lurus` : '';
+        const coverageToast = formatCoverageToast(coverageReport, odpCapacityVal);
+        const toastMsg = `${coverageToast.message}${existingNote}${straightNote}`;
+        if (coverageToast.ok) toast.success(toastMsg);
+        else toast.warning(toastMsg);
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : 'Error'; // FIX
         toast.error(`Gagal render topologi: ${msg}`); // FIX
@@ -1511,7 +2035,7 @@ export function useTopologyRender(args: {
         setRenderingTopology(false); // FIX
       }
     },
-    [clearTopology, inputMode, polygonPoints, customerPoints],
+    [clearTopology, inputMode, polygonPoints, customerPoints, existingNetwork],
   );
 
   const renderStoredDesign = useCallback(

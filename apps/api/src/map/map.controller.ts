@@ -19,6 +19,7 @@ import { MapService } from './map.service';
 import { parseMvtTilePathParams } from './map-tile-params';
 import { Public } from '../auth/decorators/public.decorator'; // FIX: MVT / MapViewer tanpa JWT
 import { Roles } from '../auth/decorators/roles.decorator'; // FIX: gate GIS endpoints
+import { TimeoutMs } from '../common/decorators/timeout-ms.decorator';
 import { IsNumber, IsString, IsOptional, IsIn } from 'class-validator';
 
 // FIX: DTO class so ValidationPipe allows polygon fields
@@ -259,6 +260,7 @@ export class MapController {
   // FIX: POST /map/route — road-following route proxy (OSRM → Valhalla → straight line)
   @Post('route')
   @Roles(...GIS_ROLES)
+  @TimeoutMs(30000)
   async getRoute(
     @Body()
     body: {
@@ -282,6 +284,7 @@ export class MapController {
   // FIX: POST /map/snap — snap point to nearest road (OSRM nearest)
   @Post('snap')
   @Roles(...GIS_ROLES)
+  @TimeoutMs(15000)
   async snapToRoad(@Body() body: { lng: number; lat: number }) {
     return this.mapService.snapPointToRoad(body.lng, body.lat);
   }
@@ -289,6 +292,7 @@ export class MapController {
   // FIX: GET /map/buildings — OSM buildings in radius (Overpass)
   @Get('buildings')
   @Roles(...GIS_ROLES)
+  @TimeoutMs(45000)
   async getBuildings(
     @Query('lat') lat: string,
     @Query('lon') lon: string,
@@ -304,6 +308,7 @@ export class MapController {
   // FIX: POST /map/multi-route — batch routing in 1 OSRM call
   @Post('multi-route')
   @Roles(...GIS_ROLES)
+  @TimeoutMs(45000)
   async getMultiRoute(
     @Body()
     body: {

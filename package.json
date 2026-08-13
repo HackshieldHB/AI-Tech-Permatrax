@@ -10,6 +10,7 @@
     "build": "turbo run build",
     "dev": "turbo run dev",
     "lint": "turbo run lint",
+    "test:pai": "pnpm --filter @permatrack/api run test:pai",
     "format": "prettier --write \"**/*.{ts,tsx,md}\"",
     "db:migrate": "cd packages/db && npx prisma migrate dev",
     "db:seed": "cd packages/db && npx tsx prisma/seed.ts",

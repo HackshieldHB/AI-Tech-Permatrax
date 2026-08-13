@@ -77,6 +77,7 @@ import { StockOutModule } from './stock-out/stock-out.module';
 import { PipelineEngineModule } from './pipeline-engine/pipeline-engine.module'; // NEW: Phase 3A
 import { FtttProjectModule } from './fttt-project/fttt-project.module'; // FTTT flow
 import { DailyActivityModule } from './daily-activity/daily-activity.module'; // NEW: Integra V1 Daily Activity
+import { AiModule } from './ai/ai.module'; // PermaTrax local AI chatbot
 import { AppController } from './app.controller'; // FIX: root + live probes
 
 @Module({
@@ -168,6 +169,7 @@ import { AppController } from './app.controller'; // FIX: root + live probes
     FtttProjectModule,
     PipelineEngineModule,
     DailyActivityModule, // NEW: Integra V1 Daily Activity
+    AiModule, // PermaTrax local AI chatbot (Ollama + RAG + tools)
   ],
   controllers: [AppController], // FIX: register root GET /api (no 404)
   providers: [

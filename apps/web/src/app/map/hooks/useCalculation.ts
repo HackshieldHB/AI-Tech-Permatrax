@@ -8,6 +8,41 @@ import { useCommandStore } from '../../../store/useCommandStore';
 import { mergeCalculationWithHomepasses } from '../../../utils/topologyUtils';
 import { toast } from 'sonner';
 import type { FtthCalcApiResponse, OsmElement } from './types';
+import {
+  extractPointsFromSketch,
+  isPointInPolygonRing,
+  snapToNearest,
+} from '../utils/existingInfra';
+
+/** Exit edit/sketch so calc map-clicks are not swallowed (JLM Issue 1/2). */
+function prepareMapForCalcPick() {
+  const store = useDesignStore.getState();
+  if (store.sketchMode) {
+    store.setSketchMode(false);
+    toast.info('Mode sketch dinonaktifkan sementara agar titik bisa ditandai');
+  }
+  if (store.editMode) {
+    store.setEditMode(false);
+    store.setActiveTool(null);
+    toast.info('Mode edit dinonaktifkan sementara agar titik bisa ditandai');
+  }
+}
+
+function collectSnapCandidates(prefer: 'backbone' | 'target'): [number, number][] {
+  const store = useDesignStore.getState();
+  const sketchPts = extractPointsFromSketch(store.sketchTopology);
+  const nodes = Object.values(store.nodes);
+  const preferred: [number, number][] = [];
+  const others: [number, number][] = [];
+  for (const n of nodes) {
+    const t = String(n.type || '').toUpperCase();
+    const coord = n.coordinates as [number, number];
+    if (prefer === 'backbone' && t === 'OLT') preferred.push(coord);
+    else if (prefer === 'target' && t === 'ODC') preferred.push(coord);
+    else if (t === 'ODP' || t === 'OLT' || t === 'ODC' || t === 'POLE') others.push(coord);
+  }
+  return [...preferred, ...sketchPts, ...others];
+}
 
 // FIX: calculate polygon area using Shoelace formula
 function polygonAreaFromCoords(coords: [number, number][]): number {
@@ -126,20 +161,14 @@ export function useCalculation(args: {
     if (!map) return; // FIX
     clearCalcGraphics(); // FIX
     // GIS Issue 6: JANGAN clearTopology() di sini — desain yang sudah dirender
-    // tetap tampil sampai kalkulasi baru benar-benar menggantikannya
-    // (renderTopology sudah melakukan clear sendiri saat mulai render).
-    // GIS Issue 6: sketch mode menelan klik peta (MapboxDraw) sehingga titik
-    // OLT/backbone tidak bisa ditandai — matikan otomatis saat mulai kalkulasi.
-    if (useDesignStore.getState().sketchMode) {
-      useDesignStore.getState().setSketchMode(false);
-      toast.info('✏️ Mode sketch dinonaktifkan sementara agar titik bisa ditandai');
-    }
+    // tetap tampil sampai kalkulasi baru benar-benar menggantikannya.
+    prepareMapForCalcPick();
     setCalcMode('backbone'); // FIX
     setBackbonePoint(null); // FIX
     setTargetPoint(null); // FIX
     setCalcResult(null); // FIX
     setNearestBackbone(null); // FIX
-    toast.info('📍 Klik pada peta untuk menandai titik BACKBONE terdekat'); // FIX
+    toast.info('Klik pada peta / node desain untuk menandai titik BACKBONE'); // FIX
   }, [clearCalcGraphics]);
 
   // FIX: polygon mode starts drawing — if polygon already closed, reuse it
@@ -148,9 +177,10 @@ export function useCalculation(args: {
     if (inputMode === 'polygon') {
       if (polygonAreaSqM && polygonAreaSqM > 0 && polygonPoints.length >= 3) {
         startCalculation();
-        toast.info('🔷 Area polygon dipertahankan — tandai ulang titik Backbone');
+        toast.info('Area polygon dipertahankan — tandai ulang titik Backbone');
         return;
       }
+      prepareMapForCalcPick();
       setIsDrawingPolygon(true); // FIX
       setPolygonPoints([]); // FIX
       setPolygonAreaSqM(null); // FIX
@@ -161,18 +191,32 @@ export function useCalculation(args: {
       if (map) clearPolygonFromMap(map); // FIX
       setCalcMode('idle'); // FIX: backbone only after polygon closed
       toast.info(
-        '🔷 Mode polygon: klik titik-titik area. Double-click untuk selesai, lalu klik backbone.', // FIX
-      ); // FIX
+        'Mode polygon: klik titik-titik area. Double-click untuk selesai, lalu klik backbone.',
+      );
     } else {
       startCalculation(); // FIX
     } // FIX
   }, [inputMode, polygonAreaSqM, polygonPoints.length, startCalculation]);
 
-  /** Re-pick Backbone only — keep polygon + Target (JLM Phase 2 Issue 3). */
-  const remapBackbone = useCallback(() => {
-    if (useDesignStore.getState().sketchMode) {
-      useDesignStore.getState().setSketchMode(false);
+  /** Abort AI calc wizard only — preserve Gambar Manual / design store (JLM Issue 3). */
+  const abortCalculation = useCallback(() => {
+    clearCalcGraphics();
+    setCalcMode('idle');
+    setBackbonePoint(null);
+    setTargetPoint(null);
+    setCalcResult(null);
+    setNearestBackbone(null);
+    const store = useDesignStore.getState();
+    if ((store.sketchTopology?.features?.length ?? 0) > 0) {
+      store.setSketchMode(true);
     }
+    toast.info('Kalkulasi dibatalkan — desain manual tetap tersimpan');
+  }, [clearCalcGraphics]);
+
+  /** Re-pick Backbone only — keep polygon + Target; do NOT wipe sketch. */
+  const remapBackbone = useCallback(() => {
+    prepareMapForCalcPick();
+    // Clear AI topo layers only (sketchTopology preserved — clearTopology no longer wipes store)
     clearTopology();
     backboneMarkerRef.current?.remove();
     backboneMarkerRef.current = null;
@@ -180,14 +224,12 @@ export function useCalculation(args: {
     setNearestBackbone(null);
     setCalcResult(null);
     setCalcMode('backbone');
-    toast.info('📡 Klik ulang titik BACKBONE — area & Target tetap dipertahankan');
+    toast.info('Klik ulang titik BACKBONE — area & Target tetap dipertahankan');
   }, [clearTopology]);
 
-  /** Re-pick Target only — keep polygon + Backbone (JLM Phase 2 Issue 3). */
+  /** Re-pick Target only — keep polygon + Backbone; do NOT wipe sketch. */
   const remapTarget = useCallback(() => {
-    if (useDesignStore.getState().sketchMode) {
-      useDesignStore.getState().setSketchMode(false);
-    }
+    prepareMapForCalcPick();
     clearTopology();
     targetMarkerRef.current?.remove();
     targetMarkerRef.current = null;
@@ -200,7 +242,7 @@ export function useCalculation(args: {
       if (map.getSource('calc-circle')) map.removeSource('calc-circle');
     }
     setCalcMode('target');
-    toast.info('🎯 Klik ulang area TARGET — area & Backbone tetap dipertahankan');
+    toast.info('Klik ulang area TARGET — area & Backbone tetap dipertahankan');
   }, [clearTopology, inputMode]);
 
   // FIX: polygon drawing click handler
@@ -222,6 +264,7 @@ export function useCalculation(args: {
             setPolygonAreaSqM(area); // FIX
             setPolygonCentroid(centroid); // FIX
             setIsDrawingPolygon(false); // FIX
+            prepareMapForCalcPick();
             setCalcMode('backbone'); // FIX
 
             const closedCoords = [...prev, prev[0]]; // FIX
@@ -325,8 +368,11 @@ export function useCalculation(args: {
 
     const handleClick = async (e: maplibregl.MapMouseEvent) => {
       const { editMode, activeTool } = useDesignStore.getState();
-      
-      if (editMode) {
+
+      // JLM Issue 1/2: calc pick wins over editMode (defense in depth)
+      const pickingCalc = calcMode === 'backbone' || calcMode === 'target';
+
+      if (editMode && !pickingCalc) {
         if (activeTool && activeTool.startsWith('add-')) {
           if (activeTool.startsWith('add-edge-') && useDesignStore.getState().drawingEdgeStartRef !== null) {
             const state = useDesignStore.getState();
@@ -346,8 +392,7 @@ export function useCalculation(args: {
             return;
           }
         }
-        
-        // Pilih/Geser mode — clicking empty map deselects the feature
+
         if (activeTool === null) {
           useDesignStore.getState().setSelectedFeatureRef(null);
         }
@@ -356,7 +401,29 @@ export function useCalculation(args: {
 
       if (isDrawingPolygon) return; // FIX: polygon drawing takes precedence
       if (calcMode === 'idle') return; // FIX
-      const { lng, lat } = e.lngLat; // FIX
+      let { lng, lat } = e.lngLat; // FIX
+
+      // Snap to nearest sketch / design node (JLM Issue 1/2)
+      const snapPrefer = calcMode === 'backbone' ? 'backbone' : 'target';
+      const snapped = snapToNearest(lng, lat, collectSnapCandidates(snapPrefer), 20);
+      if (snapped) {
+        lng = snapped.point[0];
+        lat = snapped.point[1];
+        toast.info(`Snap ke node terdekat (${snapped.distanceM.toFixed(1)} m)`);
+      }
+
+      // Extra B: validate against polygon area when in polygon mode
+      if (inputMode === 'polygon' && polygonPoints.length >= 3) {
+        if (!isPointInPolygonRing(lng, lat, polygonPoints)) {
+          toast.warning(
+            calcMode === 'backbone'
+              ? 'Titik Backbone di luar area polygon — pilih di dalam area atau dekat node desain'
+              : 'Titik Target di luar area polygon — pilih di dalam area layanan',
+          );
+          // Allow continue (free-click still valid for backbone outside polygon in some workflows)
+          // but warn clearly. For target inside-service expectation, still accept with warning.
+        }
+      }
 
       if (calcMode === 'backbone') {
         backboneMarkerRef.current?.remove(); // FIX
@@ -364,7 +431,7 @@ export function useCalculation(args: {
 
         const m = new maplibregl.Marker({ color: '#3B82F6' }) // FIX
           .setLngLat([lng, lat]) // FIX
-          .setPopup(new maplibregl.Popup().setText('📡 Titik Backbone')) // FIX
+          .setPopup(new maplibregl.Popup().setText('Titik Backbone')) // FIX
           .addTo(map); // FIX
         backboneMarkerRef.current = m; // FIX
 
@@ -374,21 +441,20 @@ export function useCalculation(args: {
           ); // FIX
           if (backbone?.length > 0) {
             setNearestBackbone(backbone[0] as OsmElement); // FIX
-            toast.success(`📡 Ditemukan ${backbone.length} jalur backbone di OSM`); // FIX
+            toast.success(`Ditemukan ${backbone.length} jalur backbone di OSM`); // FIX
           } else {
-            toast.info('📡 Tidak ada backbone di OSM — gunakan titik yang Anda pilih'); // FIX
+            toast.info('Tidak ada backbone di OSM — gunakan titik yang Anda pilih'); // FIX
           }
         } catch {
           // FIX: tetap lanjut tanpa Overpass
         }
 
-        // JLM Phase 2 Issue 3: if Target already exists (remap backbone), keep it
         if (targetPoint) {
           setCalcMode('result');
-          toast.success('📡 Backbone diperbarui — Target tetap. Klik Hitung Sekarang bila siap.');
+          toast.success('Backbone diperbarui — Target tetap. Klik Hitung Sekarang bila siap.');
         } else {
           setCalcMode('target');
-          toast.info('🎯 Sekarang klik area TARGET yang ingin dipasang FTTH');
+          toast.info('Sekarang klik area TARGET / node ODC yang ingin dipasang FTTH');
         }
       } else if (calcMode === 'target') {
         targetMarkerRef.current?.remove(); // FIX
@@ -397,7 +463,7 @@ export function useCalculation(args: {
 
         const tm = new maplibregl.Marker({ color: '#EF4444' }) // FIX
           .setLngLat([lng, lat]) // FIX
-          .setPopup(new maplibregl.Popup().setText('🎯 Area Target')) // FIX
+          .setPopup(new maplibregl.Popup().setText('Area Target')) // FIX
           .addTo(map); // FIX
         targetMarkerRef.current = tm; // FIX
 
@@ -437,7 +503,7 @@ export function useCalculation(args: {
     return () => {
       map.off('click', handleClick); // FIX
     };
-  }, [calcMode, areaRadius, isDrawingPolygon, inputMode, targetPoint]);
+  }, [calcMode, areaRadius, isDrawingPolygon, inputMode, targetPoint, polygonPoints]);
 
   // ── Run calculation ─────────────────────────────────────
   const runCalculation = useCallback(async () => {
@@ -533,6 +599,7 @@ export function useCalculation(args: {
     handleStartCalc,
     startCalculation,
     clearCalcGraphics,
+    abortCalculation,
     remapBackbone,
     remapTarget,
   };

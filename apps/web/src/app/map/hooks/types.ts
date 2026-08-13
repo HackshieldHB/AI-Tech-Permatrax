@@ -26,6 +26,8 @@ export interface GisLayer {
   // GIS Issue 5: gunakan titik (Point) layer KMZ ini sebagai titik pelanggan
   // (homepass) pada kalkulasi topologi — menggantikan bangunan OSM
   useAsCustomers?: boolean;
+  /** JLM hybrid: treat ODP/ODC/OLT/cables in this KMZ as existing infrastructure */
+  useAsExistingNetwork?: boolean;
 }
 
 export interface NominatimResult {
@@ -58,6 +60,20 @@ export type TopoExportData = {
   // JLM Issue 3A: per-ODP port utilization (load / capacity)
   odpLoad?: number[]; // homepass count per ODP (index-aligned with odpPositions)
   odpCapacity?: number; // 8 or 16 — selected/derived port capacity
+  /** GIS Issue 4 / JLM Extra C: count of distribution segments that fell back to straight line */
+  straightRouteCount?: number;
+  /** Locked existing ODPs (from KMZ / manual) that were not regenerated */
+  existingOdpCount?: number;
+  /** JLM Homepass coverage: served/unserved + reason codes after Kalkulasi AI */
+  coverageReport?: {
+    totalHomepass: number;
+    covered: number;
+    unserved: number;
+    reasons: { CAPACITY: number; DISTANCE: number; NO_ODP: number };
+    odpPlaced: number;
+    odpTarget: number;
+    odpAddedForCoverage: number;
+  };
 }; // FIX
 
 // FIX: shape of POST /map/calculate response (enhanced FTTH topology)

@@ -203,8 +203,10 @@ function createDraggableMarker(
 export function useDesignModeMarkers(params: {
   mapRef: MutableRefObject<maplibregl.Map | null>;
   editMode: boolean;
+  /** JLM Extra A: keep MANUAL nodes visible during Backbone/Target pick (read-only) */
+  forceShowMarkers?: boolean;
 }): void {
-  const { mapRef, editMode } = params;
+  const { mapRef, editMode, forceShowMarkers = false } = params;
   const markersRef = useRef<Record<string, maplibregl.Marker>>({});
   const dragStartCoordsRef = useRef<Record<string, [number, number]>>({});
 
@@ -212,12 +214,14 @@ export function useDesignModeMarkers(params: {
     const map = mapRef.current;
     if (!map) return;
 
+    const showMarkers = editMode || forceShowMarkers;
+
     HIDE_ON_EDIT_ON.forEach((layerId) => {
       if (!map.getLayer(layerId)) return;
       map.setLayoutProperty(layerId, 'visibility', editMode ? 'none' : 'visible');
     });
 
-    if (!editMode) {
+    if (!showMarkers) {
       Object.values(markersRef.current).forEach((marker) => marker.remove());
       markersRef.current = {};
       dragStartCoordsRef.current = {};
@@ -228,7 +232,18 @@ export function useDesignModeMarkers(params: {
     const nextMarkers: Record<string, maplibregl.Marker> = {};
 
     for (const [refId, node] of Object.entries(nodes)) {
-      nextMarkers[refId] = createDraggableMarker(map, refId, node.coordinates, node.type, dragStartCoordsRef);
+      // Read-only markers during calc pick; draggable only in editMode
+      if (editMode) {
+        nextMarkers[refId] = createDraggableMarker(map, refId, node.coordinates, node.type, dragStartCoordsRef);
+      } else {
+        const el = document.createElement('div');
+        el.style.cssText =
+          'width:14px;height:14px;border-radius:50%;background:#2563EB;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.35);cursor:pointer;';
+        el.title = String(node.type || 'Node');
+        nextMarkers[refId] = new maplibregl.Marker({ element: el })
+          .setLngLat(node.coordinates)
+          .addTo(map);
+      }
     }
 
     Object.values(markersRef.current).forEach((marker) => marker.remove());
@@ -285,7 +300,7 @@ export function useDesignModeMarkers(params: {
       markersRef.current = {};
       dragStartCoordsRef.current = {};
     };
-  }, [editMode, mapRef]);
+  }, [editMode, forceShowMarkers, mapRef]);
 
   useEffect(() => {
     if (!editMode) return;
