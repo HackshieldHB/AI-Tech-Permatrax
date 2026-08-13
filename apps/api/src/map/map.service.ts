@@ -787,8 +787,11 @@ export class MapService {
           total: buildings.length,
           source: buildings.length > 0 ? 'OSM Overpass' : 'OSM empty',
         };
-        // Cache successes (incl. true empty) 30m; never cache transport errors
-        await this.redisJsonSet(cacheKey, result, 1800);
+        // Cache non-empty 30m. Do NOT cache empty — Overpass flakiness was poisoning
+        // Homepass placement into random densitas (JLM V4 Issue 1, esp. ODP 1:8).
+        if (buildings.length > 0) {
+          await this.redisJsonSet(cacheKey, result, 1800);
+        }
         this.logger.debug(`Overpass buildings: ${buildings.length} in ${r}m via ${mirror}`);
         return result;
       } catch (err: unknown) {

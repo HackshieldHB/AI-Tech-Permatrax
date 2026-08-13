@@ -12,6 +12,9 @@ export type HpAssignment = {
   odpIdx: number;
   covered: boolean;
   reason?: UnservedReason;
+  /** Cascade drop attaches to this already-covered Homepass index (JLM V3). */
+  peerIdx?: number;
+  viaPeer?: boolean;
 };
 
 export type CoverageReport = {
@@ -130,8 +133,37 @@ export function resolveMaxOdpCap(
 ): number {
   const byCapacity =
     actualHomepass > 0 ? Math.ceil(actualHomepass / Math.max(1, capacity)) : targetCount;
-  const soft = Math.max(targetCount, byCapacity) + Math.max(6, Math.ceil(byCapacity * 0.25));
-  return Math.min(soft, Math.max(byCapacity + 16, 48));
+  // JLM V4: more spatial slack for CAPACITY pockets (esp. 1:8) without unbounded growth
+  const headroom = Math.max(16, Math.ceil(byCapacity * 0.35));
+  const soft = Math.max(targetCount, byCapacity) + headroom;
+  return Math.min(soft, Math.max(byCapacity + 40, 72));
+}
+
+/**
+ * JLM V4 Issue 1: capacity 1:8 must never invent random densitas Homepass.
+ * Random scatter is only allowed as last-resort densitas for other capacities.
+ */
+export function shouldUseSyntheticDensitasFallback(
+  capacity: number,
+  hasKmzCustomers: boolean,
+  buildingCount: number,
+): boolean {
+  if (hasKmzCustomers || buildingCount > 0) return false;
+  if (capacity === 8) return false;
+  return true;
+}
+
+/** Gap-fill ODP success budget from remaining unserved (JLM V4 Issue 2). */
+export function resolveCoverageGapFillPasses(
+  unservedCount: number,
+  capacity: number,
+  maxOdpCap: number,
+  currentOdpCount: number,
+): number {
+  const room = Math.max(0, maxOdpCap - currentOdpCount);
+  if (room <= 0 || unservedCount <= 0) return 0;
+  const portsNeeded = Math.ceil(unservedCount / Math.max(1, capacity));
+  return Math.min(Math.max(12, portsNeeded + 4), room, 48);
 }
 
 /** Drop coverage radius — scale slightly for large areas without becoming unbounded. */
@@ -211,36 +243,122 @@ export function redistributeHomepassLoads(
   odpPositions: [number, number][],
   odpCapacity: number,
   coverageRadiusM: number,
+  options?: { passes?: number },
 ): { assignments: HpAssignment[]; odpLoad: number[] } {
-  const next = assignments.map((a) => ({ ...a }));
-  const odpLoad = odpPositions.map(() => 0);
-  for (const a of next) {
-    if (a.covered && a.odpIdx >= 0) odpLoad[a.odpIdx] += 1;
-  }
+  let next = assignments.map((a) => ({ ...a }));
+  const passes = Math.max(1, options?.passes ?? 3);
 
-  for (let i = 0; i < next.length; i++) {
-    const a = next[i];
-    if (a.covered) continue;
-    if (a.reason !== 'CAPACITY' && a.reason !== 'DISTANCE') continue;
-
-    let best = -1;
-    let bestDist = Infinity;
-    odpPositions.forEach(([oLng, oLat], oi) => {
-      if (odpLoad[oi] >= odpCapacity) return;
-      const d = haversineMeters(a.coords[1], a.coords[0], oLat, oLng);
-      if (d > coverageRadiusM) return;
-      if (d < bestDist) {
-        best = oi;
-        bestDist = d;
-      }
-    });
-    if (best >= 0) {
-      odpLoad[best] += 1;
-      next[i] = { coords: a.coords, odpIdx: best, covered: true };
+  const rebuildLoad = () => {
+    const odpLoad = odpPositions.map(() => 0);
+    for (const a of next) {
+      if (a.covered && a.odpIdx >= 0) odpLoad[a.odpIdx] += 1;
     }
+    return odpLoad;
+  };
+
+  let odpLoad = rebuildLoad();
+  for (let pass = 0; pass < passes; pass++) {
+    let moved = 0;
+    for (let i = 0; i < next.length; i++) {
+      const a = next[i];
+      if (a.covered) continue;
+      if (a.reason !== 'CAPACITY' && a.reason !== 'DISTANCE') continue;
+
+      let best = -1;
+      let bestDist = Infinity;
+      odpPositions.forEach(([oLng, oLat], oi) => {
+        if (odpLoad[oi] >= odpCapacity) return;
+        const d = haversineMeters(a.coords[1], a.coords[0], oLat, oLng);
+        if (d > coverageRadiusM) return;
+        if (d < bestDist) {
+          best = oi;
+          bestDist = d;
+        }
+      });
+      if (best >= 0) {
+        odpLoad[best] += 1;
+        next[i] = { coords: a.coords, odpIdx: best, covered: true };
+        moved += 1;
+      }
+    }
+    if (moved === 0) break;
+    odpLoad = rebuildLoad();
   }
 
   return { assignments: next, odpLoad };
+}
+
+/**
+ * Max peer-to-peer drop hop (m). Short hops force chain along densitas / street frontage
+ * without long jumps that cut across blocks (JLM V3).
+ */
+export function resolveMaxPeerHopM(coverageRadiusM: number): number {
+  return Math.round(Math.min(160, Math.max(65, coverageRadiusM * 0.4)));
+}
+
+/**
+ * JLM V3: coverage completion via nearest already-served Homepass (peer-to-peer).
+ * Only flips unserved → covered; never rewires existing covered assignments.
+ * Capacity is charged to the peer's ODP. Multi-wave BFS expands the connected set.
+ */
+export function expandHomepassViaPeers(
+  assignments: HpAssignment[],
+  odpLoad: number[],
+  odpCapacity: number,
+  maxPeerHopM: number,
+  options?: { maxWaves?: number },
+): { assignments: HpAssignment[]; odpLoad: number[]; expanded: number } {
+  const next = assignments.map((a) => ({ ...a }));
+  const load = odpLoad.slice();
+  const maxWaves = options?.maxWaves ?? 32;
+  let expanded = 0;
+  const hop = Math.max(1, maxPeerHopM);
+
+  for (let wave = 0; wave < maxWaves; wave++) {
+    type Cand = { ui: number; peer: number; dist: number; odp: number };
+    const cands: Cand[] = [];
+
+    for (let ui = 0; ui < next.length; ui++) {
+      if (next[ui].covered) continue;
+      const u = next[ui];
+      let best: Cand | null = null;
+      for (let pi = 0; pi < next.length; pi++) {
+        const p = next[pi];
+        if (!p.covered || p.odpIdx < 0) continue;
+        if (load[p.odpIdx] >= odpCapacity) continue;
+        const d = haversineMeters(u.coords[1], u.coords[0], p.coords[1], p.coords[0]);
+        if (d <= 0 || d > hop) continue;
+        if (!best || d < best.dist) best = { ui, peer: pi, dist: d, odp: p.odpIdx };
+      }
+      if (best) cands.push(best);
+    }
+
+    if (cands.length === 0) break;
+    cands.sort((a, b) => a.dist - b.dist);
+
+    let progress = 0;
+    const claimed = new Set<number>();
+    for (const c of cands) {
+      if (claimed.has(c.ui)) continue;
+      if (next[c.ui].covered) continue;
+      if (!next[c.peer].covered || next[c.peer].odpIdx !== c.odp) continue;
+      if (load[c.odp] >= odpCapacity) continue;
+      load[c.odp] += 1;
+      next[c.ui] = {
+        coords: next[c.ui].coords,
+        odpIdx: c.odp,
+        covered: true,
+        viaPeer: true,
+        peerIdx: c.peer,
+      };
+      claimed.add(c.ui);
+      progress += 1;
+      expanded += 1;
+    }
+    if (progress === 0) break;
+  }
+
+  return { assignments: next, odpLoad: load, expanded };
 }
 
 /** Centroid of the largest remaining unserved pocket (for gap-fill ODP). */

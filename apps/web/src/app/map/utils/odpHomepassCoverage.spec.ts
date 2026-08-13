@@ -1,11 +1,15 @@
 import {
   assignHomepassToOdps,
   clusterHomepassForOdp,
+  expandHomepassViaPeers,
   formatCoverageToast,
   redistributeHomepassLoads,
+  resolveCoverageGapFillPasses,
   resolveCoverageRadiusM,
   resolveMaxOdpCap,
+  resolveMaxPeerHopM,
   resolveOdpTargetCount,
+  shouldUseSyntheticDensitasFallback,
   summarizeCoverage,
   unservedClusterCentroid,
   unservedClusterCentroidAt,
@@ -120,13 +124,105 @@ describe('odpHomepassCoverage', () => {
     expect(toast.message).toMatch(/tanpa Homepass/i);
   });
 
-  it('caps max ODP soft ceiling', () => {
+  it('caps max ODP soft ceiling with spatial slack', () => {
     expect(resolveMaxOdpCap(5, 40, 8)).toBeGreaterThanOrEqual(5);
-    expect(resolveMaxOdpCap(5, 40, 8)).toBeLessThanOrEqual(48);
+    expect(resolveMaxOdpCap(5, 40, 8)).toBeLessThanOrEqual(72);
+    // Enough headroom for CAPACITY pockets beyond ceil(HP/cap)
+    expect(resolveMaxOdpCap(100, 800, 8)).toBeGreaterThanOrEqual(100 + 16);
+  });
+
+  it('never uses synthetic densitas for ODP capacity 1:8', () => {
+    expect(shouldUseSyntheticDensitasFallback(8, false, 0)).toBe(false);
+    expect(shouldUseSyntheticDensitasFallback(16, false, 0)).toBe(true);
+    expect(shouldUseSyntheticDensitasFallback(8, true, 0)).toBe(false);
+    expect(shouldUseSyntheticDensitasFallback(16, false, 10)).toBe(false);
+  });
+
+  it('budgets gap-fill passes from remaining unserved', () => {
+    expect(resolveCoverageGapFillPasses(174, 8, 140, 100)).toBeGreaterThan(12);
+    expect(resolveCoverageGapFillPasses(10, 8, 20, 20)).toBe(0);
+    expect(resolveCoverageGapFillPasses(80, 8, 200, 100)).toBeLessThanOrEqual(48);
   });
 
   it('scales coverage radius with area', () => {
     expect(resolveCoverageRadiusM(65, 300)).toBeGreaterThanOrEqual(250);
     expect(resolveCoverageRadiusM(65, 2000)).toBeLessThanOrEqual(420);
+  });
+
+  it('expands unserved Homepass via nearest covered peer within hop', () => {
+    // ODP covers HP0 only (capacity 2); HP1 and HP2 are beyond direct radius but chainable
+    const assignments = [
+      { coords: [106.8, -6.2] as [number, number], odpIdx: 0, covered: true },
+      {
+        coords: [106.8008, -6.2] as [number, number],
+        odpIdx: -1,
+        covered: false,
+        reason: 'DISTANCE' as const,
+      },
+      {
+        coords: [106.8016, -6.2] as [number, number],
+        odpIdx: -1,
+        covered: false,
+        reason: 'DISTANCE' as const,
+      },
+    ];
+    const { assignments: out, odpLoad, expanded } = expandHomepassViaPeers(
+      assignments,
+      [1],
+      3,
+      120,
+    );
+    expect(expanded).toBe(2);
+    expect(out.every((a) => a.covered)).toBe(true);
+    expect(out[1].viaPeer).toBe(true);
+    expect(out[1].peerIdx).toBe(0);
+    expect(out[2].viaPeer).toBe(true);
+    expect(out[0].viaPeer).toBeUndefined(); // already covered untouched
+    expect(odpLoad[0]).toBe(3);
+  });
+
+  it('does not expand peers beyond ODP capacity', () => {
+    const assignments = [
+      { coords: [106.8, -6.2] as [number, number], odpIdx: 0, covered: true },
+      {
+        coords: [106.8005, -6.2] as [number, number],
+        odpIdx: -1,
+        covered: false,
+        reason: 'DISTANCE' as const,
+      },
+      {
+        coords: [106.8006, -6.2] as [number, number],
+        odpIdx: -1,
+        covered: false,
+        reason: 'DISTANCE' as const,
+      },
+    ];
+    const { assignments: out, expanded } = expandHomepassViaPeers(assignments, [1], 1, 120);
+    expect(expanded).toBe(0);
+    expect(out.filter((a) => a.covered).length).toBe(1);
+  });
+
+  it('does not rewire already-covered Homepass during peer expansion', () => {
+    const assignments = [
+      { coords: [106.8, -6.2] as [number, number], odpIdx: 0, covered: true },
+      { coords: [106.8001, -6.2] as [number, number], odpIdx: 0, covered: true },
+      {
+        coords: [106.8007, -6.2] as [number, number],
+        odpIdx: -1,
+        covered: false,
+        reason: 'DISTANCE' as const,
+      },
+    ];
+    const before = JSON.stringify(assignments.slice(0, 2));
+    const { assignments: out } = expandHomepassViaPeers(assignments, [2], 4, 120);
+    expect(JSON.stringify(out.slice(0, 2))).toBe(before);
+    expect(out[2].covered).toBe(true);
+    expect(out[2].viaPeer).toBe(true);
+  });
+
+  it('resolves peer hop within a bounded band', () => {
+    expect(resolveMaxPeerHopM(250)).toBeGreaterThanOrEqual(65);
+    expect(resolveMaxPeerHopM(250)).toBeLessThanOrEqual(160);
+    expect(resolveMaxPeerHopM(420)).toBeLessThanOrEqual(160);
   });
 });

@@ -573,6 +573,22 @@ export function resolveSessionContext(input: {
       normalizeId(msg),
     );
   if (shortFollow && historyTopic && !msgTopic) {
+    // PAI-FNC-001/002: standalone metric/count questions must not inherit
+    // prior "bahas Finance…" prose (that was collapsing into full Summary).
+    if (
+      historyTopic === 'finance' &&
+      (isProjectCountQuery(msg) ||
+        detectFinanceMetrics(msg).length > 0 ||
+        isFinanceFilterOrAggregateQuery(msg))
+    ) {
+      return {
+        effectiveText: msg,
+        activeTopic: historyTopic,
+        activeObject: entity,
+        needsTopicClarify: false,
+        topicSwitched: false,
+      };
+    }
     const inherit = prior || `Ringkasan ${topicLabel(historyTopic)}`;
     return {
       effectiveText: `${inherit}\n${msg}`,
@@ -994,24 +1010,44 @@ export type FinanceMode =
   | 'hierarchy_counts'
   | 'status_count'
   | 'metric_aggregate'
+  | 'project_count'
   | 'ranking';
 
-export function detectFinanceMetric(text: string): FinanceMetric | null {
+/** Top-N limit from "Top 5 …" (PAI-FNC-004). Default 10, capped 1–50. */
+export function detectTopNLimit(text: string): number {
+  const m =
+    text.match(/\btop\s*(\d{1,2})\b/i) ||
+    text.match(/\b(\d{1,2})\s*(terbesar|terkecil|teratas|terendah)\b/i);
+  if (!m) return 10;
+  const n = Number(m[1]);
+  if (!Number.isFinite(n) || n < 1) return 10;
+  return Math.min(50, Math.floor(n));
+}
+
+/**
+ * Collect all aggregate metrics mentioned (PAI-FNC-002 multi-metric).
+ * Order follows user phrasing priority used by detectFinanceMetric.
+ */
+export function detectFinanceMetrics(text: string): FinanceMetric[] {
   const m = normalizeId(text);
-  // Status counts — "Berapa ACTIVE?" / "CLOSED?" / "Ada ARCHIVED?"
+  const out: FinanceMetric[] = [];
+  const push = (x: FinanceMetric) => {
+    if (!out.includes(x)) out.push(x);
+  };
+
   if (
     (/\b(archived|arsip)\b/.test(m) &&
       /(berapa|jumlah|ada|count)|^archived\??$|^arsip\??$/.test(m)) ||
     /^berapa\s+(archived|arsip)\??$/.test(m)
   ) {
-    return 'status_archived';
+    push('status_archived');
   }
   if (
     (/\b(closed|ditutup)\b/.test(m) &&
       /(berapa|jumlah|ada|count)|^closed\??$/.test(m)) ||
     /^berapa\s+closed\??$/.test(m)
   ) {
-    return 'status_closed';
+    push('status_closed');
   }
   if (
     (/\b(active|aktif)\b/.test(m) &&
@@ -1021,14 +1057,13 @@ export function detectFinanceMetric(text: string): FinanceMetric | null {
       )) ||
     /^berapa\s+(active|aktif)\??$/.test(m)
   ) {
-    return 'status_active';
+    push('status_active');
   }
-  // Over-budget count (not ranking list)
   if (
     /(over\s*budget|overbudget)/.test(m) &&
     !/(top|terbesar|terkecil|ranking|daftar|list|paling)/.test(m)
   ) {
-    return 'overbudget_count';
+    push('overbudget_count');
   }
   if (
     /(material).*(budget|anggaran)|(budget|anggaran).*material|\bmaterial\b\s*(budget|anggaran)?\??$/.test(
@@ -1036,7 +1071,7 @@ export function detectFinanceMetric(text: string): FinanceMetric | null {
     ) &&
     !/(spent|realisasi|terpakai|terbesar|terkecil|top)/.test(m)
   ) {
-    return 'material_budget';
+    push('material_budget');
   }
   if (
     /(jasa|service).*(budget|anggaran)|(budget|anggaran).*(jasa|service)|\bjasa\b\s*(budget|anggaran)?\??$/.test(
@@ -1044,21 +1079,37 @@ export function detectFinanceMetric(text: string): FinanceMetric | null {
     ) &&
     !/(spent|realisasi|terpakai|terbesar|terkecil|top)/.test(m)
   ) {
-    return 'jasa_budget';
+    push('jasa_budget');
+  }
+  // Total budget before realization so multi-metric answers lead with budget
+  if (
+    /(total\s*)?(budget|anggaran)/.test(m) &&
+    !/(material\s*budget|jasa\s*budget|service\s*budget|sisa\s*budget|remaining)/.test(
+      m,
+    ) &&
+    !/(terbesar|terkecil|top|ranking|paling)/.test(m)
+  ) {
+    push('total_budget');
   }
   if (
     /(realisasi|spent|terpakai)/.test(m) &&
     !/(terbesar|terkecil|top|ranking|paling)/.test(m)
   ) {
-    return 'realization';
+    push('realization');
   }
   if (
-    /(sisa\s*budget|remaining(\s*budget)?|sisa\b)/.test(m) &&
+    /(sisa\s*budget|remaining(\s*budget)?|\bsisa\b)/.test(m) &&
     !/(terbesar|terkecil|top|ranking|paling)/.test(m)
   ) {
-    return 'remaining';
+    push('remaining');
   }
-  return null;
+
+  return out;
+}
+
+export function detectFinanceMetric(text: string): FinanceMetric | null {
+  const all = detectFinanceMetrics(text);
+  return all[0] ?? null;
 }
 
 export function detectRankingMetric(text: string): FinanceRankingMetric {
@@ -1135,9 +1186,14 @@ export function extractProjectNeedle(text: string): string | null {
   const quoted = text.match(/["“](.+?)["”]/);
   if (quoted?.[1]?.trim()) return quoted[1].trim();
 
-  // PAI-FNC-001/002: metric phrases are never project needles
+  // PAI-FNC-001/002: bare metric phrases are never project needles
+  // Still allow "Total budget project Segment Foo" named lookups
   if (detectFinanceMetric(text) && !/\b((?:SITE|SEG|FIN)-\d{4}-\d+)\b/i.test(text)) {
-    return null;
+    const hasNamedProject =
+      /(?:project|proyek|segment|site)\s+(?!aktif\b|active\b|semua\b|seluruh\b|keseluruhan\b|tersedia\b|yang\b|finance\b)[A-Za-z0-9]/i.test(
+        text,
+      ) || /\bcari\b/i.test(text);
+    if (!hasNamedProject) return null;
   }
   if (
     /^(material|jasa|realisasi|sisa|remaining|over)(\s+budget)?\??$/i.test(m)
@@ -1252,12 +1308,26 @@ export function detectFinanceMode(text: string): FinanceMode {
     return 'top_budget';
   }
 
-  // PAI-FNC-001/002: single-metric / status aggregate before summary
-  const metric = detectFinanceMetric(text);
-  if (metric?.startsWith('status_')) return 'status_count';
-  if (metric === 'overbudget_count') return 'metric_aggregate';
+  // Named project / "cari …" wins over bare metric aggregate (PAI-FNC-003)
+  const earlyNeedle = extractProjectNeedle(text) || extractSearchNeedle(text);
   if (
-    metric &&
+    earlyNeedle &&
+    !WEAK_NEEDLES.has(earlyNeedle.toLowerCase()) &&
+    (/\bcari\b/.test(m) ||
+      /(?:project|proyek|segment|site)\s+(?!aktif\b|active\b)/i.test(text))
+  ) {
+    return 'search';
+  }
+
+  // PAI-FNC-001/002: single/multi-metric / status aggregate before summary
+  const metrics = detectFinanceMetrics(text);
+  const metric = metrics[0] ?? null;
+  if (metric?.startsWith('status_') && metrics.length === 1) return 'status_count';
+  if (metric === 'overbudget_count' && metrics.length === 1) {
+    return 'metric_aggregate';
+  }
+  if (
+    metrics.length > 0 &&
     !wantsFinanceFullSummary(text) &&
     !extractProjectNeedle(text)
   ) {
@@ -1274,9 +1344,9 @@ export function detectFinanceMode(text: string): FinanceMode {
 
   if (/(milik|punya)\s+[a-z]{2,}/.test(m)) return 'by_owner';
 
-  // Count of projects / availability → summary (never empty "search")
+  // PAI-FNC-002: total project count — non-ARCHIVED scope (not forced ACTIVE)
   if (isProjectCountQuery(text) && !extractProjectNeedle(text)) {
-    return 'summary';
+    return 'project_count';
   }
 
   // User correction after failed search → broaden to summary

@@ -4,8 +4,10 @@ import { PrismaService } from '../prisma/prisma.service';
 import type { AuthUser } from '../auth/types/auth-user.types';
 import {
   detectFinanceMetric,
+  detectFinanceMetrics,
   detectFinanceMode,
   detectRankingMetric,
+  detectTopNLimit,
   extractHierarchyConstraint,
   extractOwnerName,
   extractProjectNeedle,
@@ -13,8 +15,10 @@ import {
   fmtDateId,
   fmtIdr,
   isFinanceBudgetQuery,
+  isProjectCountQuery,
   meaningfulTokens,
   normalizeId,
+  type FinanceMetric,
   type FinanceRankingMetric,
 } from './ai-nlu';
 
@@ -319,31 +323,50 @@ export class AiToolsService {
       };
     }
 
-    const mode = detectFinanceMode(message);
-    const metric = detectFinanceMetric(message);
-    const rankingMetric = detectRankingMetric(message);
+    // Strip constraint/recovery tags for NLU so session tags don't hijack mode
+    const bareMessage = message
+      .replace(/\s*\[(SCOPE_|HIERARCHY_|BROADER_|USER_|METRIC).*?\]/gi, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    let mode = detectFinanceMode(bareMessage);
+    // PAI-FNC-002: hard-prefer project_count over inherited Summary prose
+    if (
+      isProjectCountQuery(bareMessage) &&
+      !extractProjectNeedle(bareMessage) &&
+      mode !== 'search' &&
+      mode !== 'top_budget' &&
+      mode !== 'smallest'
+    ) {
+      mode = 'project_count';
+    }
+    const metrics = detectFinanceMetrics(bareMessage);
+    const metric = metrics[0] ?? detectFinanceMetric(bareMessage);
+    const rankingMetric = detectRankingMetric(bareMessage);
+    const topN = detectTopNLimit(bareMessage);
     const broaderScope =
       /\[broader_retry\]|\[scope_non_archived\]|\[scope_all\]/i.test(message) ||
       /non.?arsip|non.?archived|termasuk closed|active\s*\+\s*closed/i.test(
         message,
       );
-    const mNorm = normalizeId(message);
     const forceClosed =
       /\[scope_closed\]/i.test(message) ||
-      (/\bclosed\b/.test(mNorm) &&
+      (/\bclosed\b/.test(normalizeId(bareMessage)) &&
         (mode === 'status_count' ||
           mode === 'summary' ||
-          mode === 'metric_aggregate'));
+          mode === 'metric_aggregate' ||
+          mode === 'project_count'));
     const forceArchived =
       /\[scope_archived\]/i.test(message) ||
-      (/\b(archived|arsip)\b/.test(mNorm) && mode === 'status_count');
+      (/\b(archived|arsip)\b/.test(normalizeId(bareMessage)) &&
+        mode === 'status_count');
     const forceActive =
-      /\[scope_active\]/i.test(message) ||
-      (/\baktif\b|\bactive\b/.test(mNorm) &&
+      (/\[scope_active\]/i.test(message) && mode !== 'project_count') ||
+      (/\baktif\b|\bactive\b/.test(normalizeId(bareMessage)) &&
         !broaderScope &&
         !forceClosed &&
         !forceArchived &&
-        mode !== 'status_count');
+        mode !== 'status_count' &&
+        mode !== 'project_count');
 
     const hierarchyLevel = extractHierarchyConstraint(message);
 
@@ -356,10 +379,9 @@ export class AiToolsService {
       !broaderScope &&
       (forceActive ||
         metric === 'status_active' ||
+        // PAI-FNC-002: aggregate defaults to non-ARCHIVED unless user said ACTIVE
         (mode === 'summary' && !forceClosed && !forceArchived) ||
-        mode === 'metric_aggregate' ||
-        mode === 'top_budget' ||
-        mode === 'smallest')
+        ((mode === 'top_budget' || mode === 'smallest') && !forceClosed))
     ) {
       statusWhere = 'ACTIVE';
     }
@@ -421,8 +443,29 @@ export class AiToolsService {
       };
     }
 
-    if (mode === 'metric_aggregate' && metric) {
-      return this.financeMetricAggregate(baseWhere, metric, hierarchyLevel);
+    // PAI-FNC-002: "Berapa total project?" → count non-ARCHIVED (or forced status)
+    if (mode === 'project_count') {
+      const count = await this.prisma.financeProject.count({
+        where: {
+          ...baseWhere,
+          ...(hierarchyLevel ? { hierarchyLevel } : {}),
+        },
+      });
+      const scopeLabel = forceActive
+        ? 'ACTIVE'
+        : forceClosed
+          ? 'CLOSED'
+          : 'non-ARCHIVED';
+      return {
+        name: 'finance_analytics',
+        ok: true,
+        summary: `Total Project – ${count} Project (${scopeLabel})`,
+        data: { count, mode: 'project_count', scope: scopeLabel },
+      };
+    }
+
+    if (mode === 'metric_aggregate' && metrics.length > 0) {
+      return this.financeMetricAggregate(baseWhere, metrics, hierarchyLevel);
     }
 
     if (mode === 'search') {
@@ -479,12 +522,13 @@ export class AiToolsService {
       };
     }
 
-    if (mode === 'top_budget' || mode === 'smallest') {
+    if (mode === 'top_budget' || mode === 'smallest' || mode === 'ranking') {
       return this.financeRankingList(
         baseWhere,
         rankingMetric,
-        mode === 'top_budget' ? 'desc' : 'asc',
+        mode === 'smallest' ? 'asc' : 'desc',
         hierarchyLevel,
+        topN,
       );
     }
 
@@ -648,14 +692,20 @@ export class AiToolsService {
     };
   }
 
-  /** PAI-FNC-002: emit one aggregate metric without full Finance Summary dump. */
+  /** PAI-FNC-002: emit one or more aggregate metrics without full Finance Summary dump. */
   private async financeMetricAggregate(
     baseWhere: Prisma.FinanceProjectWhereInput,
-    metric: NonNullable<ReturnType<typeof detectFinanceMetric>>,
+    metrics: FinanceMetric[],
     hierarchyLevel: 'SITE' | 'SEGMENT' | 'STANDALONE' | null,
   ): Promise<ToolTrace> {
     const hierNote = hierarchyLevel ? ` (${hierarchyLevel})` : '';
-    if (metric === 'overbudget_count') {
+    const wanted = metrics.filter((m) => !m.startsWith('status_'));
+    if (wanted.length === 0 && metrics[0]?.startsWith('status_')) {
+      // Should be handled by status_count; fallback
+      wanted.push(metrics[0]);
+    }
+
+    if (wanted.length === 1 && wanted[0] === 'overbudget_count') {
       const count = await this.prisma.financeProject.count({
         where: { ...baseWhere, isOverbudget: true },
       });
@@ -663,59 +713,92 @@ export class AiToolsService {
         name: 'finance_analytics',
         ok: true,
         summary: `Over Budget – ${count} Project${hierNote}`,
-        data: { metric, count },
+        data: { metric: 'overbudget_count', count },
       };
     }
 
-    const agg = await this.prisma.financeProject.aggregate({
-      where: baseWhere,
-      _sum: {
-        totalBudget: true,
-        materialBudget: true,
-        jasaBudget: true,
-        materialSpent: true,
-        jasaSpent: true,
-      },
-      _count: true,
-    });
-    const totalBudget = Number(agg._sum.totalBudget ?? 0);
-    const materialBudget = Number(agg._sum.materialBudget ?? 0);
-    const jasaBudget = Number(agg._sum.jasaBudget ?? 0);
-    const realized =
-      Number(agg._sum.materialSpent ?? 0) + Number(agg._sum.jasaSpent ?? 0);
-    const remaining = totalBudget - realized;
-    const count = agg._count;
+    const needAgg = wanted.some((m) => m !== 'overbudget_count');
+    let totalBudget = 0;
+    let materialBudget = 0;
+    let jasaBudget = 0;
+    let realized = 0;
+    let remaining = 0;
+    let count = 0;
+    if (needAgg) {
+      const agg = await this.prisma.financeProject.aggregate({
+        where: baseWhere,
+        _sum: {
+          totalBudget: true,
+          materialBudget: true,
+          jasaBudget: true,
+          materialSpent: true,
+          jasaSpent: true,
+        },
+        _count: true,
+      });
+      totalBudget = Number(agg._sum.totalBudget ?? 0);
+      materialBudget = Number(agg._sum.materialBudget ?? 0);
+      jasaBudget = Number(agg._sum.jasaBudget ?? 0);
+      realized =
+        Number(agg._sum.materialSpent ?? 0) + Number(agg._sum.jasaSpent ?? 0);
+      remaining = totalBudget - realized;
+      count = agg._count;
+    }
 
-    const lines: Record<string, string> = {
-      material_budget: `Material Budget${hierNote} – ${fmtIdr(materialBudget)} (${count} project)`,
-      jasa_budget: `Jasa Budget${hierNote} – ${fmtIdr(jasaBudget)} (${count} project)`,
-      realization: `Total Realisasi${hierNote} – ${fmtIdr(realized)} (${count} project)`,
-      remaining: `Remaining Budget${hierNote} – ${fmtIdr(remaining)} (${count} project)`,
-      total_budget: `Total Budget${hierNote} – ${fmtIdr(totalBudget)} (${count} project)`,
+    let overCount: number | null = null;
+    if (wanted.includes('overbudget_count')) {
+      overCount = await this.prisma.financeProject.count({
+        where: { ...baseWhere, isOverbudget: true },
+      });
+    }
+
+    const lineFor = (metric: FinanceMetric): string | null => {
+      switch (metric) {
+        case 'material_budget':
+          return `Material Budget${hierNote} – ${fmtIdr(materialBudget)} (${count} project)`;
+        case 'jasa_budget':
+          return `Jasa Budget${hierNote} – ${fmtIdr(jasaBudget)} (${count} project)`;
+        case 'realization':
+          return `Total Realisasi${hierNote} – ${fmtIdr(realized)} (${count} project)`;
+        case 'remaining':
+          return `Remaining Budget${hierNote} – ${fmtIdr(remaining)} (${count} project)`;
+        case 'total_budget':
+          return `Total Budget${hierNote} – ${fmtIdr(totalBudget)} (${count} project)`;
+        case 'overbudget_count':
+          return `Over Budget – ${overCount ?? 0} Project${hierNote}`;
+        default:
+          return null;
+      }
     };
+
+    const lines = wanted.map(lineFor).filter((x): x is string => Boolean(x));
     return {
       name: 'finance_analytics',
       ok: true,
       summary:
-        lines[metric] || `Metric ${metric}: tersedia untuk ${count} project`,
+        lines.join('\n') ||
+        `Metric tersedia untuk ${count} project${hierNote}`,
       data: {
-        metric,
+        metrics: wanted,
+        metric: wanted[0],
         count,
         totalBudget,
         materialBudget,
         jasaBudget,
         realized,
         remaining,
+        overCount,
       },
     };
   }
 
-  /** PAI-FNC-004: dynamic ranking by metric + direction. */
+  /** PAI-FNC-004: dynamic ranking by metric + direction + Top N. */
   private async financeRankingList(
     baseWhere: Prisma.FinanceProjectWhereInput,
     rankingMetric: FinanceRankingMetric,
     dir: 'asc' | 'desc',
     hierarchyLevel: 'SITE' | 'SEGMENT' | 'STANDALONE' | null,
+    limit = 10,
   ): Promise<ToolTrace> {
     const where: Prisma.FinanceProjectWhereInput = {
       ...baseWhere,
@@ -772,7 +855,8 @@ export class AiToolsService {
     scored.sort((a, b) =>
       dir === 'desc' ? b.sortValue - a.sortValue : a.sortValue - b.sortValue,
     );
-    const top = scored.slice(0, 10);
+    const n = Math.max(1, Math.min(50, limit || 10));
+    const top = scored.slice(0, n);
     const hierLabel = hierarchyLevel ? ` (${hierarchyLevel} saja)` : '';
     const metricLabel: Record<FinanceRankingMetric, string> = {
       totalBudget: 'Total Budget',
@@ -783,7 +867,7 @@ export class AiToolsService {
       overbudget: 'Over Budget',
     };
     const dirLabel = dir === 'desc' ? 'terbesar' : 'terkecil';
-    const title = `Top 10 Finance Project — ${metricLabel[rankingMetric]} ${dirLabel}${hierLabel}`;
+    const title = `Top ${n} Finance Project — ${metricLabel[rankingMetric]} ${dirLabel}${hierLabel}`;
     const lines = top.map((item, i) => {
       const val =
         rankingMetric === 'realization'

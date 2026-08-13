@@ -37,7 +37,9 @@ import {
   isModuleDataRankingQuery,
   isOrdinalReference,
   isPicOrRequestorQuery,
+  isProjectCountQuery,
   isUnsupportedDataQuery,
+  detectFinanceMetrics,
   detectFinanceMode,
   needsScopeClarification,
   refineRecoveryQuery,
@@ -334,7 +336,10 @@ export class AiService {
       session.activeTopic &&
       !isOrdinalReference(text) &&
       !isAttributeFollowUp(text) &&
-      !isFinanceFilterOrAggregateQuery(text)
+      !isFinanceFilterOrAggregateQuery(text) &&
+      // PAI-FNC-001/002: standalone metric/count must not replay prior Summary
+      !isProjectCountQuery(text) &&
+      detectFinanceMetrics(text).length === 0
     ) {
       if (intent === 'faq' || intent === 'howto' || intent === 'navigation') {
         intent =

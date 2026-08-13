@@ -472,13 +472,15 @@ export class FtttProjectService {
     // their Bulky and are reached via listSites()/findOne(), not this listing.
     where.hierarchyLevel = FtttHierarchyLevel.BULKY;
 
-    // PM_FTTT only sees their own projects; Admin/GM/Finance/Surveyor see all
-    const managingRoles: Role[] = [
+    // PM_FTTT only sees their own projects; Admin/GM/Finance/Surveyor/PM Senior see all
+    // PAI V9 URGENT: PM_SENIOR = cross-PM read/monitor only (mutations still exclude senior)
+    const viewAllRoles: Role[] = [
       Role.ADMIN, Role.GENERAL_MANAGER, Role.ADMIN_STOCK,
       Role.FINANCE,         // Finance uploads Jaminan — needs to see all projects
       Role.SURVEYOR_FTTT,   // Surveyor needs to see projects they're working on
+      Role.PM_SENIOR,
     ];
-    if (!managingRoles.includes(userRole)) {
+    if (!viewAllRoles.includes(userRole)) {
       where.pmId = userId;
     }
 
@@ -516,13 +518,14 @@ export class FtttProjectService {
     });
     if (!project) throw new NotFoundException('FTTT project tidak ditemukan');
 
-    // Roles that can view any project regardless of pmId
-    const managingRoles: Role[] = [
+    // Roles that can view any project regardless of pmId (read/monitor)
+    const viewAllRoles: Role[] = [
       Role.ADMIN, Role.GENERAL_MANAGER,
       Role.FINANCE,         // Finance uploads Jaminan for TELKOM_INFRA projects
       Role.SURVEYOR_FTTT,   // Surveyor uploads survey evidence for iForte/PST projects
+      Role.PM_SENIOR,       // PAI V9 URGENT: supervisory visibility across PMs
     ];
-    if (!managingRoles.includes(userRole) && project.pmId !== userId) {
+    if (!viewAllRoles.includes(userRole) && project.pmId !== userId) {
       throw new ForbiddenException('Anda tidak memiliki akses ke project ini');
     }
 

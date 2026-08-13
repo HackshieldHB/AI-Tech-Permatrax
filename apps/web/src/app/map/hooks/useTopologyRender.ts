@@ -11,14 +11,19 @@ import { extractHomepassPoints } from '../utils/geojsonMapper';
 import {
   assignHomepassToOdps,
   clusterHomepassForOdp,
+  expandHomepassViaPeers,
   formatCoverageToast,
   redistributeHomepassLoads,
+  resolveCoverageGapFillPasses,
   resolveCoverageRadiusM,
   resolveMaxOdpCap,
+  resolveMaxPeerHopM,
   resolveOdpTargetCount,
+  shouldUseSyntheticDensitasFallback,
   summarizeCoverage,
   unservedClusterCentroidAt,
   type CoverageReport,
+  type HpAssignment,
   type HpPoint,
 } from '../utils/odpHomepassCoverage';
 import type { FtthCalcApiResponse, TopoExportData } from './types';
@@ -51,6 +56,7 @@ const TOPO_LAYER_IDS = [
   'topo-dist-line', // FIX
   'topo-dist-line-straight', // GIS Issue 4: dashed fallback overlay
   'topo-drop-line', // FIX
+  'topo-drop-peer-line', // JLM V3: peer-to-peer Homepass drops
   'topo-homepass-circle', // FIX: reserved id if used
   'topo-homepass-label', // FIX: restore stored homepass labels
   'topo-ont-circle', // FIX
@@ -813,6 +819,10 @@ export function useTopologyRender(args: {
   const [topologyRendered, setTopologyRendered] = useState(false);
   const [topoExportData, setTopoExportData] = useState<TopoExportData | null>(null);
   const [lastRenderedGeometry, setLastRenderedGeometry] = useState<LastRenderedGeometry>(null);
+  /** Reuse last OSM/KMZ building Homepass when Overpass flakes (JLM V4 Issue 1 — esp. 1:8). */
+  const lastBuildingHomepassRef = useRef<
+    Array<{ lng: number; lat: number; osmId: number; type: string }>
+  >([]);
   const topoHandlersRef = useRef<
     Array<{
       layerId: string;
@@ -935,9 +945,27 @@ export function useTopologyRender(args: {
           );
           osmBuildingsRaw = fetched.buildings;
           buildingsSource = fetched.source;
+          // JLM V4: one retry (slightly wider) when Overpass empty/error — avoids densitas scatter
+          if (osmBuildingsRaw.length === 0) {
+            const retryR = Math.min(Math.round(queryRadius * 1.25), 2000);
+            const retry = await backendBuildings(
+              apiBase,
+              authToken,
+              target[1],
+              target[0],
+              retryR,
+            );
+            if (retry.buildings.length > 0) {
+              osmBuildingsRaw = retry.buildings;
+              buildingsSource = retry.source;
+              queryRadius = retryR;
+            } else {
+              buildingsSource = retry.source || buildingsSource;
+            }
+          }
         }
 
-        let osmBuildings = osmBuildingsRaw.filter((b) => {
+        const inBoundary = (b: { lng: number; lat: number }) => {
           if (boundary.type === 'polygon') {
             return isPointInPolygon(b.lng, b.lat, boundary.points);
           }
@@ -948,11 +976,27 @@ export function useTopologyRender(args: {
             boundary.centerLat,
             boundary.radiusM,
           );
-        });
+        };
 
-        // JLM V2 Homepass Detection: synthetic densitas fallback when OSM empty/error
+        let osmBuildings = osmBuildingsRaw.filter(inBoundary);
+
+        // Reuse prior building Homepass when Overpass flakes (same session)
+        if (kmzCustomers.length === 0 && osmBuildings.length === 0 && lastBuildingHomepassRef.current.length > 0) {
+          const reused = lastBuildingHomepassRef.current.filter(inBoundary);
+          if (reused.length > 0) {
+            osmBuildings = reused;
+            buildingsSource = 'session-cache';
+            toast.info(`③ Memakai ${reused.length} Homepass bangunan dari kalkulasi sebelumnya`);
+          }
+        }
+
+        // JLM V2/V4: densitas fallback only when allowed (never for ODP 1:8 — Issue 1)
         let usedSyntheticHomepass = false;
-        if (kmzCustomers.length === 0 && osmBuildings.length === 0) {
+        if (
+          kmzCustomers.length === 0 &&
+          osmBuildings.length === 0 &&
+          shouldUseSyntheticDensitasFallback(odpCapacityVal, false, 0)
+        ) {
           const estimated = Math.max(
             0,
             Math.min(400, Number(result.homepass?.estimated) || Number(result.equipment?.odp?.count) * odpCapacityVal || 24),
@@ -990,8 +1034,22 @@ export function useTopologyRender(args: {
               '③ Tidak ada Homepass terdeteksi di area. Unggah KMZ pelanggan atau perbesar Polygon/Radius.',
             );
           }
+        } else if (kmzCustomers.length === 0 && osmBuildings.length === 0) {
+          // JLM V4 Issue 1: 1:8 must stay on building coordinates — never random densitas
+          toast.warning(
+            odpCapacityVal === 8
+              ? '③ OSM kosong/gagal — kapasitas 1:8 membutuhkan Homepass pada bangunan. Unggah KMZ pelanggan atau coba Kalkulasi lagi.'
+              : '③ Tidak ada Homepass terdeteksi di area. Unggah KMZ pelanggan atau perbesar Polygon/Radius.',
+          );
         } else if (kmzCustomers.length === 0) {
           toast.info(`③ ${osmBuildings.length} Homepass dari OSM (${buildingsSource})`);
+        }
+
+        if (
+          osmBuildings.length > 0 &&
+          !osmBuildings.some((b) => b.type === 'synthetic')
+        ) {
+          lastBuildingHomepassRef.current = osmBuildings;
         }
 
         const hpPoints: HpPoint[] = osmBuildings.map((b) => ({ lng: b.lng, lat: b.lat }));
@@ -1168,22 +1226,51 @@ export function useTopologyRender(args: {
             odpPositions,
             odpCapacityVal,
             COVERAGE_RADIUS_M,
+            { passes: 3 },
           );
         };
 
         let { assignments: assignedHomepass, odpLoad } = runAssign();
-        let coveragePass = 0;
-        const maxCoveragePasses = 12;
+        const maxPeerHopMEarly = resolveMaxPeerHopM(COVERAGE_RADIUS_M);
+        // JLM V4 Issue 2: drain DISTANCE via peers before spending ODP gap-fill budget
+        {
+          const prePeer = expandHomepassViaPeers(
+            assignedHomepass,
+            odpLoad,
+            odpCapacityVal,
+            maxPeerHopMEarly,
+          );
+          assignedHomepass = prePeer.assignments;
+          odpLoad = prePeer.odpLoad;
+        }
+
+        const unservedBeforeGap = assignedHomepass.filter((h) => !h.covered).length;
+        const maxCoveragePasses = resolveCoverageGapFillPasses(
+          unservedBeforeGap,
+          odpCapacityVal,
+          maxOdpCap,
+          odpPositions.length,
+        );
+        let successAdds = 0;
+        let attempts = 0;
+        const maxAttempts = Math.max(maxCoveragePasses * 2, 24);
         let seedIndex = 0;
         while (
           assignedHomepass.some((h) => !h.covered) &&
           odpPositions.length < maxOdpCap &&
-          coveragePass < maxCoveragePasses
+          successAdds < maxCoveragePasses &&
+          attempts < maxAttempts
         ) {
-          coveragePass += 1;
-          const unservedPts = assignedHomepass
-            .filter((h) => !h.covered)
-            .map((h) => ({ lng: h.coords[0], lat: h.coords[1] }));
+          attempts += 1;
+          // Prefer CAPACITY pockets — peers already handled nearby DISTANCE
+          const capacityUnserved = assignedHomepass.filter(
+            (h) => !h.covered && h.reason === 'CAPACITY',
+          );
+          const unservedPts = (
+            capacityUnserved.length > 0
+              ? capacityUnserved
+              : assignedHomepass.filter((h) => !h.covered)
+          ).map((h) => ({ lng: h.coords[0], lat: h.coords[1] }));
           const seed = unservedClusterCentroidAt(
             unservedPts,
             odpCapacityVal,
@@ -1206,8 +1293,8 @@ export function useTopologyRender(args: {
             },
           );
           if (!placed) {
-            const bearing = ((coveragePass * 37) * Math.PI) / 180;
-            const dM = 40 + coveragePass * 8;
+            const bearing = ((attempts * 37) * Math.PI) / 180;
+            const dM = 40 + attempts * 8;
             const dLat = (dM / 6371000) * (180 / Math.PI) * Math.cos(bearing);
             const dLng =
               ((dM / 6371000) * (180 / Math.PI) * Math.sin(bearing)) /
@@ -1226,7 +1313,7 @@ export function useTopologyRender(args: {
               },
             );
           }
-          // JLM V2: don't abort whole loop on one failed seed — try next pocket
+          // Failed snap/tooClose does not consume success budget (JLM V4)
           if (!placed) continue;
           const tooClose = odpPositions.some(
             (e) => haversineM(placed![1], placed![0], e[1], e[0]) < MIN_ODP_SEP_M * 0.75,
@@ -1234,7 +1321,16 @@ export function useTopologyRender(args: {
           if (tooClose) continue;
           odpPositions.push(placed);
           odpAddedForCoverage += 1;
+          successAdds += 1;
           ({ assignments: assignedHomepass, odpLoad } = runAssign());
+          const midPeer = expandHomepassViaPeers(
+            assignedHomepass,
+            odpLoad,
+            odpCapacityVal,
+            maxPeerHopMEarly,
+          );
+          assignedHomepass = midPeer.assignments;
+          odpLoad = midPeer.odpLoad;
         }
 
         // Final redistribution pass after gap-fill
@@ -1295,12 +1391,7 @@ export function useTopologyRender(args: {
         // Preserve homepass coordinates carried across recalculations (keep their ODP if valid)
         const preservedHomepass = Array.isArray(result.homepassPoints) ? result.homepassPoints : [];
         const homepassKey = (c: [number, number]) => `${c[0]},${c[1]}`;
-        const validHomepass: Array<{
-          coords: [number, number];
-          odpIdx: number;
-          covered: boolean;
-          reason?: 'CAPACITY' | 'DISTANCE' | 'NO_ODP';
-        }> = [...assignedHomepass];
+        let validHomepass: HpAssignment[] = [...assignedHomepass];
         const seenHomepass = new Set(validHomepass.map((h) => homepassKey(h.coords)));
         preservedHomepass.forEach((hp) => {
           if (seenHomepass.has(homepassKey(hp.coords))) return; // FIX
@@ -1330,6 +1421,22 @@ export function useTopologyRender(args: {
             });
           }
         }); // FIX
+
+        // JLM V3: peer-to-peer expansion for remaining unserved only (no ODP/feeder changes)
+        const maxPeerHopM = resolveMaxPeerHopM(COVERAGE_RADIUS_M);
+        const peerExpansion = expandHomepassViaPeers(
+          validHomepass,
+          odpLoad,
+          odpCapacityVal,
+          maxPeerHopM,
+        );
+        validHomepass = peerExpansion.assignments;
+        odpLoad = peerExpansion.odpLoad;
+        if (peerExpansion.expanded > 0) {
+          toast.info(
+            `⑤+ Peer-to-peer: ${peerExpansion.expanded} Homepass terlayani via Homepass terdekat`,
+          );
+        }
 
         const coverageReport: CoverageReport = summarizeCoverage(
           validHomepass,
@@ -1436,23 +1543,33 @@ export function useTopologyRender(args: {
           type: 'geojson', // FIX
           data: {
             type: 'FeatureCollection', // FIX
-            // JLM Issue 3B: only covered homepass have a drop cable to an ODP
+            // Direct ODP→HP drops + JLM V3 peer→HP cascade drops (unserved completion)
             features: validHomepass
-              .filter((hp) => hp.covered && odpPositions[hp.odpIdx]) // FIX
-              .map((hp) => ({
-                type: 'Feature' as const, // FIX
-                geometry: {
-                  type: 'LineString' as const, // FIX
-                  coordinates: [odpPositions[hp.odpIdx], hp.coords], // FIX
-                },
-                properties: {}, // FIX
-              })), // FIX
+              .filter((hp) => hp.covered && hp.odpIdx >= 0 && odpPositions[hp.odpIdx]) // FIX
+              .map((hp) => {
+                const peer =
+                  hp.viaPeer &&
+                  typeof hp.peerIdx === 'number' &&
+                  validHomepass[hp.peerIdx]?.covered
+                    ? validHomepass[hp.peerIdx]
+                    : null;
+                const from = peer ? peer.coords : odpPositions[hp.odpIdx];
+                return {
+                  type: 'Feature' as const, // FIX
+                  geometry: {
+                    type: 'LineString' as const, // FIX
+                    coordinates: [from, hp.coords], // FIX
+                  },
+                  properties: { viaPeer: peer ? 1 : 0 }, // FIX
+                };
+              }), // FIX
           },
         }); // FIX
         safeAddLayer({
           id: 'topo-drop-line', // FIX
           type: 'line', // FIX
           source: 'topo-drop', // FIX
+          filter: ['!=', ['get', 'viaPeer'], 1],
           paint: {
             'line-color': '#111827', // FIX: drop dark gray
             'line-width': 0.8, // FIX
@@ -1460,6 +1577,18 @@ export function useTopologyRender(args: {
             'line-dasharray': [2, 2], // FIX
           },
         }); // FIX
+        safeAddLayer({
+          id: 'topo-drop-peer-line',
+          type: 'line',
+          source: 'topo-drop',
+          filter: ['==', ['get', 'viaPeer'], 1],
+          paint: {
+            'line-color': '#DC2626', // JLM V3 illustration: peer cascade in red
+            'line-width': 1.2,
+            'line-opacity': 0.85,
+            'line-dasharray': [1.5, 1.5],
+          },
+        });
 
         if (closurePoints.length > 0) {
           // FIX: Closure along feeder

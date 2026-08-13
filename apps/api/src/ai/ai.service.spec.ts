@@ -7,6 +7,8 @@ import {
   isFinanceBudgetQuery,
   resolveFollowUp,
   detectFinanceMode,
+  detectFinanceMetrics,
+  detectTopNLimit,
   classifyPaIntent,
   extractProjectNeedle,
   resolveNavigation,
@@ -422,12 +424,12 @@ describe('PermaTrax AI chatbot (logic)', () => {
 
   // --- Permarax AI 3 (PAI-BHV-001 … 007) ---
 
-  it('BHV-001/003: project count uses summary, not empty search', () => {
+  it('BHV-001/003: project count uses project_count, not empty search', () => {
     const q =
       'Berdasarkan Finance Project saat ini, sudah ada berapa project yang tersedia saat ini?';
     expect(isProjectCountQuery(q)).toBe(true);
     expect(extractProjectNeedle(q)).toBeNull();
-    expect(detectFinanceMode(q)).toBe('summary');
+    expect(detectFinanceMode(q)).toBe('project_count');
     expect(classifyPaIntent(q)).toBe('data');
   });
 
@@ -1688,5 +1690,88 @@ describe('PermaTrax AI chatbot (logic)', () => {
     expect(res.toolTraces.some((t) => t.name === 'finance_analytics')).toBe(true);
     expect(res.answer).toMatch(/SITE|Total Project|11/i);
     expect(res.answer).not.toMatch(/User Guide|Apa itu Finance Project/i);
+  });
+
+  // --- PAI Enhancement V9 ---
+
+  it('FNC-002 V9: total project count is non-ARCHIVED, not forced ACTIVE', async () => {
+    const prisma = makePrisma();
+    (prisma as any).financeProject.count = jest.fn(async ({ where }: any) => {
+      if (where?.status === 'ACTIVE') return 74;
+      if (where?.status?.not === 'ARCHIVED') return 99;
+      return 99;
+    });
+    const { ai } = makeServices(prisma);
+    const start = await ai.chat(user, 'Aku mau bahas Finance Project.');
+    const res = await ai.chat(user, 'Berapa total project?', start.conversationId);
+    expect(detectFinanceMode('Berapa total project?')).toBe('project_count');
+    expect(res.answer).toMatch(/Total Project\s*[–-]\s*99/i);
+    expect(res.answer).toMatch(/non-ARCHIVED/i);
+    expect(res.answer).not.toMatch(/ACTIVE Project\s*[–-]\s*74/i);
+  });
+
+  it('FNC-002 V9: multi-metric budget + realisasi', async () => {
+    expect(detectFinanceMetrics('Total budget dan realisasinya berapa?')).toEqual(
+      expect.arrayContaining(['total_budget', 'realization']),
+    );
+    const prisma = makePrisma();
+    const { ai } = makeServices(prisma);
+    const start = await ai.chat(user, 'Aku mau bahas Finance Project.');
+    const res = await ai.chat(
+      user,
+      'Total budget dan realisasinya berapa?',
+      start.conversationId,
+    );
+    expect(res.answer).toMatch(/Total Budget/i);
+    expect(res.answer).toMatch(/Total Realisasi/i);
+    expect(res.answer).not.toMatch(/Total Budget Finance Project \(/i);
+  });
+
+  it('FNC-004 V9: Top N limit and ASC direction', () => {
+    expect(detectTopNLimit('Top 5 budget terkecil')).toBe(5);
+    expect(detectFinanceMode('Top 5 budget terkecil')).toBe('smallest');
+  });
+
+  it('FNC-005 V9: ACTIVE SITE + realisasi ranking', async () => {
+    const prisma = makePrisma();
+    (prisma as any).financeProject.findMany = jest.fn(async ({ where }: any) => {
+      expect(where?.status).toBe('ACTIVE');
+      expect(where?.hierarchyLevel).toBe('SITE');
+      return [
+        {
+          code: 'S1',
+          name: 'Site Low',
+          totalBudget: 5000000000,
+          materialBudget: 1,
+          jasaBudget: 1,
+          materialSpent: 10000000,
+          jasaSpent: 0,
+          status: 'ACTIVE',
+          hierarchyLevel: 'SITE',
+          isOverbudget: false,
+        },
+        {
+          code: 'S2',
+          name: 'Site High',
+          totalBudget: 1000000000,
+          materialBudget: 1,
+          jasaBudget: 1,
+          materialSpent: 800000000,
+          jasaSpent: 100000000,
+          status: 'ACTIVE',
+          hierarchyLevel: 'SITE',
+          isOverbudget: false,
+        },
+      ];
+    });
+    const { ai } = makeServices(prisma);
+    const start = await ai.chat(user, 'Aku mau bahas Finance Project.');
+    const res = await ai.chat(
+      user,
+      'Top 5 ACTIVE SITE realisasi terbesar',
+      start.conversationId,
+    );
+    expect(res.answer).toMatch(/Top 5.*Realisasi terbesar/i);
+    expect(res.answer.indexOf('S2')).toBeLessThan(res.answer.indexOf('S1'));
   });
 });

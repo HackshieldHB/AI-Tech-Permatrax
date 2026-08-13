@@ -120,7 +120,16 @@ const NAV_ITEMS: NavItem[] = [
     label: 'FTTT Projects',
     icon: Database,
     section: 'OPERASIONAL',
-    roles: ['PM_FTTT', 'SURVEYOR_FTTT', 'ADMIN', 'GENERAL_MANAGER', 'ADMIN_STOCK', 'FINANCE'],
+    // PAI V9 URGENT: PM Senior = read-only monitoring (API view-all; mutations stay PM_FTTT/Admin/GM)
+    roles: [
+      'PM_FTTT',
+      'PM_SENIOR',
+      'SURVEYOR_FTTT',
+      'ADMIN',
+      'GENERAL_MANAGER',
+      'ADMIN_STOCK',
+      'FINANCE',
+    ],
   },
   {
     href: '/approval-dana',
@@ -218,7 +227,8 @@ const NAV_ITEMS: NavItem[] = [
     label: 'Finance Projects',
     icon: PiggyBank,
     section: 'DASHBOARD',
-    roles: ['FINANCE', 'GENERAL_MANAGER', 'ADMIN', 'OPERATIONAL_MANAGER'], // FIX 8
+    // PAI V9 URGENT: PM Senior view/monitor FTTH+FTTT finance hierarchy (manage stays Finance/GM)
+    roles: ['FINANCE', 'GENERAL_MANAGER', 'ADMIN', 'OPERATIONAL_MANAGER', 'PM_SENIOR'],
   },
   { href: '/settings', label: 'Pengaturan', icon: Settings, section: 'MANAJEMEN', gmOnly: true },
   { href: '/guide', label: 'Panduan', icon: HelpCircle, section: 'UTILITAS' },
