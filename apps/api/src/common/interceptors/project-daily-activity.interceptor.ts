@@ -8,6 +8,7 @@ import { DailyActivityWorkStatus } from '@prisma/client';
 import { Observable, tap } from 'rxjs';
 import { PrismaService } from '../../prisma/prisma.service';
 import type { AuthUser } from '../../auth/types/auth-user.types';
+import { buildActivityDescription } from '../activity/activity-description';
 
 const MUTATING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
@@ -35,73 +36,10 @@ const KEYWORD_SEGMENTS = new Set([
   'planning',
   'budget',
   'timeline',
+  'beginning-groups',
+  'site-endings',
+  'complete',
 ]);
-
-const SCOPE_BY_SEGMENT: Record<string, string> = {
-  'implementation-logs': 'Implementation Log',
-  'advance-phase': 'Phase Advance',
-  'submit-survey-review': 'Survey Submit Review',
-  'review-survey': 'Survey Review',
-  'mark-implementation-done': 'Implementation Lapangan Done',
-  'survey-uploads': 'Survey Upload',
-  'survey-sites': 'Survey Site',
-  'drm-documents': 'DRM Document',
-  sanggah: 'Sanggah',
-  documents: 'Project Document',
-  spans: 'Daily Log Span',
-  logs: 'Daily Log',
-  transactions: 'Finance Transaction',
-  accept: 'Financial Request Accept',
-  decline: 'Financial Request Decline',
-  disburse: 'Finance Disburse',
-  'recon-docs': 'Reconciliation Doc',
-  'closing-logs': 'Closing Log',
-  'confirm-maintenance': 'Maintenance Confirm',
-  'implementation-type': 'Implementation Type',
-  'total-panjang': 'Total Panjang',
-  'payment-status': 'Payment Status',
-  'po-customer': 'PO Customer',
-  'plan-import': 'Plan Import',
-  planning: 'Planning Update',
-  budget: 'Budget Update',
-  timeline: 'Timeline Update',
-  sites: 'Site Create',
-};
-
-function actionFromMethod(method: string, path: string): string {
-  const p = path.toLowerCase();
-  if (p.includes('approve')) return 'APPROVE';
-  if (p.includes('reject') || p.includes('decline')) return 'REJECT';
-  if (p.includes('upload') || p.includes('evidence') || p.includes('document') || p.includes('logs')) return 'UPLOAD';
-  if (p.includes('import')) return 'IMPORT';
-  if (p.includes('export')) return 'EXPORT';
-  if (p.includes('submit')) return 'SUBMIT';
-  if (p.includes('accept')) return 'APPROVE';
-  if (p.includes('disburse')) return 'UPDATE';
-  if (method === 'POST') return 'CREATE';
-  if (method === 'PUT' || method === 'PATCH') return 'UPDATE';
-  if (method === 'DELETE') return 'DELETE';
-  return method;
-}
-
-function scopeOfWorkFromPath(method: string, path: string): string {
-  const clean = path.split('?')[0];
-  const segs = clean.split('/').filter(Boolean);
-  const action = actionFromMethod(method, clean);
-  // Prefer the most specific known segment from the end
-  for (let i = segs.length - 1; i >= 0; i--) {
-    const seg = segs[i].toLowerCase();
-    if (SCOPE_BY_SEGMENT[seg]) {
-      return `${SCOPE_BY_SEGMENT[seg]} (${action})`;
-    }
-  }
-  const last = segs[segs.length - 1] || 'project';
-  if (KEYWORD_SEGMENTS.has(last) || /^[a-z0-9]{20,}$/i.test(last)) {
-    const prev = segs[segs.length - 2] || 'project';
-    return `${prev.replace(/-/g, ' ')} (${action})`;
-  }
-  return `Project ${action}`;
-}
 
 function extractEntityId(path: string, root: 'fttt-projects' | 'finance-projects'): string | null {
   const clean = path.split('?')[0];
@@ -114,8 +52,8 @@ function extractEntityId(path: string, root: 'fttt-projects' | 'finance-projects
 }
 
 /**
- * Integra V10: append a Daily Activity row for every successful project mutation
- * (FTTT + Finance), all actors — same coverage model as System Overview, project-scoped.
+ * Integra V10 / URGENT: append a Daily Activity row with human-readable Scope of Work
+ * for every successful project mutation (FTTT + Finance).
  */
 @Injectable()
 export class ProjectDailyActivityInterceptor implements NestInterceptor {
@@ -148,8 +86,8 @@ export class ProjectDailyActivityInterceptor implements NestInterceptor {
 
     return next.handle().pipe(
       tap({
-        next: () => {
-          void this.persist(actorId, method, path, req.body, req.params).catch(() => {
+        next: (responseBody) => {
+          void this.persist(actorId, method, path, req.body, req.params, responseBody).catch(() => {
             /* never break the request */
           });
         },
@@ -163,8 +101,8 @@ export class ProjectDailyActivityInterceptor implements NestInterceptor {
     path: string,
     body?: Record<string, unknown>,
     params?: Record<string, string>,
+    responseBody?: unknown,
   ) {
-    const scopeOfWork = scopeOfWorkFromPath(method, path);
     let ftttProjectId: string | null = extractEntityId(path, 'fttt-projects');
     let financeProjectId: string | null = extractEntityId(path, 'finance-projects');
     let siteName: string | null =
@@ -172,13 +110,34 @@ export class ProjectDailyActivityInterceptor implements NestInterceptor {
       (typeof body?.name === 'string' && body.name) ||
       (typeof body?.siteName === 'string' && body.siteName) ||
       null;
+    let category: string | null =
+      (typeof body?.category === 'string' && body.category) ||
+      (typeof body?.budgetCategory === 'string' && body.budgetCategory) ||
+      null;
+    let amount: number | string | null =
+      (typeof body?.amount === 'number' || typeof body?.amount === 'string' ? body.amount : null) ??
+      (typeof body?.totalAmount === 'number' || typeof body?.totalAmount === 'string' ? body.totalAmount : null) ??
+      (typeof body?.materialBudget === 'number' || typeof body?.materialBudget === 'string'
+        ? body.materialBudget
+        : null);
 
-    // Nested routes: resolve project via related entity ids in params/path
     if (!ftttProjectId && path.includes('/fttt-projects/')) {
       ftttProjectId = await this.resolveFtttProjectId(path, params);
     }
     if (!financeProjectId && path.includes('/finance-projects/')) {
       financeProjectId = await this.resolveFinanceProjectId(path, params);
+    }
+
+    // Beginning group: resolve beginning site name
+    const beginningSiteId =
+      (typeof body?.beginningFinanceSiteId === 'string' && body.beginningFinanceSiteId) ||
+      null;
+    if (beginningSiteId && !siteName) {
+      const fs = await this.prisma.financeProject.findUnique({
+        where: { id: beginningSiteId },
+        select: { name: true },
+      });
+      if (fs) siteName = fs.name;
     }
 
     if (ftttProjectId && !siteName) {
@@ -190,7 +149,6 @@ export class ProjectDailyActivityInterceptor implements NestInterceptor {
         siteName = p.projectName;
         if (!financeProjectId) financeProjectId = p.financeProjectId;
       } else {
-        // Stale/wrong id from path keyword miss — don't FK-fail
         ftttProjectId = null;
       }
     }
@@ -204,16 +162,41 @@ export class ProjectDailyActivityInterceptor implements NestInterceptor {
       else financeProjectId = null;
     }
 
+    // Enrich from created transaction response when available
+    if (responseBody && typeof responseBody === 'object') {
+      const r = responseBody as Record<string, unknown>;
+      if (!category && typeof r.category === 'string') category = r.category;
+      if (amount == null && (typeof r.amount === 'number' || typeof r.amount === 'string')) {
+        amount = r.amount as number | string;
+      }
+      if (!siteName && typeof r.projectName === 'string') siteName = r.projectName;
+      if (
+        !siteName &&
+        r.beginningFinanceSite &&
+        typeof r.beginningFinanceSite === 'object' &&
+        typeof (r.beginningFinanceSite as { name?: string }).name === 'string'
+      ) {
+        siteName = (r.beginningFinanceSite as { name: string }).name;
+      }
+    }
+
+    const scopeOfWork = buildActivityDescription(method, path, {
+      siteName,
+      projectName: siteName,
+      category,
+      amount,
+      objectName: siteName,
+    });
+
     const remarks = `${method} ${path.split('?')[0]}`.slice(0, 500);
 
     await this.prisma.dailyActivity.create({
       data: {
         actorId,
-        scopeOfWork: scopeOfWork.slice(0, 200),
+        scopeOfWork: scopeOfWork.slice(0, 400),
         ftttProjectId,
         financeProjectId,
         siteName,
-        // Feed rows are completed events — no overdue monitoring
         workStatus: DailyActivityWorkStatus.DONE,
         targetDoneAt: null,
         remarks,

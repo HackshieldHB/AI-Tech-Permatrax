@@ -628,6 +628,17 @@ function SurveySection({ project, onRefresh, continueMode = false }: { project: 
 }
 
 // ─── Site Initiation section (Integra V1: Bulky project → child Sites) ───────
+type BeginningGroupRow = {
+  id: string;
+  status: 'DRAFT' | 'COMPLETED';
+  beginningFinanceSite: { id: string; code: string; name: string; totalBudget?: number | string };
+  endings: Array<{
+    id: string;
+    endingFinanceSite: { id: string; code: string; name: string };
+    ftttProject?: { id: string; projectName?: string | null; currentPhase?: string; pm?: { name?: string } | null } | null;
+  }>;
+};
+
 function SiteInitiationSection({
   project,
   onRefresh,
@@ -642,14 +653,18 @@ function SiteInitiationSection({
 }) {
   const { user } = useAuthStore();
   const canManage = !monitoringOnly && (userRole === 'ADMIN' || userRole === 'GENERAL_MANAGER' || userRole === 'PM_FTTT');
+  const [groups, setGroups] = useState<BeginningGroupRow[]>([]);
   const [sites, setSites] = useState<FtttSiteSummary[]>([]);
   const [available, setAvailable] = useState<FinanceSiteOption[]>([]);
   const [loading, setLoading] = useState(true);
-  const [selectedFinanceSiteId, setSelectedFinanceSiteId] = useState('');
+  const [selectedBeginningId, setSelectedBeginningId] = useState('');
   const [financeSiteSearch, setFinanceSiteSearch] = useState('');
   const [adding, setAdding] = useState(false);
-  const [deletingId, setDeletingId] = useState<string | null>(null);
-  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  const [draftEndings, setDraftEndings] = useState<Record<string, Set<string>>>({});
+  const [completingId, setCompletingId] = useState<string | null>(null);
+  const [deletingEndingId, setDeletingEndingId] = useState<string | null>(null);
+  const [confirmDeleteEndingId, setConfirmDeleteEndingId] = useState<string | null>(null);
 
   const filteredAvailable = useMemo(() => {
     const q = financeSiteSearch.trim().toLowerCase();
@@ -660,150 +675,313 @@ function SiteInitiationSection({
     });
   }, [available, financeSiteSearch]);
 
+  const endingFtttIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const g of groups) {
+      for (const e of g.endings) {
+        if (e.ftttProject?.id) ids.add(e.ftttProject.id);
+      }
+    }
+    return ids;
+  }, [groups]);
+
+  const legacySites = useMemo(
+    () => sites.filter((s) => !endingFtttIds.has(s.id)),
+    [sites, endingFtttIds],
+  );
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [sitesRes, availRes] = await Promise.all([
+      const [groupsRes, sitesRes, availRes] = await Promise.all([
+        apiFetch(`/fttt-projects/${project.id}/beginning-groups`, { method: 'GET' }, user?.id),
         apiFetch(`/fttt-projects/${project.id}/sites`, { method: 'GET' }, user?.id),
-        canManage
-          ? apiFetch(`/fttt-projects/${project.id}/available-finance-sites`, { method: 'GET' }, user?.id)
-          : Promise.resolve(null),
+        apiFetch(`/fttt-projects/${project.id}/available-finance-sites`, { method: 'GET' }, user?.id),
       ]);
+      setGroups(groupsRes.ok ? await groupsRes.json() : []);
       setSites(sitesRes.ok ? await sitesRes.json() : []);
-      setAvailable(availRes && availRes.ok ? await availRes.json() : []);
+      setAvailable(availRes.ok ? await availRes.json() : []);
     } catch { /* ignore */ }
     finally { setLoading(false); }
-  }, [project.id, user?.id, canManage]);
+  }, [project.id, user?.id]);
   useEffect(() => { void load(); }, [load]);
 
   const fmtIDR = (n: number) => 'Rp ' + Math.round(n).toLocaleString('id-ID');
 
-  const handleAddSite = async () => {
-    if (!selectedFinanceSiteId) { toast.error('Pilih Finance Site terlebih dahulu'); return; }
+  const toggleExpanded = (groupId: string) => {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(groupId)) next.delete(groupId);
+      else next.add(groupId);
+      return next;
+    });
+  };
+
+  const toggleDraftEnding = (groupId: string, financeSiteId: string) => {
+    setDraftEndings((prev) => {
+      const cur = new Set(prev[groupId] ?? []);
+      if (cur.has(financeSiteId)) cur.delete(financeSiteId);
+      else cur.add(financeSiteId);
+      return { ...prev, [groupId]: cur };
+    });
+  };
+
+  const handleAddBeginning = async () => {
+    if (!selectedBeginningId) { toast.error('Pilih Beginning Site terlebih dahulu'); return; }
     setAdding(true);
     try {
-      const res = await apiFetch(`/fttt-projects/${project.id}/sites`, {
+      const res = await apiFetch(`/fttt-projects/${project.id}/beginning-groups`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ financeProjectId: selectedFinanceSiteId }),
+        body: JSON.stringify({ beginningFinanceSiteId: selectedBeginningId }),
       }, user?.id);
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal menambahkan site');
-      toast.success('Site berhasil ditambahkan');
-      setSelectedFinanceSiteId('');
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal menambahkan Beginning Site');
+      const created = await res.json() as BeginningGroupRow;
+      toast.success('Beginning Site ditambahkan');
+      setSelectedBeginningId('');
+      setExpandedIds((prev) => new Set(prev).add(created.id));
       void load(); onRefresh();
     } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
     finally { setAdding(false); }
   };
 
-  const handleDeleteSite = async (siteId: string) => {
-    setDeletingId(siteId);
+  const handleComplete = async (groupId: string) => {
+    const selected = Array.from(draftEndings[groupId] ?? []);
+    if (selected.length === 0) { toast.error('Pilih minimal satu Ending Site'); return; }
+    setCompletingId(groupId);
     try {
-      const res = await apiFetch(`/fttt-projects/sites/${siteId}`, { method: 'DELETE' }, user?.id);
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal menghapus site');
-      toast.success('Site dihapus');
-      setConfirmDeleteId(null);
+      const res = await apiFetch(`/fttt-projects/${project.id}/beginning-groups/${groupId}/complete`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ endingFinanceSiteIds: selected }),
+      }, user?.id);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal COMPLETE');
+      toast.success('Ending Site berhasil disimpan');
+      setDraftEndings((prev) => {
+        const next = { ...prev };
+        delete next[groupId];
+        return next;
+      });
       void load(); onRefresh();
     } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
-    finally { setDeletingId(null); }
+    finally { setCompletingId(null); }
+  };
+
+  const handleDeleteEnding = async (endingId: string) => {
+    setDeletingEndingId(endingId);
+    try {
+      const res = await apiFetch(`/fttt-projects/site-endings/${endingId}`, { method: 'DELETE' }, user?.id);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? 'Gagal menghapus Ending Site');
+      toast.success('Hubungan Ending Site dihapus');
+      setConfirmDeleteEndingId(null);
+      void load(); onRefresh();
+    } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Gagal'); }
+    finally { setDeletingEndingId(null); }
   };
 
   return (
     <div>
       <p style={{ fontWeight: 600, fontSize: 14, marginBottom: 4 }}>
-        {monitoringOnly ? '📍 Daftar Child Project (Site)' : '📍 Site Initiation'}
+        {monitoringOnly ? '📍 Daftar Beginning → Ending Site' : '📍 Site Initiation'}
       </p>
       <p style={{ fontSize: 12, color: '#57606a', marginBottom: 12 }}>
         {monitoringOnly
-          ? 'Parent Project berfungsi sebagai monitoring. Buka masing-masing Site untuk lifecycle operasional (Survey → Closing).'
-          : 'Project ini bersifat Bulky (gabungan beberapa Site). Tambahkan Site yang akan dikerjakan — setiap Site terhubung ke Finance Site (Segment) masing-masing.'}
+          ? 'Parent Project berfungsi sebagai monitoring. Klik Ending Site untuk masuk ke lifecycle operasional (Survey → Closing).'
+          : 'Pilih Beginning Site, lalu tentukan satu atau lebih Ending Site. Site dari Finance dapat dipakai ulang (tidak di-lock). COMPLETE hanya menyimpan hubungan untuk Beginning tersebut — bukan menutup seluruh fase Site Initiation.'}
       </p>
 
       {canManage && (
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 14, flexWrap: 'wrap' }}>
-          {/* Integra: Search filters the existing Finance Site dropdown without replacing it */}
           <input
             type="search"
             value={financeSiteSearch}
-            onChange={(e) => {
-              const q = e.target.value;
-              setFinanceSiteSearch(q);
-              // Clear selection if it no longer matches the filtered list
-              if (selectedFinanceSiteId) {
-                const stillVisible = available.some((fs) => {
-                  if (fs.id !== selectedFinanceSiteId) return false;
-                  const hay = `${fs.code} ${fs.name}`.toLowerCase();
-                  return !q.trim() || hay.includes(q.trim().toLowerCase());
-                });
-                if (!stillVisible) setSelectedFinanceSiteId('');
-              }
-            }}
+            onChange={(e) => setFinanceSiteSearch(e.target.value)}
             placeholder="Cari Site Code / Nama…"
             style={{ flex: '0 1 200px', minWidth: 160, padding: '7px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12 }}
           />
-          <select value={selectedFinanceSiteId} onChange={(e) => setSelectedFinanceSiteId(e.target.value)}
+          <select value={selectedBeginningId} onChange={(e) => setSelectedBeginningId(e.target.value)}
             style={{ flex: 1, minWidth: 220, padding: '7px 10px', borderRadius: 6, border: '1px solid #D0D7DE', fontSize: 12 }}>
-            <option value="">— Pilih Finance Site —</option>
+            <option value="">— Pilih Beginning Site —</option>
             {filteredAvailable.map((fs) => (
               <option key={fs.id} value={fs.id}>{fs.code} · {fs.name} ({fmtIDR(Number(fs.totalBudget))})</option>
             ))}
           </select>
-          <button type="button" disabled={adding || !selectedFinanceSiteId} onClick={() => void handleAddSite()}
+          <button type="button" disabled={adding || !selectedBeginningId} onClick={() => void handleAddBeginning()}
             style={{ padding: '7px 14px', borderRadius: 6, border: 'none', background: '#0969DA', color: '#fff', fontWeight: 600, cursor: adding ? 'not-allowed' : 'pointer', fontSize: 12 }}>
-            {adding ? 'Menambahkan…' : '+ Add Site'}
+            {adding ? 'Menambahkan…' : '+ Tambah Beginning Site'}
           </button>
         </div>
-      )}
-      {canManage && available.length === 0 && !loading && (
-        <p style={{ fontSize: 11, color: '#8c959f', marginTop: -8, marginBottom: 12 }}>Tidak ada Finance Site yang tersedia untuk ditambahkan.</p>
-      )}
-      {canManage && available.length > 0 && filteredAvailable.length === 0 && (
-        <p style={{ fontSize: 11, color: '#8c959f', marginTop: -8, marginBottom: 12 }}>Tidak ada Finance Site yang cocok dengan pencarian.</p>
       )}
 
       {loading ? (
         <p style={{ fontSize: 12, color: '#8c959f' }}>Memuat…</p>
-      ) : sites.length === 0 ? (
-        <p style={{ fontSize: 12, color: '#8c959f' }}>Belum ada Site.</p>
+      ) : groups.length === 0 && legacySites.length === 0 ? (
+        <p style={{ fontSize: 12, color: '#8c959f' }}>Belum ada Beginning Site.</p>
       ) : (
-        <div style={{ border: '1px solid #D0D7DE', borderRadius: 10, overflow: 'hidden' }}>
-          {sites.map((s) => (
-            <div key={s.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, padding: '10px 12px', borderBottom: '1px solid #F0F3F6' }}>
-              <div>
-                <Link href={`/fttt-projects/${s.id}`} style={{ fontWeight: 600, fontSize: 13, color: '#0969DA', textDecoration: 'none' }}>
-                  {s.projectName ?? `Site ${s.id.slice(-6).toUpperCase()}`}
-                </Link>
-                <div style={{ fontSize: 11, color: '#57606a', marginTop: 2 }}>
-                  {FTTT_PHASE_LABELS[s.currentPhase]} · {s.financeProject ? `${s.financeProject.code} · ${s.financeProject.name}` : 'Belum terhubung Finance Site'}
-                  {s.pm?.name ? ` · PM: ${s.pm.name}` : ''}
-                </div>
-              </div>
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                <Link href={`/fttt-projects/${s.id}`} style={{ fontSize: 11, color: '#0969DA' }}>Lihat ↗</Link>
-                {canManage && (
-                  <button type="button" disabled={deletingId === s.id} onClick={() => setConfirmDeleteId(s.id)}
-                    style={{ fontSize: 11, color: '#cf222e', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
-                    {deletingId === s.id ? 'Menghapus…' : 'Delete Site'}
-                  </button>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {groups.map((g) => {
+            const expanded = expandedIds.has(g.id);
+            const completed = g.status === 'COMPLETED';
+            const selectedCount = draftEndings[g.id]?.size ?? 0;
+            return (
+              <div key={g.id} style={{ border: '1px solid #D0D7DE', borderRadius: 10, overflow: 'hidden', background: '#fff' }}>
+                <button
+                  type="button"
+                  onClick={() => toggleExpanded(g.id)}
+                  style={{
+                    width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                    gap: 8, padding: '10px 12px', border: 'none', background: expanded ? '#F6F8FA' : '#fff',
+                    cursor: 'pointer', textAlign: 'left',
+                  }}
+                >
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: 13, color: '#24292f' }}>
+                      {expanded ? '▾' : '▸'} {g.beginningFinanceSite.code} · {g.beginningFinanceSite.name}
+                    </div>
+                    <div style={{ fontSize: 11, color: '#57606a', marginTop: 2 }}>
+                      Beginning Site · {completed ? `${g.endings.length} Ending Site` : 'Draft — pilih Ending Site'}
+                    </div>
+                  </div>
+                  <span style={{
+                    fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 999,
+                    background: completed ? '#DAFBE1' : '#FFF8C5', color: completed ? '#1A7F37' : '#9A6700',
+                  }}>
+                    {completed ? 'COMPLETED' : 'DRAFT'}
+                  </span>
+                </button>
+
+                {expanded && (
+                  <div style={{ padding: '10px 12px 12px', borderTop: '1px solid #F0F3F6' }}>
+                    {completed ? (
+                      g.endings.length === 0 ? (
+                        <p style={{ fontSize: 12, color: '#8c959f', margin: 0 }}>Tidak ada Ending Site.</p>
+                      ) : (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                          {g.endings.map((e) => {
+                            const href = e.ftttProject?.id ? `/fttt-projects/${e.ftttProject.id}` : null;
+                            return (
+                              <div key={e.id} style={{
+                                display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8,
+                                padding: '8px 10px', borderRadius: 8, background: '#F6F8FA',
+                              }}>
+                                <div>
+                                  {href ? (
+                                    <Link href={href} style={{ fontWeight: 600, fontSize: 13, color: '#0969DA', textDecoration: 'none' }}>
+                                      {e.endingFinanceSite.code} · {e.endingFinanceSite.name}
+                                    </Link>
+                                  ) : (
+                                    <span style={{ fontWeight: 600, fontSize: 13 }}>
+                                      {e.endingFinanceSite.code} · {e.endingFinanceSite.name}
+                                    </span>
+                                  )}
+                                  {e.ftttProject?.currentPhase && (
+                                    <div style={{ fontSize: 11, color: '#57606a', marginTop: 2 }}>
+                                      {FTTT_PHASE_LABELS[e.ftttProject.currentPhase as keyof typeof FTTT_PHASE_LABELS] ?? e.ftttProject.currentPhase}
+                                      {e.ftttProject.pm?.name ? ` · PM: ${e.ftttProject.pm.name}` : ''}
+                                    </div>
+                                  )}
+                                </div>
+                                <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                                  {href && <Link href={href} style={{ fontSize: 11, color: '#0969DA' }}>Lifecycle ↗</Link>}
+                                  {canManage && (
+                                    <button type="button" disabled={deletingEndingId === e.id}
+                                      onClick={() => setConfirmDeleteEndingId(e.id)}
+                                      style={{ fontSize: 11, color: '#cf222e', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
+                                      Delete Site
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )
+                    ) : canManage ? (
+                      <>
+                        <p style={{ fontSize: 12, color: '#57606a', margin: '0 0 8px' }}>
+                          Pilih Ending Site (checkbox — Site dapat dipakai ulang):
+                        </p>
+                        <div style={{
+                          maxHeight: 220, overflowY: 'auto', border: '1px solid #D0D7DE', borderRadius: 8, padding: 8,
+                          display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 10,
+                        }}>
+                          {available.map((fs) => {
+                            const checked = draftEndings[g.id]?.has(fs.id) ?? false;
+                            return (
+                              <label key={fs.id} style={{
+                                display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, cursor: 'pointer',
+                                padding: '4px 6px', borderRadius: 6, background: checked ? '#DDF4FF' : 'transparent',
+                              }}>
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={() => toggleDraftEnding(g.id, fs.id)}
+                                />
+                                <span>{fs.code} · {fs.name}</span>
+                              </label>
+                            );
+                          })}
+                          {available.length === 0 && (
+                            <p style={{ fontSize: 11, color: '#8c959f', margin: 0 }}>Tidak ada Finance Site pada Segment ini.</p>
+                          )}
+                        </div>
+                        <button
+                          type="button"
+                          disabled={completingId === g.id || selectedCount === 0}
+                          onClick={() => void handleComplete(g.id)}
+                          style={{
+                            padding: '7px 14px', borderRadius: 6, border: 'none',
+                            background: selectedCount === 0 ? '#8c959f' : '#1A7F37', color: '#fff',
+                            fontWeight: 700, fontSize: 12, cursor: selectedCount === 0 ? 'not-allowed' : 'pointer',
+                          }}
+                        >
+                          {completingId === g.id ? 'Menyimpan…' : `COMPLETE (${selectedCount})`}
+                        </button>
+                      </>
+                    ) : (
+                      <p style={{ fontSize: 12, color: '#8c959f', margin: 0 }}>Ending Site belum di-COMPLETE.</p>
+                    )}
+                  </div>
                 )}
               </div>
+            );
+          })}
+
+          {legacySites.length > 0 && (
+            <div style={{ border: '1px solid #D0D7DE', borderRadius: 10, overflow: 'hidden', marginTop: 4 }}>
+              <div style={{ padding: '8px 12px', background: '#F6F8FA', fontSize: 11, fontWeight: 600, color: '#57606a' }}>
+                Site operasional (tanpa grup Beginning)
+              </div>
+              {legacySites.map((s) => (
+                <div key={s.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, padding: '10px 12px', borderTop: '1px solid #F0F3F6' }}>
+                  <div>
+                    <Link href={`/fttt-projects/${s.id}`} style={{ fontWeight: 600, fontSize: 13, color: '#0969DA', textDecoration: 'none' }}>
+                      {s.projectName ?? `Site ${s.id.slice(-6).toUpperCase()}`}
+                    </Link>
+                    <div style={{ fontSize: 11, color: '#57606a', marginTop: 2 }}>
+                      {FTTT_PHASE_LABELS[s.currentPhase]} · {s.financeProject ? `${s.financeProject.code} · ${s.financeProject.name}` : '—'}
+                    </div>
+                  </div>
+                  <Link href={`/fttt-projects/${s.id}`} style={{ fontSize: 11, color: '#0969DA' }}>Lifecycle ↗</Link>
+                </div>
+              ))}
             </div>
-          ))}
+          )}
         </div>
       )}
 
-      {confirmDeleteId && (
+      {confirmDeleteEndingId && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
           <div style={{ background: '#fff', borderRadius: 12, padding: 24, maxWidth: 440, width: '100%', boxShadow: '0 8px 24px rgba(0,0,0,0.12)' }}>
-            <h3 style={{ margin: '0 0 8px', fontSize: 16, fontWeight: 700 }}>Hapus Site</h3>
+            <h3 style={{ margin: '0 0 8px', fontSize: 16, fontWeight: 700 }}>Hapus Ending Site</h3>
             <p style={{ margin: '0 0 16px', fontSize: 13, color: '#57606a', lineHeight: 1.5 }}>
-              Apakah Anda yakin ingin menghapus Site ini?<br />
-              Seluruh data yang berkaitan dengan Site ini akan ikut dihapus dan tindakan ini tidak dapat dibatalkan.
+              Hanya hubungan Beginning → Ending yang dihapus. Master Site Finance dan hubungan lain tetap utuh.
             </p>
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-              <button type="button" onClick={() => setConfirmDeleteId(null)}
+              <button type="button" onClick={() => setConfirmDeleteEndingId(null)}
                 style={{ padding: '8px 16px', borderRadius: 8, border: '1px solid #D0D7DE', background: '#fff', cursor: 'pointer' }}>Batal</button>
-              <button type="button" disabled={deletingId === confirmDeleteId} onClick={() => void handleDeleteSite(confirmDeleteId)}
+              <button type="button" disabled={deletingEndingId === confirmDeleteEndingId}
+                onClick={() => void handleDeleteEnding(confirmDeleteEndingId)}
                 style={{ padding: '8px 16px', borderRadius: 8, border: 'none', background: '#cf222e', color: '#fff', fontWeight: 600, cursor: 'pointer' }}>
-                {deletingId === confirmDeleteId ? 'Menghapus…' : 'Hapus'}
+                {deletingEndingId === confirmDeleteEndingId ? 'Menghapus…' : 'Hapus Hubungan'}
               </button>
             </div>
           </div>

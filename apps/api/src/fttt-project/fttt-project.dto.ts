@@ -83,6 +83,21 @@ export const AddSiteToBulkyDto = z.object({
 });
 export type AddSiteToBulkyDtoType = z.infer<typeof AddSiteToBulkyDto>;
 
+/** URGENT: Beginning Site → Ending Site relationships (Site Initiation) */
+export const AddBeginningGroupDto = z.object({
+  beginningFinanceSiteId: z
+    .string({ required_error: 'Beginning Site harus dipilih' })
+    .min(1, 'Beginning Site harus dipilih'),
+});
+export type AddBeginningGroupDtoType = z.infer<typeof AddBeginningGroupDto>;
+
+export const CompleteBeginningEndingsDto = z.object({
+  endingFinanceSiteIds: z
+    .array(z.string().min(1))
+    .min(1, 'Pilih minimal satu Ending Site'),
+});
+export type CompleteBeginningEndingsDtoType = z.infer<typeof CompleteBeginningEndingsDto>;
+
 // Integra V1 / Stable v1: Financial Request review (Finance) — Tanggal Persetujuan date-only
 export const AcceptFinancialRequestDto = z.object({
   scheduledReleaseAt: z.string().min(1, 'Tanggal Persetujuan wajib diisi'),
