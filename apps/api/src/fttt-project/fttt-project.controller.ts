@@ -26,8 +26,10 @@ import {
   AddImplLogDto,
   AddJaminanDto,
   AddReconDocDto,
+  AddBeginningGroupDto,
   AddSiteToBulkyDto,
   AddSpanDto,
+  CompleteBeginningEndingsDto,
   AddSpanLogDto,
   AdvancePhaseDto,
   ApproveDocumentDto,
@@ -163,6 +165,58 @@ export class FtttProjectController {
     @CurrentUser() user: AuthUser,
   ) {
     return this.service.deleteSite(siteId, user.userId, user.role);
+  }
+
+  // URGENT: Beginning → Ending Site relationships (Site Initiation)
+  @Get(':id/beginning-groups')
+  listBeginningGroups(@Param('id') id: string) {
+    return this.service.listBeginningGroups(id);
+  }
+
+  @Post(':id/beginning-groups')
+  addBeginningGroup(
+    @Param('id') id: string,
+    @Body(new ZodValidationPipe(AddBeginningGroupDto)) dto: any,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.service.addBeginningGroup(
+      id,
+      dto.beginningFinanceSiteId,
+      user.userId,
+      user.role,
+    );
+  }
+
+  @Post(':id/beginning-groups/:groupId/complete')
+  completeBeginningEndings(
+    @Param('id') id: string,
+    @Param('groupId') groupId: string,
+    @Body(new ZodValidationPipe(CompleteBeginningEndingsDto)) dto: any,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.service.completeBeginningEndings(
+      id,
+      groupId,
+      dto.endingFinanceSiteIds,
+      user.userId,
+      user.role,
+    );
+  }
+
+  @Delete('beginning-groups/:groupId')
+  deleteBeginningGroup(
+    @Param('groupId') groupId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.service.deleteBeginningGroup(groupId, user.userId, user.role);
+  }
+
+  @Delete('site-endings/:endingId')
+  deleteSiteEnding(
+    @Param('endingId') endingId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.service.deleteSiteEnding(endingId, user.userId, user.role);
   }
 
   // POST /fttt-projects/:id/close — Integra V11: Close Parent (Bulky) Project

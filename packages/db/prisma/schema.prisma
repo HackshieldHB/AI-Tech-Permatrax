@@ -365,6 +365,7 @@ model User {
   dailyActivityEvidencesUploaded DailyActivityEvidence[] @relation("DailyActivityEvidenceUploader")
   dailyActivityHistoryActions    DailyActivityHistory[]  @relation("DailyActivityHistoryActor")
   systemActivityLogs             SystemActivityLog[]     @relation("SystemActivityActor")
+  ftttBeginningsCompleted        FtttBeginningGroup[]    @relation("FtttBeginningCompleter")
 }
 
 /// Integra V9 — durable global activity log for System Overview (all users / all modules)
@@ -2893,6 +2894,9 @@ model FinanceProject {
   dailyActivities         DailyActivity[]
   // Integra V3: PO Customer change requests (GM approval)
   poChangeRequests        FinancePoChangeRequest[]
+  // FTTT Site Initiation Beginning/Ending relationships (Finance Site as reusable node)
+  ftttBeginningGroups     FtttBeginningGroup[] @relation("FtttBeginningFinanceSite")
+  ftttSiteEndings         FtttSiteEnding[]     @relation("FtttEndingFinanceSite")
 
   @@index([status])
   @@index([isDefaultUncategorized])
@@ -3174,6 +3178,8 @@ model FtttProject {
   closingLogs        FtttClosingLog[]
   spans              FtttSpan[]
   dailyActivities    DailyActivity[]
+  beginningGroups    FtttBeginningGroup[] @relation("FtttBeginningBulky")
+  siteEndings        FtttSiteEnding[]     @relation("FtttEndingLifecycle")
 
   @@index([ftttCompany])
   @@index([currentPhase])
@@ -3182,6 +3188,48 @@ model FtttProject {
   @@index([financeProjectId])
   @@index([hierarchyLevel])
   @@index([parentId])
+}
+
+/// PAI/FTTT URGENT: Beginning Site group under a Bulky Parent (Site Initiation)
+enum FtttBeginningStatus {
+  DRAFT
+  COMPLETED
+}
+
+model FtttBeginningGroup {
+  id                       String              @id @default(cuid())
+  bulkyProjectId           String
+  bulkyProject             FtttProject         @relation("FtttBeginningBulky", fields: [bulkyProjectId], references: [id], onDelete: Cascade)
+  beginningFinanceSiteId   String
+  beginningFinanceSite     FinanceProject      @relation("FtttBeginningFinanceSite", fields: [beginningFinanceSiteId], references: [id], onDelete: Restrict)
+  status                   FtttBeginningStatus @default(DRAFT)
+  completedAt              DateTime?
+  completedById            String?
+  completedBy              User?               @relation("FtttBeginningCompleter", fields: [completedById], references: [id], onDelete: SetNull)
+  endings                  FtttSiteEnding[]
+  createdAt                DateTime            @default(now())
+  updatedAt                DateTime            @updatedAt
+
+  @@index([bulkyProjectId])
+  @@index([beginningFinanceSiteId])
+  @@index([status])
+}
+
+/// Ending Site edge under a Beginning group — relationship only; Finance master is never deleted
+model FtttSiteEnding {
+  id                     String             @id @default(cuid())
+  beginningGroupId       String
+  beginningGroup         FtttBeginningGroup @relation(fields: [beginningGroupId], references: [id], onDelete: Cascade)
+  endingFinanceSiteId    String
+  endingFinanceSite      FinanceProject     @relation("FtttEndingFinanceSite", fields: [endingFinanceSiteId], references: [id], onDelete: Restrict)
+  /// Operational FTTT Site lifecycle host (get-or-create under Bulky)
+  ftttProjectId          String?
+  ftttProject            FtttProject?       @relation("FtttEndingLifecycle", fields: [ftttProjectId], references: [id], onDelete: SetNull)
+  createdAt              DateTime           @default(now())
+
+  @@unique([beginningGroupId, endingFinanceSiteId])
+  @@index([endingFinanceSiteId])
+  @@index([ftttProjectId])
 }
 
 // JLM: Implementation Transaction Log — daily expenditure entries by PM FTTT.

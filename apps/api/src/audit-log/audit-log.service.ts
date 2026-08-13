@@ -1,5 +1,6 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { buildEntityHref } from '../common/activity/activity-description';
 
 export type AuditLogRow = {
   timestamp: string;
@@ -8,7 +9,27 @@ export type AuditLogRow = {
   action: string;
   detail: string;
   module: string;
+  /** Frontend route for click-through navigation (no basePath). */
+  href?: string | null;
 };
+
+function looksLikeApiEndpoint(detail: string): boolean {
+  return /(?:GET|POST|PUT|PATCH|DELETE)\s*[·•]?\s*\/api\//i.test(detail) || detail.includes('/api/');
+}
+
+function humanizeLegacyDetail(detail: string, action: string): string {
+  const path = detail.replace(/^(GET|POST|PUT|PATCH|DELETE)\s*[·•]?\s*/i, '').split('·')[0].trim();
+  if (/financial-request|\/transactions/i.test(path)) {
+    return `${action === 'APPROVE' ? 'Approve' : action === 'REJECT' ? 'Reject' : 'Update'} Financial Request`;
+  }
+  if (/\/spans\/.*\/logs|span-logs/i.test(path)) return 'Upload Daily Log';
+  if (/implementation-logs|mark-implementation-done/i.test(path)) return 'Update Implementation';
+  if (/advance-phase/i.test(path)) return 'Submit Phase Advance';
+  if (/survey/i.test(path)) return 'Update Survey';
+  if (/fttt-projects/i.test(path)) return 'Update FTTT Project';
+  if (/finance-projects/i.test(path)) return 'Update Finance Project';
+  return action ? `${action} activity` : 'System activity';
+}
 
 /**
  * Integra V9: System Overview reads durable SystemActivityLog (all users).
@@ -39,20 +60,42 @@ export class AuditLogService implements OnModuleInit {
       });
 
       if (stored.length > 0) {
-        return stored.map((r) => ({
-          timestamp: r.createdAt.toISOString(),
-          actorName: r.actor.name,
-          actorRole: r.actor.role,
-          action: r.action,
-          detail: r.detail,
-          module: r.module,
-        }));
+        return stored.map((r) => {
+          const rawPath = r.path || '';
+          const hrefMatch = rawPath.match(/\|\|href=([^\s|]+)/);
+          const href = hrefMatch?.[1] || this.hrefFromDetailAndPath(r.detail, rawPath);
+          // Never surface raw API endpoint as Detail for users
+          const detail = looksLikeApiEndpoint(r.detail)
+            ? humanizeLegacyDetail(r.detail, r.action)
+            : r.detail;
+          return {
+            timestamp: r.createdAt.toISOString(),
+            actorName: r.actor.name,
+            actorRole: r.actor.role,
+            action: r.action,
+            detail,
+            module: r.module,
+            href,
+          };
+        });
       }
     } catch (e) {
       this.logger.warn(`SystemActivityLog read failed, using legacy merge: ${e instanceof Error ? e.message : e}`);
     }
 
     return this.legacyMerge(take);
+  }
+
+  private hrefFromDetailAndPath(detail: string, path: string): string | null {
+    const clean = (path.split('||href=')[0] || path || detail).split('?')[0];
+    const ftttId = clean.match(/\/fttt-projects\/([^/]+)/i)?.[1];
+    const financeId = clean.match(/\/finance-projects\/([^/]+)/i)?.[1];
+    const txId = clean.match(/\/transactions\/([^/]+)/i)?.[1];
+    return buildEntityHref(clean.startsWith('/') ? clean : `/${clean}`, {
+      ftttProjectId: ftttId && !/^(sites|transactions)$/i.test(ftttId) ? ftttId : null,
+      financeProjectId: financeId || null,
+      transactionId: txId || null,
+    });
   }
 
   private async seedFromLegacyIfEmpty() {

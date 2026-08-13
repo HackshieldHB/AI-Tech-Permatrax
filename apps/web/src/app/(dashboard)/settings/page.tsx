@@ -1,6 +1,7 @@
 'use client';
 
 import React, { Suspense, useCallback, useEffect, useState } from 'react';
+import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { Plus, Pencil, Power } from 'lucide-react';
 import { useAuthStore } from '../../../store/authStore';
@@ -2096,11 +2097,23 @@ function SettingsPageContent() {
                     <tr><td colSpan={4} className="px-4 py-8 text-center text-slate-500">Belum ada data</td></tr>
                   ) : (
                     ov.audit.map((row: any, i: number) => (
-                      <tr key={i} className="border-t border-slate-100">
+                      <tr key={i} className="border-t border-slate-100 hover:bg-slate-50/80">
                         <td className="px-4 py-2 text-xs text-slate-500">{new Date(row.timestamp).toLocaleString('id-ID')}</td>
                         <td className="px-4 py-2">{row.actorName} <span className="text-[10px] text-slate-400">({row.actorRole})</span></td>
                         <td className="px-4 py-2 text-xs">{row.action}</td>
-                        <td className="px-4 py-2 text-xs max-w-[280px] truncate">{row.detail}</td>
+                        <td className="px-4 py-2 text-xs max-w-[320px]">
+                          {row.href ? (
+                            <Link
+                              href={row.href}
+                              className="text-[#0969DA] hover:underline font-medium"
+                              title={row.detail}
+                            >
+                              {row.detail}
+                            </Link>
+                          ) : (
+                            <span className="truncate block" title={row.detail}>{row.detail}</span>
+                          )}
+                        </td>
                       </tr>
                     ))
                   )}

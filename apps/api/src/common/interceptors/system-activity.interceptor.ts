@@ -7,6 +7,11 @@ import {
 import { Observable, tap } from 'rxjs';
 import { PrismaService } from '../../prisma/prisma.service';
 import type { AuthUser } from '../../auth/types/auth-user.types';
+import {
+  actionFromMethod,
+  buildActivityDescription,
+  buildEntityHref,
+} from '../activity/activity-description';
 
 const MUTATING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 const SKIP_PATH = [
@@ -25,21 +30,15 @@ function moduleFromPath(path: string): string {
   return seg.replace(/-/g, '_').toUpperCase();
 }
 
-function actionFromMethod(method: string, path: string): string {
-  const p = path.toLowerCase();
-  if (p.includes('approve')) return 'APPROVE';
-  if (p.includes('reject')) return 'REJECT';
-  if (p.includes('upload') || p.includes('evidence') || p.includes('document')) return 'UPLOAD';
-  if (p.includes('import')) return 'IMPORT';
-  if (p.includes('export') || p.includes('download') || p.includes('report')) return 'EXPORT';
-  if (p.includes('submit')) return 'SUBMIT';
-  if (method === 'POST') return 'CREATE';
-  if (method === 'PUT' || method === 'PATCH') return 'UPDATE';
-  if (method === 'DELETE') return 'DELETE';
-  return method;
+function extractId(path: string, root: string): string | null {
+  const m = path.split('?')[0].match(new RegExp(`/${root}/([^/]+)`, 'i'));
+  if (!m) return null;
+  const id = m[1];
+  if (/^(sites|transactions|spans|documents|beginning-groups)$/i.test(id)) return null;
+  return id;
 }
 
-/** Integra V9: persist every mutating API call by authenticated user into SystemActivityLog. */
+/** Integra V9 / URGENT: durable System Overview with human-readable Detail (not API paths). */
 @Injectable()
 export class SystemActivityInterceptor implements NestInterceptor {
   constructor(private readonly prisma: PrismaService) {}
@@ -52,6 +51,7 @@ export class SystemActivityInterceptor implements NestInterceptor {
       url?: string;
       user?: AuthUser;
       body?: Record<string, unknown>;
+      params?: Record<string, string>;
     }>();
 
     const method = (req.method || '').toUpperCase();
@@ -68,34 +68,117 @@ export class SystemActivityInterceptor implements NestInterceptor {
 
     return next.handle().pipe(
       tap({
-        next: () => {
-          const action = actionFromMethod(method, path);
-          const module = moduleFromPath(path);
-          const bodyHint =
-            typeof req.body?.name === 'string'
-              ? req.body.name
-              : typeof req.body?.requestNumber === 'string'
-                ? req.body.requestNumber
-                : typeof req.body?.code === 'string'
-                  ? req.body.code
-                  : '';
-          const detail = [method, path.split('?')[0], bodyHint].filter(Boolean).join(' · ').slice(0, 400);
-          void this.prisma.systemActivityLog
-            .create({
-              data: {
-                actorId,
-                action,
-                detail,
-                module,
-                method,
-                path: path.split('?')[0].slice(0, 240),
-              },
-            })
-            .catch(() => {
-              /* never break the request for audit write failures */
-            });
+        next: (responseBody) => {
+          void this.persist(actorId, method, path, req.body, responseBody).catch(() => {
+            /* never break the request for audit write failures */
+          });
         },
       }),
     );
+  }
+
+  private async persist(
+    actorId: string,
+    method: string,
+    path: string,
+    body?: Record<string, unknown>,
+    responseBody?: unknown,
+  ) {
+    const cleanPath = path.split('?')[0];
+    let ftttProjectId = extractId(cleanPath, 'fttt-projects');
+    let financeProjectId = extractId(cleanPath, 'finance-projects');
+    let siteName: string | null =
+      (typeof body?.projectName === 'string' && body.projectName) ||
+      (typeof body?.name === 'string' && body.name) ||
+      (typeof body?.siteName === 'string' && body.siteName) ||
+      null;
+    let category: string | null =
+      (typeof body?.category === 'string' && body.category) || null;
+    let amount: number | string | null =
+      (typeof body?.amount === 'number' || typeof body?.amount === 'string' ? body.amount : null) ??
+      (typeof body?.totalAmount === 'number' || typeof body?.totalAmount === 'string'
+        ? body.totalAmount
+        : null);
+
+    if (typeof body?.beginningFinanceSiteId === 'string') {
+      const fs = await this.prisma.financeProject.findUnique({
+        where: { id: body.beginningFinanceSiteId },
+        select: { name: true },
+      });
+      if (fs) siteName = fs.name;
+    }
+
+    if (ftttProjectId && !siteName) {
+      const p = await this.prisma.ftttProject.findUnique({
+        where: { id: ftttProjectId },
+        select: { projectName: true, financeProjectId: true },
+      });
+      if (p) {
+        siteName = p.projectName;
+        if (!financeProjectId) financeProjectId = p.financeProjectId;
+      } else {
+        ftttProjectId = null;
+      }
+    }
+    if (financeProjectId && !siteName) {
+      const p = await this.prisma.financeProject.findUnique({
+        where: { id: financeProjectId },
+        select: { name: true },
+      });
+      if (p) siteName = p.name;
+      else financeProjectId = null;
+    }
+
+    if (responseBody && typeof responseBody === 'object') {
+      const r = responseBody as Record<string, unknown>;
+      if (!category && typeof r.category === 'string') category = r.category;
+      if (amount == null && (typeof r.amount === 'number' || typeof r.amount === 'string')) {
+        amount = r.amount as number | string;
+      }
+      if (!siteName && typeof r.projectName === 'string') siteName = r.projectName;
+      if (
+        !siteName &&
+        r.beginningFinanceSite &&
+        typeof r.beginningFinanceSite === 'object' &&
+        typeof (r.beginningFinanceSite as { name?: string }).name === 'string'
+      ) {
+        siteName = (r.beginningFinanceSite as { name: string }).name;
+      }
+      if (!ftttProjectId && typeof r.id === 'string' && /fttt-projects/i.test(cleanPath)) {
+        // created entity id — only use if looks like project create
+        if (!/beginning-groups|transactions|spans|documents/i.test(cleanPath)) {
+          ftttProjectId = r.id;
+        }
+      }
+    }
+
+    const txId = cleanPath.match(/\/transactions\/([^/]+)/)?.[1] || null;
+    const detail = buildActivityDescription(method, cleanPath, {
+      siteName,
+      projectName: siteName,
+      category,
+      amount,
+      objectName: siteName,
+    });
+
+    // Store human detail; keep technical path in `path` for audit/debug only
+    const href = buildEntityHref(cleanPath, {
+      ftttProjectId,
+      financeProjectId,
+      transactionId: txId,
+    });
+    const detailWithNav = href ? `${detail}` : detail;
+
+    await this.prisma.systemActivityLog.create({
+      data: {
+        actorId,
+        action: actionFromMethod(method, cleanPath),
+        detail: detailWithNav.slice(0, 400),
+        module: moduleFromPath(cleanPath),
+        method,
+        // Encode href hint after path for Overview navigation (UI parses ||href=)
+        path: (href ? `${cleanPath.slice(0, 200)}||href=${href}` : cleanPath).slice(0, 240),
+      },
+    });
   }
 }

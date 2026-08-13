@@ -12,6 +12,7 @@ import {
   FtttImplLogType,
   FtttPhase,
   FtttPhaseStatus,
+  FtttBeginningStatus,
   FtttProjectStatus,
   FtttRequestPriority,
   FtttRequestStatus,
@@ -266,35 +267,37 @@ export class FtttProjectService {
     });
   }
 
-  // GET :id/available-finance-sites — Finance Sites under the Bulky's linked
-  // Segment that are not yet linked to another active FTTT Site
+  // GET :id/available-finance-sites — ALL active Finance Sites under Bulky's Segment.
+  // URGENT: Sites are reusable nodes (Beginning/Ending) — no lock after prior use.
   async listAvailableFinanceSites(bulkyId: string) {
+    return this.listFinanceSitesForRelations(bulkyId);
+  }
+
+  /** Finance Sites from master (Finance) available for Beginning/Ending selection. */
+  async listFinanceSitesForRelations(bulkyId: string) {
     const bulky = await this.assertBulky(bulkyId);
     if (!bulky.financeProjectId) return [];
 
     const linkedFinance = await this.prisma.financeProject.findUnique({ where: { id: bulky.financeProjectId } });
     if (!linkedFinance) return [];
-    // The Bulky may itself be linked to a Segment or (back-compat) a STANDALONE project
     const segmentId = linkedFinance.hierarchyLevel === 'SITE' && linkedFinance.parentId
       ? linkedFinance.parentId
       : linkedFinance.id;
 
-    const candidateSites = await this.prisma.financeProject.findMany({
+    return this.prisma.financeProject.findMany({
       where: { parentId: segmentId, hierarchyLevel: 'SITE', status: 'ACTIVE' },
       orderBy: { name: 'asc' },
-    });
-    if (candidateSites.length === 0) return [];
-
-    const alreadyLinked = await this.prisma.ftttProject.findMany({
-      where: {
-        hierarchyLevel: FtttHierarchyLevel.SITE,
-        financeProjectId: { in: candidateSites.map((s) => s.id) },
-        status: { notIn: [FtttProjectStatus.CANCELLED, FtttProjectStatus.CLOSED] },
+      select: {
+        id: true,
+        code: true,
+        name: true,
+        totalBudget: true,
+        materialBudget: true,
+        jasaBudget: true,
+        budgetPerizinan: true,
+        status: true,
       },
-      select: { financeProjectId: true },
     });
-    const linkedIds = new Set(alreadyLinked.map((l) => l.financeProjectId));
-    return candidateSites.filter((s) => !linkedIds.has(s.id));
   }
 
   // POST :id/sites — PM adds a Site under the Bulky Project
@@ -322,16 +325,17 @@ export class FtttProjectService {
       throw new BadRequestException('Finance Site tidak aktif');
     }
 
-    const existingLink = await this.prisma.ftttProject.findFirst({
+    // URGENT: reusable Finance Sites — prefer get-or-create under this Bulky
+    const existingUnderBulky = await this.prisma.ftttProject.findFirst({
       where: {
+        parentId: bulkyId,
         financeProjectId,
         hierarchyLevel: FtttHierarchyLevel.SITE,
-        status: { notIn: [FtttProjectStatus.CANCELLED, FtttProjectStatus.CLOSED] },
+        status: { notIn: [FtttProjectStatus.CANCELLED] },
       },
+      include: this.fullInclude(),
     });
-    if (existingLink) {
-      throw new BadRequestException('Finance Site ini sudah terhubung dengan FTTT Site lain');
-    }
+    if (existingUnderBulky) return existingUnderBulky;
 
     const allPhases: FtttPhase[] = [
       FtttPhase.INITIATION,
@@ -405,6 +409,322 @@ export class FtttProjectService {
         financeProject: { select: { id: true, code: true, name: true } },
         phaseProgresses: { orderBy: { phase: 'asc' } },
         _count: { select: { surveyUploads: true, transactions: true, spans: true } },
+      },
+    });
+  }
+
+  // ─── URGENT: Beginning Site → Ending Site relationships ───────────────────
+
+  async listBeginningGroups(bulkyId: string) {
+    await this.assertBulky(bulkyId);
+    return this.prisma.ftttBeginningGroup.findMany({
+      where: { bulkyProjectId: bulkyId },
+      orderBy: { createdAt: 'asc' },
+      include: {
+        beginningFinanceSite: { select: { id: true, code: true, name: true, totalBudget: true } },
+        completedBy: { select: { id: true, name: true } },
+        endings: {
+          orderBy: { createdAt: 'asc' },
+          include: {
+            endingFinanceSite: { select: { id: true, code: true, name: true, totalBudget: true } },
+            ftttProject: {
+              select: {
+                id: true,
+                projectName: true,
+                currentPhase: true,
+                status: true,
+                pm: { select: { id: true, name: true } },
+              },
+            },
+          },
+        },
+      },
+    });
+  }
+
+  async addBeginningGroup(
+    bulkyId: string,
+    beginningFinanceSiteId: string,
+    actorId: string,
+    actorRole: Role,
+  ) {
+    const allowed: Role[] = [Role.PM_FTTT, Role.ADMIN, Role.GENERAL_MANAGER];
+    if (!allowed.includes(actorRole)) {
+      throw new ForbiddenException('Hanya PM FTTT yang dapat menambahkan Beginning Site');
+    }
+    const bulky = await this.assertBulky(bulkyId);
+    this.assertFtttMutable(bulky);
+    this.assertSiteInitiationPhase(bulky);
+
+    const financeSite = await this.assertActiveFinanceSite(beginningFinanceSiteId);
+    await this.assertFinanceSiteInBulkySegment(bulky, financeSite.id);
+
+    const group = await this.prisma.ftttBeginningGroup.create({
+      data: {
+        bulkyProjectId: bulkyId,
+        beginningFinanceSiteId: financeSite.id,
+        status: FtttBeginningStatus.DRAFT,
+      },
+      include: {
+        beginningFinanceSite: { select: { id: true, code: true, name: true, totalBudget: true } },
+        endings: true,
+      },
+    });
+
+    this.gateway.emitToAll('fttt:beginning_added', { bulkyId, groupId: group.id });
+    return group;
+  }
+
+  /**
+   * COMPLETE for one Beginning group: persist Ending Site relationships and
+   * get-or-create operational FTTT Site lifecycle hosts. Does NOT complete the
+   * overall Site Initiation phase.
+   */
+  async completeBeginningEndings(
+    bulkyId: string,
+    groupId: string,
+    endingFinanceSiteIds: string[],
+    actorId: string,
+    actorRole: Role,
+  ) {
+    const allowed: Role[] = [Role.PM_FTTT, Role.ADMIN, Role.GENERAL_MANAGER];
+    if (!allowed.includes(actorRole)) {
+      throw new ForbiddenException('Hanya PM FTTT yang dapat menyelesaikan Ending Site');
+    }
+    const bulky = await this.assertBulky(bulkyId);
+    this.assertFtttMutable(bulky);
+    this.assertSiteInitiationPhase(bulky);
+
+    const group = await this.prisma.ftttBeginningGroup.findFirst({
+      where: { id: groupId, bulkyProjectId: bulkyId },
+    });
+    if (!group) throw new NotFoundException('Beginning Site tidak ditemukan');
+    if (group.status === FtttBeginningStatus.COMPLETED) {
+      throw new BadRequestException('Beginning Site ini sudah di-COMPLETE. Hapus Ending Site bila perlu mengubah hubungan.');
+    }
+
+    const uniqueEndingIds = [...new Set(endingFinanceSiteIds.filter(Boolean))];
+    if (uniqueEndingIds.length === 0) {
+      throw new BadRequestException('Pilih minimal satu Ending Site');
+    }
+
+    for (const endingId of uniqueEndingIds) {
+      await this.assertActiveFinanceSite(endingId);
+      await this.assertFinanceSiteInBulkySegment(bulky, endingId);
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      for (const endingFinanceSiteId of uniqueEndingIds) {
+        const lifecycleSite = await this.getOrCreateSiteChildTx(
+          tx,
+          bulky,
+          endingFinanceSiteId,
+          actorId,
+        );
+        await tx.ftttSiteEnding.upsert({
+          where: {
+            beginningGroupId_endingFinanceSiteId: {
+              beginningGroupId: groupId,
+              endingFinanceSiteId,
+            },
+          },
+          create: {
+            beginningGroupId: groupId,
+            endingFinanceSiteId,
+            ftttProjectId: lifecycleSite.id,
+          },
+          update: {
+            ftttProjectId: lifecycleSite.id,
+          },
+        });
+      }
+
+      await tx.ftttBeginningGroup.update({
+        where: { id: groupId },
+        data: {
+          status: FtttBeginningStatus.COMPLETED,
+          completedAt: new Date(),
+          completedById: actorId,
+        },
+      });
+    });
+
+    this.gateway.emitToAll('fttt:beginning_completed', { bulkyId, groupId });
+    return this.prisma.ftttBeginningGroup.findUniqueOrThrow({
+      where: { id: groupId },
+      include: {
+        beginningFinanceSite: { select: { id: true, code: true, name: true, totalBudget: true } },
+        completedBy: { select: { id: true, name: true } },
+        endings: {
+          orderBy: { createdAt: 'asc' },
+          include: {
+            endingFinanceSite: { select: { id: true, code: true, name: true, totalBudget: true } },
+            ftttProject: {
+              select: {
+                id: true,
+                projectName: true,
+                currentPhase: true,
+                status: true,
+                pm: { select: { id: true, name: true } },
+              },
+            },
+          },
+        },
+      },
+    });
+  }
+
+  /** Delete Ending relationship only — never deletes Finance master or other edges. */
+  async deleteSiteEnding(endingId: string, actorId: string, actorRole: Role) {
+    const allowed: Role[] = [Role.PM_FTTT, Role.ADMIN, Role.GENERAL_MANAGER];
+    if (!allowed.includes(actorRole)) {
+      throw new ForbiddenException('Hanya PM FTTT yang dapat menghapus Ending Site');
+    }
+    const ending = await this.prisma.ftttSiteEnding.findUnique({
+      where: { id: endingId },
+      include: { beginningGroup: true },
+    });
+    if (!ending) throw new NotFoundException('Ending Site tidak ditemukan');
+
+    const bulky = await this.assertBulky(ending.beginningGroup.bulkyProjectId);
+    this.assertFtttMutable(bulky);
+
+    await this.prisma.ftttSiteEnding.delete({ where: { id: endingId } });
+    this.gateway.emitToAll('fttt:ending_deleted', {
+      bulkyId: bulky.id,
+      groupId: ending.beginningGroupId,
+      endingId,
+    });
+    return { success: true };
+  }
+
+  async deleteBeginningGroup(groupId: string, actorId: string, actorRole: Role) {
+    const allowed: Role[] = [Role.PM_FTTT, Role.ADMIN, Role.GENERAL_MANAGER];
+    if (!allowed.includes(actorRole)) {
+      throw new ForbiddenException('Hanya PM FTTT yang dapat menghapus Beginning Site');
+    }
+    const group = await this.prisma.ftttBeginningGroup.findUnique({
+      where: { id: groupId },
+      include: { endings: true },
+    });
+    if (!group) throw new NotFoundException('Beginning Site tidak ditemukan');
+    const bulky = await this.assertBulky(group.bulkyProjectId);
+    this.assertFtttMutable(bulky);
+    if (group.endings.length > 0) {
+      throw new BadRequestException('Hapus seluruh Ending Site terlebih dahulu sebelum menghapus Beginning Site');
+    }
+    await this.prisma.ftttBeginningGroup.delete({ where: { id: groupId } });
+    return { success: true };
+  }
+
+  private assertSiteInitiationPhase(bulky: { currentPhase: FtttPhase; ftttCompany: FtttCompany }) {
+    const lifecycle = FTTT_PHASES_BY_COMPANY[bulky.ftttCompany];
+    const siteInitIdx = lifecycle.indexOf(FtttPhase.SITE_INITIATION);
+    const currentIdx = lifecycle.indexOf(bulky.currentPhase);
+    if (siteInitIdx === -1 || currentIdx < siteInitIdx) {
+      throw new BadRequestException('Selesaikan fase Project Initiation terlebih dahulu');
+    }
+  }
+
+  private async assertActiveFinanceSite(financeProjectId: string) {
+    const financeSite = await this.prisma.financeProject.findUnique({ where: { id: financeProjectId } });
+    if (!financeSite) throw new BadRequestException('Finance Site tidak ditemukan');
+    if (financeSite.hierarchyLevel === 'SEGMENT') {
+      throw new BadRequestException('Finance Project yang dipilih adalah Segment, bukan Site');
+    }
+    if (financeSite.status !== 'ACTIVE') {
+      throw new BadRequestException('Finance Site tidak aktif');
+    }
+    return financeSite;
+  }
+
+  private async assertFinanceSiteInBulkySegment(
+    bulky: { financeProjectId: string | null },
+    financeSiteId: string,
+  ) {
+    if (!bulky.financeProjectId) {
+      throw new BadRequestException('Parent Project belum terhubung ke Finance Segment');
+    }
+    const linkedFinance = await this.prisma.financeProject.findUnique({ where: { id: bulky.financeProjectId } });
+    if (!linkedFinance) throw new BadRequestException('Finance Segment Parent tidak ditemukan');
+    const segmentId = linkedFinance.hierarchyLevel === 'SITE' && linkedFinance.parentId
+      ? linkedFinance.parentId
+      : linkedFinance.id;
+    const site = await this.prisma.financeProject.findUnique({ where: { id: financeSiteId } });
+    if (!site || site.parentId !== segmentId) {
+      throw new BadRequestException('Finance Site tidak berada di bawah Segment Parent Project ini');
+    }
+  }
+
+  private async getOrCreateSiteChildTx(
+    tx: any,
+    bulky: {
+      id: string;
+      ftttCompany: FtttCompany;
+      triggerDocUrl: string;
+      triggerDocType: string;
+      pmId: string;
+    },
+    financeProjectId: string,
+    actorId: string,
+  ) {
+    const existing = await tx.ftttProject.findFirst({
+      where: {
+        parentId: bulky.id,
+        financeProjectId,
+        hierarchyLevel: FtttHierarchyLevel.SITE,
+        status: { notIn: [FtttProjectStatus.CANCELLED] },
+      },
+    });
+    if (existing) return existing;
+
+    const financeSite = await tx.financeProject.findUniqueOrThrow({ where: { id: financeProjectId } });
+    const lifecycle = FTTT_PHASES_BY_COMPANY[bulky.ftttCompany];
+    const allPhases: FtttPhase[] = [
+      FtttPhase.INITIATION,
+      FtttPhase.SITE_INITIATION,
+      FtttPhase.SURVEY,
+      FtttPhase.PREPARATION,
+      FtttPhase.IMPLEMENTATION,
+      FtttPhase.DOCUMENTATION,
+      FtttPhase.RECONCILIATION,
+      FtttPhase.CLOSING,
+    ];
+    const now = new Date();
+
+    return tx.ftttProject.create({
+      data: {
+        ftttCompany: bulky.ftttCompany,
+        triggerDocUrl: bulky.triggerDocUrl,
+        triggerDocType: bulky.triggerDocType as any,
+        pm: { connect: { id: bulky.pmId } },
+        financeProject: { connect: { id: financeProjectId } },
+        hierarchyLevel: FtttHierarchyLevel.SITE,
+        parent: { connect: { id: bulky.id } },
+        projectName: financeSite.name,
+        currentPhase: FtttPhase.SURVEY,
+        status: FtttProjectStatus.ACTIVE,
+        phaseProgresses: {
+          createMany: {
+            data: allPhases.map((phase) => {
+              const inLifecycle = lifecycle.includes(phase);
+              if (!inLifecycle) return { phase, status: FtttPhaseStatus.SKIPPED };
+              if (phase === FtttPhase.INITIATION || phase === FtttPhase.SITE_INITIATION) {
+                return {
+                  phase,
+                  status: FtttPhaseStatus.COMPLETED,
+                  unlockedAt: now,
+                  completedAt: now,
+                  completedById: actorId,
+                };
+              }
+              if (phase === FtttPhase.SURVEY) {
+                return { phase, status: FtttPhaseStatus.ACTIVE, unlockedAt: now };
+              }
+              return { phase, status: FtttPhaseStatus.LOCKED };
+            }),
+          },
+        },
       },
     });
   }
@@ -608,8 +928,15 @@ export class FtttProjectService {
       // trigger doc is always uploaded at creation, so always ready
     }
 
-    // Integra V3: Bulky Site Initiation requires ≥1 Child Site before completion
+    // Integra V3 / URGENT: Bulky Site Initiation needs ≥1 Ending Site (lifecycle host) via COMPLETE
     if (phase === FtttPhase.SITE_INITIATION && project.hierarchyLevel === FtttHierarchyLevel.BULKY) {
+      const completedWithEnding = await this.prisma.ftttBeginningGroup.count({
+        where: {
+          bulkyProjectId: project.id,
+          status: FtttBeginningStatus.COMPLETED,
+          endings: { some: {} },
+        },
+      });
       const siteCount = await this.prisma.ftttProject.count({
         where: {
           parentId: project.id,
@@ -617,8 +944,10 @@ export class FtttProjectService {
           status: { not: FtttProjectStatus.CANCELLED },
         },
       });
-      if (siteCount === 0) {
-        reasons.push('Minimal satu Site harus ditambahkan sebelum menyelesaikan Site Initiation');
+      if (completedWithEnding === 0 && siteCount === 0) {
+        reasons.push(
+          'Minimal satu Beginning Site harus di-COMPLETE dengan Ending Site sebelum menyelesaikan Site Initiation',
+        );
       }
     }
 
