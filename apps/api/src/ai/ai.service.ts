@@ -34,13 +34,17 @@ import {
   isConversationStateFollowUp,
   isExplicitModuleSwitch,
   isFinanceFilterOrAggregateQuery,
+  isFinanceContextFilterQuery,
+  isFinanceFilterOnlyQuery,
   isModuleDataRankingQuery,
   isOrdinalReference,
   isPicOrRequestorQuery,
   isProjectCountQuery,
+  isStandaloneFinanceAggregateQuery,
   isUnsupportedDataQuery,
   detectFinanceMetrics,
   detectFinanceMode,
+  shouldApplySessionFinanceFilters,
   needsScopeClarification,
   refineRecoveryQuery,
   resolveActiveReference,
@@ -55,6 +59,7 @@ import {
 } from './ai-nlu';
 import {
   appendFinanceConstraintTags,
+  appendInheritedRankingMetricTag,
   buildConstrainedDomainQuery,
   extractConstraintsFromText,
   hasUsableConstraint,
@@ -181,7 +186,19 @@ export class AiService {
     const slotResult = await extractSlots(text, this.ollama);
     const incomingConstraints =
       slotResult.constraints || extractConstraintsFromText(text);
-    if (hasUsableConstraint(incomingConstraints)) {
+    if (isStandaloneFinanceAggregateQuery(text)) {
+      // PAI-FNC-001/002: new aggregate/status/metric resets leftover SITE/ACTIVE
+      session = {
+        ...session,
+        constraints: {
+          ...incomingConstraints,
+          extra: [...(incomingConstraints.extra || [])],
+        },
+        activeObject: hasConversationalReference(text)
+          ? session.activeObject
+          : null,
+      };
+    } else if (hasUsableConstraint(incomingConstraints)) {
       session = {
         ...session,
         constraints: mergeConstraints(session.constraints, incomingConstraints),
@@ -228,6 +245,15 @@ export class AiService {
       'off_topic',
     ]);
     let intent = conversational.has(rawIntent) ? rawIntent : expandedIntent;
+
+    // PAI-FNC-001/005 V11: SITE/SEGMENT filter-set stays data inside Finance
+    if (
+      session.activeTopic === 'finance' &&
+      (isFinanceContextFilterQuery(text) || isFinanceFilterOnlyQuery(text)) &&
+      (intent === 'faq' || intent === 'howto')
+    ) {
+      intent = 'data';
+    }
 
     // PAI-CSM-002: Conversation State follow-ups are always data — never Guide
     const stateFollowUp =
@@ -1144,16 +1170,26 @@ export class AiService {
       toolNames.unshift('search_stock');
     }
 
-    // PAI-FNC-005: first-pass multi-filter — append constraint tags before tools
+    // PAI-FNC-005: inherit SITE/ACTIVE on ranking follow-ups only.
+    // PAI-FNC-001/002: standalone aggregates must not inherit a narrower dataset.
     let toolMessage = effectiveText;
     if (
       toolNames.includes('finance_analytics') &&
-      hasUsableConstraint(session.constraints)
+      hasUsableConstraint(session.constraints) &&
+      shouldApplySessionFinanceFilters(text)
     ) {
       toolMessage = appendFinanceConstraintTags(
         effectiveText,
         session.constraints,
       );
+      const mode = detectFinanceMode(text);
+      if (mode === 'top_budget' || mode === 'smallest' || mode === 'ranking') {
+        toolMessage = appendInheritedRankingMetricTag(
+          toolMessage,
+          session.constraints,
+          text,
+        );
+      }
     }
 
     const toolTraces =

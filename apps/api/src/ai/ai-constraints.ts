@@ -1,6 +1,11 @@
 /** Constraint extraction / merge for PAI recovery refinement (P0). */
 
-import { normalizeId, extractOwnerName, extractProjectNeedle } from './ai-nlu';
+import {
+  normalizeId,
+  extractOwnerName,
+  extractProjectNeedle,
+  hasExplicitRankingMetric,
+} from './ai-nlu';
 import type { ActiveConstraintSet } from './ai-session';
 import { EMPTY_CONSTRAINTS } from './ai-session';
 
@@ -42,11 +47,12 @@ export function extractConstraintsFromText(text: string): ActiveConstraintSet {
 
   // PAI-FNC-004: carry ranking metric hint in extra
   if (out.ranking === 'top' || out.ranking === 'smallest') {
-    if (/(realisasi|spent)/.test(m)) out.extra!.push('metric:realization');
+    if (/(over\s*budget|overbudget)/.test(m)) out.extra!.push('metric:overbudget');
     else if (/(sisa|remaining)/.test(m)) out.extra!.push('metric:remaining');
     else if (/(material)/.test(m)) out.extra!.push('metric:materialBudget');
     else if (/(jasa|service)/.test(m)) out.extra!.push('metric:jasaBudget');
-    else if (/(over\s*budget|overbudget)/.test(m)) out.extra!.push('metric:overbudget');
+    else if (/(realisasi|spent)/.test(m)) out.extra!.push('metric:realization');
+    else if (/(budget|anggaran)/.test(m)) out.extra!.push('metric:totalBudget');
   }
 
   const owner = extractOwnerName(text);
@@ -116,6 +122,20 @@ export function buildConstrainedFinanceQuery(
     parts.push(`milik ${constraints.ownerName}`);
   }
   return parts.join(' ');
+}
+
+/** Carry previous ranking metric only when this turn did not name a metric. */
+export function appendInheritedRankingMetricTag(
+  message: string,
+  constraints: ActiveConstraintSet,
+  text: string,
+): string {
+  if (/\[METRIC_/i.test(message)) return message;
+  if (hasExplicitRankingMetric(text)) return message;
+  const hint = constraints.extra?.find((e) => e.startsWith('metric:'));
+  if (!hint) return message;
+  const key = hint.replace('metric:', '');
+  return `${message} [METRIC_${key}]`.trim();
 }
 
 /** Append constraint tags for first-pass finance tool calls (PAI-FNC-005). */

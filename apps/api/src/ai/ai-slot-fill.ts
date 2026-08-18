@@ -8,7 +8,7 @@ import { AiOllamaService } from './ai-ollama.service';
 import { extractConstraintsFromText } from './ai-constraints';
 import type { ActiveConstraintSet } from './ai-session';
 import { EMPTY_CONSTRAINTS } from './ai-session';
-import { extractHierarchyConstraint, normalizeId } from './ai-nlu';
+import { extractHierarchyConstraint, normalizeId, isStandaloneFinanceAggregateQuery, isFinanceFilterOnlyQuery, isFinanceContextFilterQuery } from './ai-nlu';
 
 export function isSlotFillEnabled(): boolean {
   const v = (process.env.PAI_SLOT_FILL || '').toLowerCase();
@@ -83,8 +83,15 @@ export async function extractSlots(
   }
 
   // Skip LLM for very short / already-rich messages
+  // PAI-FNC-001/002/005: never let slot-fill invent SITE/object on aggregate or filter-only
   const m = normalizeId(text);
-  if (m.length < 8 || hasUsableHeuristic(heuristic)) {
+  if (
+    m.length < 8 ||
+    hasUsableHeuristic(heuristic) ||
+    isStandaloneFinanceAggregateQuery(text) ||
+    isFinanceFilterOnlyQuery(text) ||
+    isFinanceContextFilterQuery(text)
+  ) {
     return { constraints: heuristic, usedLlm: false };
   }
 
