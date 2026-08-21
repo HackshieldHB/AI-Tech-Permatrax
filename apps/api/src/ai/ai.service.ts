@@ -363,6 +363,8 @@ export class AiService {
       !isOrdinalReference(text) &&
       !isAttributeFollowUp(text) &&
       !isFinanceFilterOrAggregateQuery(text) &&
+      // PAI-FNC-004: "Top 5 budget terbesar" must not replay prior realisasi ranking
+      !isModuleDataRankingQuery(text) &&
       // PAI-FNC-001/002: standalone metric/count must not replay prior Summary
       !isProjectCountQuery(text) &&
       detectFinanceMetrics(text).length === 0

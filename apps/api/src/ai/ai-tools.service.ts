@@ -8,6 +8,7 @@ import {
   detectFinanceMode,
   detectRankingMetric,
   detectTopNLimit,
+  hasExplicitRankingMetric,
   extractHierarchyConstraint,
   extractOwnerName,
   extractProjectNeedle,
@@ -345,7 +346,11 @@ export class AiToolsService {
     }
     const metrics = detectFinanceMetrics(bareMessage);
     const metric = metrics[0] ?? detectFinanceMetric(bareMessage);
-    const rankingMetric = detectRankingMetric(bareMessage);
+    // Prefer this-turn wording (incl. METRIC tags); bareMessage alone can
+    // inherit "realisasi" from a prior ranking line (PAI-FNC-004).
+    const rankingMetric = detectRankingMetric(
+      hasExplicitRankingMetric(bareMessage) ? bareMessage : message,
+    );
     const topN = detectTopNLimit(bareMessage);
     const broaderScope =
       /\[broader_retry\]|\[scope_non_archived\]|\[scope_all\]/i.test(message) ||
@@ -386,10 +391,10 @@ export class AiToolsService {
       !broaderScope &&
       (forceActive ||
         metric === 'status_active' ||
-        // PAI-FNC-002: aggregate defaults to non-ARCHIVED unless user said ACTIVE
-        (mode === 'summary' && !forceClosed && !forceArchived) ||
-        (mode === 'filtered_list' && !forceClosed && !forceArchived) ||
-        ((mode === 'top_budget' || mode === 'smallest') && !forceClosed))
+        // PAI-FNC-002: full Finance Summary still defaults to ACTIVE.
+        // Ranking / filter-only must NOT silently drop CLOSED rows unless the
+        // user or session actually said ACTIVE (PAI-FNC-004 / FNC-005).
+        (mode === 'summary' && !forceClosed && !forceArchived))
     ) {
       statusWhere = 'ACTIVE';
     }
@@ -904,10 +909,10 @@ export class AiToolsService {
       ...(scalarOrder ? { orderBy: scalarOrder } : {}),
       take: 80,
     });
-    // PAI-FNC-004: default Total Budget ranking must not return empty when the
-    // Finance dataset exists — retry non-ARCHIVED if ACTIVE-only was too tight
-    // and the user did not name SITE/SEGMENT/status in this turn.
-    if (rows.length === 0 && !hierarchyLevel) {
+    // PAI-FNC-004: if a leftover ACTIVE default yielded zero rows and the user
+    // did not name SITE/SEGMENT, retry the non-ARCHIVED Finance dataset.
+    const statusIsScalar = typeof where.status === 'string';
+    if (rows.length === 0 && !hierarchyLevel && statusIsScalar) {
       rows = await this.prisma.financeProject.findMany({
         where: {
           ...where,

@@ -573,6 +573,23 @@ export function resolveSessionContext(input: {
       };
     }
     if (topic === 'finance') {
+      // PAI-FNC-001/004/005: ranking + filter modification are this-turn intents.
+      // Do not prepend the prior list/ranking line or "budget terbesar" loses to
+      // leftover SITE list / realisasi ranking.
+      if (
+        isModuleDataRankingQuery(msg) ||
+        isFinanceContextFilterQuery(msg) ||
+        isFinanceFilterOnlyQuery(msg) ||
+        isFinanceFilterOrAggregateQuery(msg)
+      ) {
+        return {
+          effectiveText: msg,
+          activeTopic: topic,
+          activeObject: entity,
+          needsTopicClarify: false,
+          topicSwitched: false,
+        };
+      }
       // Inherit last finance question — never FAQ-drift on "yang tadi"
       const inherit =
         prior ||
@@ -1021,9 +1038,12 @@ export function isFinanceContextFilterQuery(text: string): boolean {
     /\b(site|segment|standalone)\b/.test(m) && !/(site-\d|website)/.test(m);
   if (!hasStatus && !hasHier) return false;
   if (
-    /^(sekarang|hanya|filter)\b/.test(m) ||
+    /^(sekarang|hanya|filter|ganti)\b/.test(m) ||
     /\bsaja\??$/.test(m) ||
-    /(hanya|filter)\s+(project|proyek|site|segment|standalone|active|aktif|closed)/.test(
+    /(hanya|filter|ganti(\s+ke)?)\s+(project|proyek|site|segment|standalone|active|aktif|closed)/.test(
+      m,
+    ) ||
+    /(dari yang tadi|yang tadi).*(site|segment|standalone|active|aktif|closed)/.test(
       m,
     )
   ) {
@@ -1295,14 +1315,27 @@ export function detectFinanceMetric(text: string): FinanceMetric | null {
 
 export function detectRankingMetric(text: string): FinanceRankingMetric {
   const m = normalizeId(primaryUtterance(text));
-  // Most specific metrics first. Explicit "budget terbesar" must not lose to
-  // inherited "realisasi" in conversation context (PAI-FNC-004).
-  if (/(over\s*budget|overbudget)/.test(m)) return 'overbudget';
-  if (/(sisa\s*budget|remaining(\s*budget)?|\bsisa\b)/.test(m)) return 'remaining';
-  if (/\bmaterial\b/.test(m)) return 'materialBudget';
-  if (/\b(jasa|service)\b/.test(m)) return 'jasaBudget';
-  if (/(realisasi|spent|terpakai)/.test(m)) return 'realization';
-  if (/(budget|anggaran)/.test(m)) return 'totalBudget';
+  const full = normalizeId(text);
+  // Scan the whole tool message so inherited "realisasi terbesar" cannot beat
+  // this-turn "Top 5 budget terbesar" (PAI-FNC-004).
+  const src = `${m} ${full}`;
+  if (/(over\s*budget|overbudget)/.test(src)) return 'overbudget';
+  if (/(sisa\s*budget|remaining(\s*budget)?)/.test(src) || /\bsisa\b/.test(m)) {
+    return 'remaining';
+  }
+  if (/\bmaterial\b/.test(src)) return 'materialBudget';
+  if (/\b(jasa|service)\b/.test(src)) return 'jasaBudget';
+  const namedTotalBudget =
+    /(total\s*)?(budget|anggaran)\s*(terbesar|tertinggi|terkecil|terendah|paling)/.test(
+      src,
+    ) ||
+    /top\s*\d+\s*(project\s*)?(dengan\s*)?(total\s*)?(budget|anggaran)/.test(src) ||
+    /(terbesar|tertinggi|terkecil|paling besar|paling tinggi).*(total\s*)?(budget|anggaran)/.test(
+      src,
+    );
+  if (namedTotalBudget) return 'totalBudget';
+  if (/(realisasi|spent|terpakai)/.test(src)) return 'realization';
+  if (/(budget|anggaran)/.test(src)) return 'totalBudget';
   const tag = text.match(/\[METRIC_([A-Z_]+)\]/i);
   if (tag) {
     const key = tag[1].toLowerCase();

@@ -2167,4 +2167,100 @@ describe('PermaTrax AI chatbot (logic)', () => {
     expect(res.answer).toMatch(/FIN-HI/i);
     expect(res.answer).not.toMatch(/Belum ada Finance Project yang cocok/i);
   });
+
+  it('FNC-001/005 V11: SEGMENT saja replaces SITE and keeps ACTIVE', async () => {
+    const prisma = makePrisma();
+    (prisma as any).financeProject.findMany = jest.fn(async ({ where }: any) => {
+      if (where?.hierarchyLevel === 'SEGMENT' && where?.status === 'ACTIVE') {
+        return [
+          {
+            code: 'SEG-2026-042',
+            name: 'Segment Keep Active',
+            totalBudget: 850000000,
+            materialBudget: 1,
+            jasaBudget: 1,
+            materialSpent: 0,
+            jasaSpent: 0,
+            status: 'ACTIVE',
+            hierarchyLevel: 'SEGMENT',
+            isOverbudget: false,
+            poCustomerNumber: null,
+            parent: null,
+          },
+        ];
+      }
+      return [];
+    });
+    const { ai } = makeServices(prisma);
+    const start = await ai.chat(user, 'Aku mau bahas Finance Project.');
+    await ai.chat(
+      user,
+      'Sekarang hanya project ACTIVE SITE.',
+      start.conversationId,
+    );
+    const res = await ai.chat(
+      user,
+      'Sekarang SEGMENT saja.',
+      start.conversationId,
+    );
+    expect(res.answer).toMatch(/ACTIVE \+ SEGMENT/i);
+    expect(res.answer).toMatch(/SEG-2026-042/i);
+    expect(res.answer).not.toMatch(/ACTIVE \+ SITE/i);
+  });
+
+  it('FNC-004/005 V11: Dari yang tadi ranking keeps ACTIVE SITE + Total Budget', async () => {
+    expect(
+      detectRankingMetric(
+        'Top 5 realisasi terbesar\n(konteks referensi: Dari yang tadi, tampilkan 5 budget terbesar.)',
+      ),
+    ).toBe('totalBudget');
+    const prisma = makePrisma();
+    (prisma as any).financeProject.findMany = jest.fn(async ({ where }: any) => {
+      expect(where?.status).toBe('ACTIVE');
+      expect(where?.hierarchyLevel).toBe('SITE');
+      return [
+        {
+          code: 'SITE-HI',
+          name: 'Site High',
+          totalBudget: 9000000000,
+          materialBudget: 1,
+          jasaBudget: 1,
+          materialSpent: 0,
+          jasaSpent: 0,
+          status: 'ACTIVE',
+          hierarchyLevel: 'SITE',
+          isOverbudget: false,
+        },
+        {
+          code: 'SITE-LO',
+          name: 'Site Low',
+          totalBudget: 1000000,
+          materialBudget: 1,
+          jasaBudget: 1,
+          materialSpent: 900000000,
+          jasaSpent: 0,
+          status: 'ACTIVE',
+          hierarchyLevel: 'SITE',
+          isOverbudget: false,
+        },
+      ];
+    });
+    const { ai } = makeServices(prisma);
+    const start = await ai.chat(user, 'Aku mau bahas Finance Project.');
+    await ai.chat(
+      user,
+      'Sekarang hanya project ACTIVE SITE.',
+      start.conversationId,
+    );
+    const res = await ai.chat(
+      user,
+      'Dari yang tadi, tampilkan 5 budget terbesar.',
+      start.conversationId,
+    );
+    expect(res.answer).toMatch(/Total Budget terbesar/i);
+    expect(res.answer).not.toMatch(/Realisasi terbesar/i);
+    expect(res.answer.indexOf('SITE-HI')).toBeLessThan(
+      res.answer.indexOf('SITE-LO'),
+    );
+  });
 });
