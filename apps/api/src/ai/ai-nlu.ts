@@ -678,6 +678,14 @@ export function isAmbiguousQuery(text: string): boolean {
   ) {
     return false;
   }
+  if (
+    isModuleDataRankingQuery(text) ||
+    isFinanceFilterClearQuery(text) ||
+    isFinanceFilterRemoveQuery(text) ||
+    isFinanceContextFilterQuery(text)
+  ) {
+    return false;
+  }
   const words = m.split(/\s+/).filter(Boolean);
   if (words.length <= 3) {
     if (
@@ -718,8 +726,17 @@ export function isModuleDataRankingQuery(text: string): boolean {
     /(paling sedikit|paling kecil|terendah|terkecil|lowest|min stock|hampir habis)/.test(
       m,
     ) ||
-    /(paling banyak|paling besar|tertinggi|terbesar|top\s*\d*)/.test(m) ||
-    /(barang|stok|stock|item).*(sedikit|kecil|besar|banyak)/.test(m)
+    /(paling banyak|paling besar|tertinggi|terbesar|top\s*\d*|highest|largest|maximum|\bmax\b)/.test(
+      m,
+    ) ||
+    /(barang|stok|stock|item).*(sedikit|kecil|besar|banyak)/.test(m) ||
+    // PAI-FNC-004 V2: "kalau berdasarkan realisasi?" is ranking, not object attr
+    /(berdasarkan|dilihat dari|lihat dari|lihat)\s+(total\s+)?(realisasi|budget|anggaran|material|jasa|sisa)/.test(
+      m,
+    ) ||
+    /(kalau|gimana|bagaimana).*(berdasarkan|dari)\s+(realisasi|budget|material|jasa|sisa)/.test(
+      m,
+    )
   );
 }
 
@@ -863,6 +880,9 @@ export function classifyPaIntent(text: string): PaIntent {
   if (isUserCorrection(raw) || /\[user_correction\]/i.test(raw))
     return 'correction';
   if (isCapabilityInquiry(raw)) return 'capability';
+  if (isFinanceFilterClearQuery(raw) || isFinanceFilterRemoveQuery(raw)) {
+    return 'data';
+  }
   if (isAmbiguousQuery(raw)) return 'clarify';
 
   if (
@@ -989,6 +1009,9 @@ export function isProjectCountQuery(text: string): boolean {
 /** PAI-FNC-005: status/hierarchy filters without a named project or ranking metric. */
 export function isFinanceFilterOnlyQuery(text: string): boolean {
   const m = normalizeId(primaryUtterance(text));
+  if (isResultSetNarrowingQuery(text) || isFinanceFilterClearQuery(text)) {
+    return false;
+  }
   if (
     /(top\s*\d*|terbesar|terkecil|ranking|paling besar|paling kecil|paling tinggi|paling rendah)/.test(
       m,
@@ -1003,7 +1026,7 @@ export function isFinanceFilterOnlyQuery(text: string): boolean {
   if (!hasStatus && !hasHier) return false;
   const leftover = m
     .replace(
-      /\b(tampilkan|list|daftar|lihat|show|cari|project|proyek|finance|yang|dengan|berdasarkan|filter|hanya|sekarang|saja|hanya|active|aktif|closed|archived|arsip|ditutup|site|segment|standalone)\b/g,
+      /\b(tampilkan|list|daftar|lihat|show|cari|project|proyek|finance|yang|dengan|berdasarkan|filter|hanya|sekarang|saja|hanya|active|aktif|closed|archived|arsip|ditutup|site|segment|standalone|hapus|buang|hilangkan|ganti|kembali|semua|seluruh)\b/g,
       ' ',
     )
     .replace(/\s+/g, ' ')
@@ -1028,6 +1051,9 @@ export function isFinanceContextFilterQuery(text: string): boolean {
     return false;
   }
   if (/(bahas|pindah|fokus|modul)/.test(m)) return false;
+  if (isFinanceFilterRemoveQuery(text) || isFinanceFilterClearQuery(text)) {
+    return true;
+  }
   if (
     /(top\s*\d*|terbesar|terkecil|ranking|paling besar|paling kecil)/.test(m)
   ) {
@@ -1040,7 +1066,10 @@ export function isFinanceContextFilterQuery(text: string): boolean {
   if (
     /^(sekarang|hanya|filter|ganti)\b/.test(m) ||
     /\bsaja\??$/.test(m) ||
-    /(hanya|filter|ganti(\s+ke)?)\s+(project|proyek|site|segment|standalone|active|aktif|closed)/.test(
+    /(hanya|filter|ganti(\s+ke)?|ganti\s+menjadi|ubah(\s+jadi)?|ubah\s+menjadi)\s+(project|proyek|site|segment|standalone|active|aktif|closed)/.test(
+      m,
+    ) ||
+    /^(ganti|ubah)\s+(menjadi|ke|jadi)\s+(site|segment|standalone|active|aktif|closed)/.test(
       m,
     ) ||
     /(dari yang tadi|yang tadi).*(site|segment|standalone|active|aktif|closed)/.test(
@@ -1060,6 +1089,41 @@ export function isFinanceContextFilterQuery(text: string): boolean {
   return false;
 }
 
+/** PAI-FNC-005: drop the entire filter set and wait for the next intent. */
+export function isFinanceFilterClearQuery(text: string): boolean {
+  const m = normalizeId(primaryUtterance(text));
+  return (
+    /(kembali ke semua|kembali ke seluruh|reset filter|hapus semua filter|hapus seluruh filter|tanpa filter|clear filter)/.test(
+      m,
+    ) ||
+    /(kembali|reset)\s+(ke\s+)?(semua|seluruh)\s+(project|proyek|finance)/.test(m) ||
+    /^(semua project|seluruh project|semua finance project)\s*(saja)?\??$/.test(m)
+  );
+}
+
+/** PAI-FNC-005: remove one filter dimension ("Hapus filter SITE"). */
+export function isFinanceFilterRemoveQuery(text: string): boolean {
+  const m = normalizeId(primaryUtterance(text));
+  return /(hapus|buang|hilangkan|lepas|drop)\s+(filter\s+)?(site|segment|standalone|active|aktif|closed|archived|arsip|status)/.test(
+    m,
+  );
+}
+
+/**
+ * PAI-FNC-005: "Yang SEGMENT" after a multi-hit search picks an object,
+ * it does not start a new dataset filter.
+ */
+export function isResultSetNarrowingQuery(text: string): boolean {
+  const m = normalizeId(primaryUtterance(text));
+  if (/(top\s*\d*|terbesar|terkecil|tampilkan|list|daftar|filter|hanya|hapus)/.test(m)) {
+    return false;
+  }
+  return (
+    /^(yang\s+)?(site|segment|standalone|active|aktif|closed)\??$/.test(m) ||
+    /^yang\s+(site|segment|standalone)\b/.test(m)
+  );
+}
+
 /**
  * PAI-FNC-001/002: complete aggregate / status / metric questions that must
  * use the default Finance dataset — not Active Object or leftover filters.
@@ -1069,6 +1133,7 @@ export function isStandaloneFinanceAggregateQuery(text: string): boolean {
   if (isFinanceContextFilterQuery(text) || isFinanceFilterOnlyQuery(text)) {
     return false;
   }
+  if (isModuleDataRankingQuery(text)) return false;
   const m = normalizeId(primaryUtterance(text));
   if (
     /(top\s*\d*|terbesar|terkecil|ranking|paling besar|paling kecil|paling tinggi|paling rendah)/.test(
@@ -1103,6 +1168,7 @@ export function hasExplicitRankingMetric(text: string): boolean {
  * but never onto a new standalone aggregate (that silently shrinks the dataset).
  */
 export function shouldApplySessionFinanceFilters(text: string): boolean {
+  if (isFinanceFilterClearQuery(text)) return false;
   if (hasConversationalReference(text)) return true;
   if (isStandaloneFinanceAggregateQuery(text)) return false;
   if (/(semua|seluruh|keseluruhan)\b/.test(normalizeId(primaryUtterance(text)))) {
@@ -1211,15 +1277,28 @@ export type FinanceMode =
   | 'ranking'
   | 'filtered_list';
 
-/** Top-N limit from "Top 5 …" (PAI-FNC-004). Default 10, capped 1–50. */
+/** Explicit Top-N, or null when the user did not name a count (PAI-FNC-004). */
+export function detectExplicitTopN(text: string): number | null {
+  const t = normalizeId(primaryUtterance(text)).replace(/\bbbudget\b/g, 'budget');
+  const patterns = [
+    /\btop\s*(\d{1,2})\b/,
+    /\b(\d{1,2})\s+yang\s+(?:terbesar|terkecil|teratas|terendah|paling)/,
+    /\b(\d{1,2})\s+(?:project\s+)?(?:dengan\s+)?(?:total\s+)?(?:budget|anggaran|realisasi|sisa|material|jasa)?\s*(terbesar|terkecil|teratas|terendah|paling)/,
+    /\b(?:sekarang|tampilkan|ambil|lihat)\s+(\d{1,2})\s+(?:yang\s+)?(?:budget|anggaran|realisasi|sisa|material|jasa|project|proyek)/,
+    /\b(\d{1,2})\s+(?:budget|anggaran|realisasi|material|sisa)/,
+  ];
+  for (const p of patterns) {
+    const m = t.match(p);
+    if (!m) continue;
+    const n = Number(m[1]);
+    if (Number.isFinite(n) && n >= 1 && n <= 50) return Math.floor(n);
+  }
+  return null;
+}
+
+/** Top-N limit from ranking wording. Default 10 when unspecified. */
 export function detectTopNLimit(text: string): number {
-  const m =
-    text.match(/\btop\s*(\d{1,2})\b/i) ||
-    text.match(/\b(\d{1,2})\s*(terbesar|terkecil|teratas|terendah)\b/i);
-  if (!m) return 10;
-  const n = Number(m[1]);
-  if (!Number.isFinite(n) || n < 1) return 10;
-  return Math.min(50, Math.floor(n));
+  return detectExplicitTopN(text) ?? 10;
 }
 
 /**
@@ -1490,6 +1569,10 @@ export function extractProjectNeedle(text: string): string | null {
 export function extractHierarchyConstraint(
   text: string,
 ): 'SITE' | 'SEGMENT' | 'STANDALONE' | null {
+  if (isFinanceFilterRemoveQuery(text) || isFinanceFilterClearQuery(text)) {
+    return null;
+  }
+  if (/\[HIERARCHY_NONE\]/i.test(text)) return null;
   if (/\[HIERARCHY_SITE\]/i.test(text)) return 'SITE';
   if (/\[HIERARCHY_SEGMENT\]/i.test(text)) return 'SEGMENT';
   if (/\[HIERARCHY_STANDALONE\]/i.test(text)) return 'STANDALONE';
@@ -1530,7 +1613,13 @@ export function detectFinanceMode(text: string): FinanceMode {
 
   // PAI-FNC-004: ranking with dynamic metric (before generic overbudget/summary)
   const wantsRank =
-    /(top\s*\d*|terbesar|terkecil|ranking|paling besar|paling kecil|paling tinggi|paling rendah)/.test(
+    /(top\s*\d*|terbesar|terkecil|ranking|paling besar|paling kecil|paling tinggi|paling rendah|highest|lowest|largest|smallest)/.test(
+      m,
+    ) ||
+    /(berdasarkan|dilihat dari|lihat dari)\s+(total\s+)?(realisasi|budget|anggaran|material|jasa|sisa)/.test(
+      m,
+    ) ||
+    /(kalau|gimana|bagaimana).*(berdasarkan|dari)\s+(realisasi|budget|material|jasa|sisa)/.test(
       m,
     );
   if (wantsRank) {
@@ -1840,6 +1929,7 @@ export function answerFingerprint(text: string): string {
 export {
   extractEntityFromAnswer,
   extractActiveReferenceFromAnswer,
+  extractActiveReferenceByDiscriminator,
   extractReferenceOrdinal,
   extractExplicitEntityCode,
   detectRequestedAttribute,

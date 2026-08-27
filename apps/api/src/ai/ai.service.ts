@@ -26,6 +26,7 @@ import {
   classifyPaIntent,
   detectRequestedAttribute,
   extractActiveReferenceFromAnswer,
+  extractActiveReferenceByDiscriminator,
   extractEntityFromAnswer,
   extractExplicitEntityCode,
   hasConversationalReference,
@@ -36,6 +37,8 @@ import {
   isFinanceFilterOrAggregateQuery,
   isFinanceContextFilterQuery,
   isFinanceFilterOnlyQuery,
+  isFinanceFilterClearQuery,
+  isResultSetNarrowingQuery,
   isModuleDataRankingQuery,
   isOrdinalReference,
   isPicOrRequestorQuery,
@@ -55,23 +58,23 @@ import {
   topicToKnowledgeModules,
   buildActiveDatasetKey,
   attributeNeedsLiveLookup,
+  buildMetaReasoningAnswer,
+  isMetaReasoningInquiry,
+  isUnknownInformationInquiry,
+  mapResponseStrategy,
   type UnknownKind,
 } from './ai-nlu';
 import {
   appendFinanceConstraintTags,
   appendInheritedRankingMetricTag,
+  appendInheritedRankingLimitTag,
   buildConstrainedDomainQuery,
   extractConstraintsFromText,
   hasUsableConstraint,
 } from './ai-constraints';
 import { extractSlots } from './ai-slot-fill';
 import {
-  buildMetaReasoningAnswer,
-  isMetaReasoningInquiry,
-  isUnknownInformationInquiry,
-  mapResponseStrategy,
-} from './ai-strategy';
-import {
+  EMPTY_CONSTRAINTS,
   encodeSessionInTraces,
   extractSessionFromHistory,
   isContextDependentFollowUp,
@@ -249,8 +252,10 @@ export class AiService {
     // PAI-FNC-001/005 V11: SITE/SEGMENT filter-set stays data inside Finance
     if (
       session.activeTopic === 'finance' &&
-      (isFinanceContextFilterQuery(text) || isFinanceFilterOnlyQuery(text)) &&
-      (intent === 'faq' || intent === 'howto')
+      (isFinanceContextFilterQuery(text) ||
+        isFinanceFilterOnlyQuery(text) ||
+        isFinanceFilterClearQuery(text)) &&
+      (intent === 'faq' || intent === 'howto' || intent === 'clarify')
     ) {
       intent = 'data';
     }
@@ -288,7 +293,12 @@ export class AiService {
     // do NOT re-run full ranking/list retrieval.
     let referenceDetail: string | null = null;
     let liveObjectLookup: string | null = null;
-    if (stateFollowUp || explicitCode) {
+    if (
+      (stateFollowUp || explicitCode) &&
+      !isModuleDataRankingQuery(text) &&
+      !isFinanceContextFilterQuery(text) &&
+      !isFinanceFilterOnlyQuery(text)
+    ) {
       const snapshot = session.activeDatasetAnswer || lastAssistant;
       const resolved = resolveActiveReference({
         text: explicitCode
@@ -350,6 +360,27 @@ export class AiService {
             };
           }
         }
+      }
+    }
+
+    if (
+      !referenceDetail &&
+      !liveObjectLookup &&
+      isResultSetNarrowingQuery(text) &&
+      (session.activeDatasetAnswer || lastAssistant)
+    ) {
+      const picked = extractActiveReferenceByDiscriminator(
+        session.activeDatasetAnswer || lastAssistant,
+        text,
+      );
+      if (picked?.code) {
+        liveObjectLookup = `Detail budget project ${picked.code}`;
+        session = {
+          ...session,
+          activeObject: picked.label,
+          activeReference: picked.detailLine,
+        };
+        intent = 'data';
       }
     }
 
@@ -536,6 +567,30 @@ export class AiService {
         started,
       });
     };
+
+    if (session.activeTopic === 'finance' && isFinanceFilterClearQuery(text)) {
+      const cleared = { ...EMPTY_CONSTRAINTS, extra: [] as string[] };
+      return reply(
+        'Baik, filter sudah dihapus dan sekarang kembali ke seluruh Finance Project. Informasi apa yang ingin kamu lihat?',
+        {
+          intent: 'data',
+          sticker: '💰',
+          strategy: 'none',
+          responseStrategy: 'operational_data',
+          activeIntent: 'data',
+          dataQuery: null,
+          reasoningNote: 'Finance filter clear — wait for next intent',
+          patch: {
+            activeTopic: 'finance',
+            constraints: cleared,
+            activeDataset: null,
+            activeDatasetAnswer: null,
+            pendingRecovery: false,
+            correctionApplied: false,
+          },
+        },
+      );
+    }
 
     if (intent === 'off_topic') {
       return reply(
@@ -1186,6 +1241,11 @@ export class AiService {
       );
       const mode = detectFinanceMode(text);
       if (mode === 'top_budget' || mode === 'smallest' || mode === 'ranking') {
+        toolMessage = appendInheritedRankingLimitTag(
+          toolMessage,
+          session.constraints,
+          text,
+        );
         toolMessage = appendInheritedRankingMetricTag(
           toolMessage,
           session.constraints,

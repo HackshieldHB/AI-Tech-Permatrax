@@ -7,7 +7,7 @@ import {
   detectFinanceMetrics,
   detectFinanceMode,
   detectRankingMetric,
-  detectTopNLimit,
+  detectExplicitTopN,
   hasExplicitRankingMetric,
   extractHierarchyConstraint,
   extractOwnerName,
@@ -351,7 +351,11 @@ export class AiToolsService {
     const rankingMetric = detectRankingMetric(
       hasExplicitRankingMetric(bareMessage) ? bareMessage : message,
     );
-    const topN = detectTopNLimit(bareMessage);
+    const explicitN = detectExplicitTopN(bareMessage);
+    const taggedLimit = message.match(/\[LIMIT_(\d{1,2})\]/i);
+    const topN =
+      explicitN ??
+      (taggedLimit ? Math.min(50, Math.max(1, Number(taggedLimit[1]))) : 10);
     const broaderScope =
       /\[broader_retry\]|\[scope_non_archived\]|\[scope_all\]/i.test(message) ||
       /non.?arsip|non.?archived|termasuk closed|active\s*\+\s*closed/i.test(

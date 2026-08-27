@@ -252,23 +252,61 @@ export function mergeConstraints(
   current: ActiveConstraintSet,
   incoming: ActiveConstraintSet,
 ): ActiveConstraintSet {
-  const incomingHasMetric = (incoming.extra || []).some((e) =>
-    e.startsWith('metric:'),
-  );
+  const inExtra = incoming.extra || [];
+  const curExtra = current.extra || [];
+  if (inExtra.includes('op:clear')) {
+    return { ...EMPTY_CONSTRAINTS, extra: [] };
+  }
+  const dropHierarchy = inExtra.includes('drop:hierarchy');
+  const dropStatus = inExtra.includes('drop:status');
+  const exclusiveStatus = inExtra.includes('exclusive:status');
+  const incomingHasMetric = inExtra.some((e) => e.startsWith('metric:'));
   const incomingHasRanking = incoming.ranking != null;
-  const extra =
+  const incomingLimit = inExtra.find((e) => e.startsWith('limit:'));
+  const metricExtra =
     incomingHasRanking || incomingHasMetric
       ? [
-          ...(current.extra || []).filter((e) => !e.startsWith('metric:')),
-          ...(incoming.extra || []),
+          ...curExtra.filter((e) => !e.startsWith('metric:')),
+          ...inExtra.filter((e) => e.startsWith('metric:')),
         ]
-      : [...new Set([...(current.extra || []), ...(incoming.extra || [])])];
+      : [...new Set([...curExtra.filter((e) => e.startsWith('metric:')), ...inExtra.filter((e) => e.startsWith('metric:'))])];
+  const limitExtra = incomingLimit
+    ? [incomingLimit]
+    : curExtra.filter((e) => e.startsWith('limit:'));
+  const rest = [
+    ...curExtra.filter(
+      (e) =>
+        !e.startsWith('metric:') &&
+        !e.startsWith('limit:') &&
+        !e.startsWith('op:') &&
+        !e.startsWith('drop:') &&
+        !e.startsWith('exclusive:'),
+    ),
+    ...inExtra.filter(
+      (e) =>
+        !e.startsWith('metric:') &&
+        !e.startsWith('limit:') &&
+        !e.startsWith('op:') &&
+        !e.startsWith('drop:') &&
+        !e.startsWith('exclusive:'),
+    ),
+  ];
+  let hierarchy = dropHierarchy
+    ? incoming.hierarchy ?? null
+    : incoming.hierarchy ?? current.hierarchy ?? null;
+  let status = dropStatus
+    ? incoming.status ?? null
+    : incoming.status ?? current.status ?? null;
+  // "CLOSED saja" replaces status and drops leftover SITE (PAI-FNC-005 Issue 6)
+  if (exclusiveStatus && incoming.status && !incoming.hierarchy) {
+    hierarchy = null;
+  }
   return {
-    status: incoming.status ?? current.status ?? null,
-    hierarchy: incoming.hierarchy ?? current.hierarchy ?? null,
+    status,
+    hierarchy,
     ranking: incoming.ranking ?? current.ranking ?? null,
     ownerName: incoming.ownerName ?? current.ownerName ?? null,
     projectNeedle: incoming.projectNeedle ?? current.projectNeedle ?? null,
-    extra,
+    extra: [...new Set([...metricExtra, ...limitExtra, ...rest])],
   };
 }
