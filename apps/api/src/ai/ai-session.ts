@@ -228,9 +228,12 @@ export function isContextDependentFollowUp(text: string): boolean {
   // PAI-FNC-001: status/metric aggregates are standalone intents, not soft follow-ups
   if (
     /^(berapa\s+)?(active|aktif|closed|archived|arsip)\??$/.test(m) ||
+    /(berapa|jumlah).*(project|proyek).*(active|aktif|closed|archived)/.test(m) ||
     /(over\s*budget|overbudget)/.test(m) ||
     /^(material|jasa)(\s*budget)?\??$/.test(m) ||
-    /^(sisa(\s*budget)?|realisasi|remaining)\??$/.test(m)
+    /^(sisa(\s*budget)?|realisasi|remaining)\??$/.test(m) ||
+    /(total\s*)?(budget|anggaran|realisasi).*(berapa|jumlah)/.test(m) ||
+    /(berapa|jumlah).*(total\s*)?(budget|anggaran|realisasi|sisa)/.test(m)
   ) {
     return false;
   }
@@ -249,12 +252,61 @@ export function mergeConstraints(
   current: ActiveConstraintSet,
   incoming: ActiveConstraintSet,
 ): ActiveConstraintSet {
+  const inExtra = incoming.extra || [];
+  const curExtra = current.extra || [];
+  if (inExtra.includes('op:clear')) {
+    return { ...EMPTY_CONSTRAINTS, extra: [] };
+  }
+  const dropHierarchy = inExtra.includes('drop:hierarchy');
+  const dropStatus = inExtra.includes('drop:status');
+  const exclusiveStatus = inExtra.includes('exclusive:status');
+  const incomingHasMetric = inExtra.some((e) => e.startsWith('metric:'));
+  const incomingHasRanking = incoming.ranking != null;
+  const incomingLimit = inExtra.find((e) => e.startsWith('limit:'));
+  const metricExtra =
+    incomingHasRanking || incomingHasMetric
+      ? [
+          ...curExtra.filter((e) => !e.startsWith('metric:')),
+          ...inExtra.filter((e) => e.startsWith('metric:')),
+        ]
+      : [...new Set([...curExtra.filter((e) => e.startsWith('metric:')), ...inExtra.filter((e) => e.startsWith('metric:'))])];
+  const limitExtra = incomingLimit
+    ? [incomingLimit]
+    : curExtra.filter((e) => e.startsWith('limit:'));
+  const rest = [
+    ...curExtra.filter(
+      (e) =>
+        !e.startsWith('metric:') &&
+        !e.startsWith('limit:') &&
+        !e.startsWith('op:') &&
+        !e.startsWith('drop:') &&
+        !e.startsWith('exclusive:'),
+    ),
+    ...inExtra.filter(
+      (e) =>
+        !e.startsWith('metric:') &&
+        !e.startsWith('limit:') &&
+        !e.startsWith('op:') &&
+        !e.startsWith('drop:') &&
+        !e.startsWith('exclusive:'),
+    ),
+  ];
+  let hierarchy = dropHierarchy
+    ? incoming.hierarchy ?? null
+    : incoming.hierarchy ?? current.hierarchy ?? null;
+  let status = dropStatus
+    ? incoming.status ?? null
+    : incoming.status ?? current.status ?? null;
+  // "CLOSED saja" replaces status and drops leftover SITE (PAI-FNC-005 Issue 6)
+  if (exclusiveStatus && incoming.status && !incoming.hierarchy) {
+    hierarchy = null;
+  }
   return {
-    status: incoming.status ?? current.status ?? null,
-    hierarchy: incoming.hierarchy ?? current.hierarchy ?? null,
+    status,
+    hierarchy,
     ranking: incoming.ranking ?? current.ranking ?? null,
     ownerName: incoming.ownerName ?? current.ownerName ?? null,
     projectNeedle: incoming.projectNeedle ?? current.projectNeedle ?? null,
-    extra: [...new Set([...(current.extra || []), ...(incoming.extra || [])])],
+    extra: [...new Set([...metricExtra, ...limitExtra, ...rest])],
   };
 }

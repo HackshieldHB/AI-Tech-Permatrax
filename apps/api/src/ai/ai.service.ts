@@ -26,6 +26,7 @@ import {
   classifyPaIntent,
   detectRequestedAttribute,
   extractActiveReferenceFromAnswer,
+  extractActiveReferenceByDiscriminator,
   extractEntityFromAnswer,
   extractExplicitEntityCode,
   hasConversationalReference,
@@ -34,13 +35,19 @@ import {
   isConversationStateFollowUp,
   isExplicitModuleSwitch,
   isFinanceFilterOrAggregateQuery,
+  isFinanceContextFilterQuery,
+  isFinanceFilterOnlyQuery,
+  isFinanceFilterClearQuery,
+  isResultSetNarrowingQuery,
   isModuleDataRankingQuery,
   isOrdinalReference,
   isPicOrRequestorQuery,
   isProjectCountQuery,
+  isStandaloneFinanceAggregateQuery,
   isUnsupportedDataQuery,
   detectFinanceMetrics,
   detectFinanceMode,
+  shouldApplySessionFinanceFilters,
   needsScopeClarification,
   refineRecoveryQuery,
   resolveActiveReference,
@@ -51,22 +58,23 @@ import {
   topicToKnowledgeModules,
   buildActiveDatasetKey,
   attributeNeedsLiveLookup,
+  buildMetaReasoningAnswer,
+  isMetaReasoningInquiry,
+  isUnknownInformationInquiry,
+  mapResponseStrategy,
   type UnknownKind,
 } from './ai-nlu';
 import {
   appendFinanceConstraintTags,
+  appendInheritedRankingMetricTag,
+  appendInheritedRankingLimitTag,
   buildConstrainedDomainQuery,
   extractConstraintsFromText,
   hasUsableConstraint,
 } from './ai-constraints';
 import { extractSlots } from './ai-slot-fill';
 import {
-  buildMetaReasoningAnswer,
-  isMetaReasoningInquiry,
-  isUnknownInformationInquiry,
-  mapResponseStrategy,
-} from './ai-strategy';
-import {
+  EMPTY_CONSTRAINTS,
   encodeSessionInTraces,
   extractSessionFromHistory,
   isContextDependentFollowUp,
@@ -181,7 +189,19 @@ export class AiService {
     const slotResult = await extractSlots(text, this.ollama);
     const incomingConstraints =
       slotResult.constraints || extractConstraintsFromText(text);
-    if (hasUsableConstraint(incomingConstraints)) {
+    if (isStandaloneFinanceAggregateQuery(text)) {
+      // PAI-FNC-001/002: new aggregate/status/metric resets leftover SITE/ACTIVE
+      session = {
+        ...session,
+        constraints: {
+          ...incomingConstraints,
+          extra: [...(incomingConstraints.extra || [])],
+        },
+        activeObject: hasConversationalReference(text)
+          ? session.activeObject
+          : null,
+      };
+    } else if (hasUsableConstraint(incomingConstraints)) {
       session = {
         ...session,
         constraints: mergeConstraints(session.constraints, incomingConstraints),
@@ -229,6 +249,17 @@ export class AiService {
     ]);
     let intent = conversational.has(rawIntent) ? rawIntent : expandedIntent;
 
+    // PAI-FNC-001/005 V11: SITE/SEGMENT filter-set stays data inside Finance
+    if (
+      session.activeTopic === 'finance' &&
+      (isFinanceContextFilterQuery(text) ||
+        isFinanceFilterOnlyQuery(text) ||
+        isFinanceFilterClearQuery(text)) &&
+      (intent === 'faq' || intent === 'howto' || intent === 'clarify')
+    ) {
+      intent = 'data';
+    }
+
     // PAI-CSM-002: Conversation State follow-ups are always data — never Guide
     const stateFollowUp =
       !!session.activeTopic &&
@@ -262,7 +293,12 @@ export class AiService {
     // do NOT re-run full ranking/list retrieval.
     let referenceDetail: string | null = null;
     let liveObjectLookup: string | null = null;
-    if (stateFollowUp || explicitCode) {
+    if (
+      (stateFollowUp || explicitCode) &&
+      !isModuleDataRankingQuery(text) &&
+      !isFinanceContextFilterQuery(text) &&
+      !isFinanceFilterOnlyQuery(text)
+    ) {
       const snapshot = session.activeDatasetAnswer || lastAssistant;
       const resolved = resolveActiveReference({
         text: explicitCode
@@ -327,6 +363,27 @@ export class AiService {
       }
     }
 
+    if (
+      !referenceDetail &&
+      !liveObjectLookup &&
+      isResultSetNarrowingQuery(text) &&
+      (session.activeDatasetAnswer || lastAssistant)
+    ) {
+      const picked = extractActiveReferenceByDiscriminator(
+        session.activeDatasetAnswer || lastAssistant,
+        text,
+      );
+      if (picked?.code) {
+        liveObjectLookup = `Detail budget project ${picked.code}`;
+        session = {
+          ...session,
+          activeObject: picked.label,
+          activeReference: picked.detailLine,
+        };
+        intent = 'data';
+      }
+    }
+
     // BHV-003 / RSN-002: "yang tadi" → replay last data query ONLY when we
     // cannot resolve from Conversation State (preserve Active Dataset).
     if (
@@ -337,6 +394,8 @@ export class AiService {
       !isOrdinalReference(text) &&
       !isAttributeFollowUp(text) &&
       !isFinanceFilterOrAggregateQuery(text) &&
+      // PAI-FNC-004: "Top 5 budget terbesar" must not replay prior realisasi ranking
+      !isModuleDataRankingQuery(text) &&
       // PAI-FNC-001/002: standalone metric/count must not replay prior Summary
       !isProjectCountQuery(text) &&
       detectFinanceMetrics(text).length === 0
@@ -508,6 +567,30 @@ export class AiService {
         started,
       });
     };
+
+    if (session.activeTopic === 'finance' && isFinanceFilterClearQuery(text)) {
+      const cleared = { ...EMPTY_CONSTRAINTS, extra: [] as string[] };
+      return reply(
+        'Baik, filter sudah dihapus dan sekarang kembali ke seluruh Finance Project. Informasi apa yang ingin kamu lihat?',
+        {
+          intent: 'data',
+          sticker: '💰',
+          strategy: 'none',
+          responseStrategy: 'operational_data',
+          activeIntent: 'data',
+          dataQuery: null,
+          reasoningNote: 'Finance filter clear — wait for next intent',
+          patch: {
+            activeTopic: 'finance',
+            constraints: cleared,
+            activeDataset: null,
+            activeDatasetAnswer: null,
+            pendingRecovery: false,
+            correctionApplied: false,
+          },
+        },
+      );
+    }
 
     if (intent === 'off_topic') {
       return reply(
@@ -1144,16 +1227,31 @@ export class AiService {
       toolNames.unshift('search_stock');
     }
 
-    // PAI-FNC-005: first-pass multi-filter — append constraint tags before tools
+    // PAI-FNC-005: inherit SITE/ACTIVE on ranking follow-ups only.
+    // PAI-FNC-001/002: standalone aggregates must not inherit a narrower dataset.
     let toolMessage = effectiveText;
     if (
       toolNames.includes('finance_analytics') &&
-      hasUsableConstraint(session.constraints)
+      hasUsableConstraint(session.constraints) &&
+      shouldApplySessionFinanceFilters(text)
     ) {
       toolMessage = appendFinanceConstraintTags(
         effectiveText,
         session.constraints,
       );
+      const mode = detectFinanceMode(text);
+      if (mode === 'top_budget' || mode === 'smallest' || mode === 'ranking') {
+        toolMessage = appendInheritedRankingLimitTag(
+          toolMessage,
+          session.constraints,
+          text,
+        );
+        toolMessage = appendInheritedRankingMetricTag(
+          toolMessage,
+          session.constraints,
+          text,
+        );
+      }
     }
 
     const toolTraces =

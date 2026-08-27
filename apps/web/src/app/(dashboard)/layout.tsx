@@ -99,6 +99,19 @@ const NAV_ITEMS: NavItem[] = [
     icon: GitBranch,
     featureKey: 'PERMIT_PIPELINE',
     section: 'OPERASIONAL',
+    roles: [
+      'SURVEYOR_FTTH',
+      'SURVEYOR_FTTB',
+      'SURVEYOR_FTTT',
+      'PM_FTTH',
+      'PM_FTTB',
+      'PM_FTTT',
+      'PM_SENIOR',
+      'DESIGNER',
+      'OPERATIONAL_MANAGER',
+      'GENERAL_MANAGER',
+      'ADMIN',
+    ],
   },
   {
     href: '/visit-requests',
@@ -466,7 +479,14 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       if (item.dashboardForAllRoles) return true; // FIX: everyone gets a dashboard target
       if (item.roles && !item.roles.includes(user.role as Role)) return false;
       if (!shouldShowSection(item.section, user.role)) return false;
-      if (item.featureKey && !canAccess(item.featureKey)) return false;
+      if (item.featureKey && !canAccess(item.featureKey)) {
+        // Prod Settings can drop DESIGNER (and others) from GIS_MAP /
+        // PERMIT_PIPELINE while DEV flags still include them — hide only by
+        // NAV role list for those two, same pattern as Daftar Dokumen.
+        const coreOpsMenu =
+          item.featureKey === 'GIS_MAP' || item.featureKey === 'PERMIT_PIPELINE';
+        if (!coreOpsMenu) return false;
+      }
       return true;
     });
     return filtered.map((item) =>

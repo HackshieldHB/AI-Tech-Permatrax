@@ -7,7 +7,8 @@ import {
   detectFinanceMetrics,
   detectFinanceMode,
   detectRankingMetric,
-  detectTopNLimit,
+  detectExplicitTopN,
+  hasExplicitRankingMetric,
   extractHierarchyConstraint,
   extractOwnerName,
   extractProjectNeedle,
@@ -15,6 +16,7 @@ import {
   fmtDateId,
   fmtIdr,
   isFinanceBudgetQuery,
+  isFinanceFilterOnlyQuery,
   isProjectCountQuery,
   meaningfulTokens,
   normalizeId,
@@ -44,7 +46,7 @@ export class AiToolsService {
       tools.push('count_permit_clusters');
     }
 
-    if (isFinanceBudgetQuery(message)) {
+    if (isFinanceBudgetQuery(message) || isFinanceFilterOnlyQuery(message)) {
       tools.push('finance_analytics');
     }
 
@@ -335,14 +337,25 @@ export class AiToolsService {
       !extractProjectNeedle(bareMessage) &&
       mode !== 'search' &&
       mode !== 'top_budget' &&
-      mode !== 'smallest'
+      mode !== 'smallest' &&
+      mode !== 'status_count' &&
+      mode !== 'metric_aggregate' &&
+      mode !== 'filtered_list'
     ) {
       mode = 'project_count';
     }
     const metrics = detectFinanceMetrics(bareMessage);
     const metric = metrics[0] ?? detectFinanceMetric(bareMessage);
-    const rankingMetric = detectRankingMetric(bareMessage);
-    const topN = detectTopNLimit(bareMessage);
+    // Prefer this-turn wording (incl. METRIC tags); bareMessage alone can
+    // inherit "realisasi" from a prior ranking line (PAI-FNC-004).
+    const rankingMetric = detectRankingMetric(
+      hasExplicitRankingMetric(bareMessage) ? bareMessage : message,
+    );
+    const explicitN = detectExplicitTopN(bareMessage);
+    const taggedLimit = message.match(/\[LIMIT_(\d{1,2})\]/i);
+    const topN =
+      explicitN ??
+      (taggedLimit ? Math.min(50, Math.max(1, Number(taggedLimit[1]))) : 10);
     const broaderScope =
       /\[broader_retry\]|\[scope_non_archived\]|\[scope_all\]/i.test(message) ||
       /non.?arsip|non.?archived|termasuk closed|active\s*\+\s*closed/i.test(
@@ -354,13 +367,16 @@ export class AiToolsService {
         (mode === 'status_count' ||
           mode === 'summary' ||
           mode === 'metric_aggregate' ||
-          mode === 'project_count'));
+          mode === 'project_count' ||
+          mode === 'filtered_list'));
     const forceArchived =
       /\[scope_archived\]/i.test(message) ||
       (/\b(archived|arsip)\b/.test(normalizeId(bareMessage)) &&
-        mode === 'status_count');
+        (mode === 'status_count' || mode === 'filtered_list'));
     const forceActive =
-      (/\[scope_active\]/i.test(message) && mode !== 'project_count') ||
+      (/\[scope_active\]/i.test(message) &&
+        mode !== 'project_count' &&
+        mode !== 'metric_aggregate') ||
       (/\baktif\b|\bactive\b/.test(normalizeId(bareMessage)) &&
         !broaderScope &&
         !forceClosed &&
@@ -379,9 +395,10 @@ export class AiToolsService {
       !broaderScope &&
       (forceActive ||
         metric === 'status_active' ||
-        // PAI-FNC-002: aggregate defaults to non-ARCHIVED unless user said ACTIVE
-        (mode === 'summary' && !forceClosed && !forceArchived) ||
-        ((mode === 'top_budget' || mode === 'smallest') && !forceClosed))
+        // PAI-FNC-002: full Finance Summary still defaults to ACTIVE.
+        // Ranking / filter-only must NOT silently drop CLOSED rows unless the
+        // user or session actually said ACTIVE (PAI-FNC-004 / FNC-005).
+        (mode === 'summary' && !forceClosed && !forceArchived))
     ) {
       statusWhere = 'ACTIVE';
     }
@@ -438,7 +455,9 @@ export class AiToolsService {
       return {
         name: 'finance_analytics',
         ok: true,
-        summary: `${statusLabel} Project – ${count} Project`,
+        summary: hierarchyLevel
+          ? `${statusLabel} ${hierarchyLevel} – ${count} Project`
+          : `${statusLabel} Project – ${count} Project`,
         data: { status: statusLabel, count, mode: 'status_count' },
       };
     }
@@ -530,6 +549,10 @@ export class AiToolsService {
         hierarchyLevel,
         topN,
       );
+    }
+
+    if (mode === 'filtered_list') {
+      return this.financeFilteredList(baseWhere, hierarchyLevel, statusWhere);
     }
 
     if (mode === 'search') {
@@ -692,6 +715,67 @@ export class AiToolsService {
     };
   }
 
+  /** PAI-FNC-005: list projects by status/hierarchy filters, never keyword search. */
+  private async financeFilteredList(
+    baseWhere: Prisma.FinanceProjectWhereInput,
+    hierarchyLevel: 'SITE' | 'SEGMENT' | 'STANDALONE' | null,
+    statusWhere: Prisma.FinanceProjectWhereInput['status'],
+  ): Promise<ToolTrace> {
+    const rows = await this.prisma.financeProject.findMany({
+      where: baseWhere,
+      select: {
+        code: true,
+        name: true,
+        totalBudget: true,
+        materialBudget: true,
+        jasaBudget: true,
+        materialSpent: true,
+        jasaSpent: true,
+        status: true,
+        hierarchyLevel: true,
+        isOverbudget: true,
+        poCustomerNumber: true,
+        parent: { select: { code: true, name: true } },
+      },
+      take: 15,
+      orderBy: { updatedAt: 'desc' },
+    });
+    const statusLabel =
+      statusWhere === 'ACTIVE'
+        ? 'ACTIVE'
+        : statusWhere === 'CLOSED'
+          ? 'CLOSED'
+          : statusWhere === 'ARCHIVED'
+            ? 'ARCHIVED'
+            : 'non-ARCHIVED';
+    const filterBits = [statusLabel, hierarchyLevel].filter(Boolean).join(' + ');
+    const ack = `Baik. Filter project sekarang: ${filterBits}.`;
+    if (rows.length === 0) {
+      return {
+        name: 'finance_analytics',
+        ok: true,
+        summary: `${ack}\nTidak ada Finance Project dengan filter ${filterBits} di scope akses kamu.`,
+        data: { mode: 'filtered_list', count: 0, status: statusLabel, hierarchyLevel },
+      };
+    }
+    const lines = rows.map((r) => {
+      const spent = Number(r.materialSpent) + Number(r.jasaSpent);
+      const budget = Number(r.totalBudget);
+      return `${r.code} — ${r.name} [${r.status} / ${r.hierarchyLevel}] • Budget ${fmtIdr(budget)} • Realisasi ${fmtIdr(spent)}`;
+    });
+    return {
+      name: 'finance_analytics',
+      ok: true,
+      summary: [
+        ack,
+        `Ditemukan ${rows.length} project (${filterBits}):`,
+        ...lines,
+        `Data per ${fmtDateId()}.`,
+      ].join('\n'),
+      data: { mode: 'filtered_list', count: rows.length, rows },
+    };
+  }
+
   /** PAI-FNC-002: emit one or more aggregate metrics without full Finance Summary dump. */
   private async financeMetricAggregate(
     baseWhere: Prisma.FinanceProjectWhereInput,
@@ -804,7 +888,15 @@ export class AiToolsService {
       ...baseWhere,
       ...(rankingMetric === 'overbudget' ? { isOverbudget: true } : {}),
     };
-    const rows = await this.prisma.financeProject.findMany({
+    const scalarOrder: Prisma.FinanceProjectOrderByWithRelationInput | undefined =
+      rankingMetric === 'totalBudget'
+        ? { totalBudget: dir }
+        : rankingMetric === 'materialBudget'
+          ? { materialBudget: dir }
+          : rankingMetric === 'jasaBudget'
+            ? { jasaBudget: dir }
+            : undefined;
+    let rows = await this.prisma.financeProject.findMany({
       where,
       select: {
         code: true,
@@ -818,8 +910,34 @@ export class AiToolsService {
         hierarchyLevel: true,
         isOverbudget: true,
       },
-      take: 40,
+      ...(scalarOrder ? { orderBy: scalarOrder } : {}),
+      take: 80,
     });
+    // PAI-FNC-004: if a leftover ACTIVE default yielded zero rows and the user
+    // did not name SITE/SEGMENT, retry the non-ARCHIVED Finance dataset.
+    const statusIsScalar = typeof where.status === 'string';
+    if (rows.length === 0 && !hierarchyLevel && statusIsScalar) {
+      rows = await this.prisma.financeProject.findMany({
+        where: {
+          ...where,
+          status: { not: 'ARCHIVED' },
+        },
+        select: {
+          code: true,
+          name: true,
+          totalBudget: true,
+          materialBudget: true,
+          jasaBudget: true,
+          materialSpent: true,
+          jasaSpent: true,
+          status: true,
+          hierarchyLevel: true,
+          isOverbudget: true,
+        },
+        ...(scalarOrder ? { orderBy: scalarOrder } : {}),
+        take: 80,
+      });
+    }
     if (rows.length === 0) {
       return {
         name: 'finance_analytics',

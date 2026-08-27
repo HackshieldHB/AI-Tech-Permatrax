@@ -104,6 +104,36 @@ export function extractActiveReferenceFromAnswer(
   return null;
 }
 
+/** Pick a search/list row by SITE/SEGMENT/status wording (PAI-FNC-005 object rule). */
+export function extractActiveReferenceByDiscriminator(
+  answer: string | null | undefined,
+  text: string,
+): { label: string; detailLine: string; code?: string } | null {
+  if (!answer) return null;
+  const m = normalizeId(text);
+  const wantSeg = /\bsegment\b/.test(m);
+  const wantSite = /\bsite\b/.test(m) && !wantSeg;
+  const wantStand = /\bstandalone\b/.test(m);
+  const wantClosed = /\bclosed\b/.test(m);
+  const wantActive = /\b(active|aktif)\b/.test(m);
+  const lines = answer.split(/\n/).map((l) => l.trim()).filter(Boolean);
+  const hit = lines.find((line) => {
+    if (wantSeg) return /SEG-\d{4}-\d+|\[\s*SEGMENT\s*\]|\/\s*SEGMENT/i.test(line);
+    if (wantSite) return /SITE-\d{4}-\d+|\[\s*SITE\s*\]|\/\s*SITE/i.test(line);
+    if (wantStand) return /STANDALONE/i.test(line);
+    if (wantClosed) return /\bCLOSED\b/i.test(line);
+    if (wantActive) return /\bACTIVE\b/i.test(line);
+    return false;
+  });
+  if (!hit) return null;
+  const code = hit.match(/\b((?:SITE|SEG|FIN)-\d{4}-\d+)\b/i)?.[1];
+  return {
+    label: code ? `${code}` : hit,
+    detailLine: hit.replace(/^\d+\.\s*/, ''),
+    code,
+  };
+}
+
 /** Count numbered rows in a ranked/list answer. */
 export function countRankedItems(answer: string | null | undefined): number {
   if (!answer) return 0;
@@ -200,6 +230,14 @@ export function isAttributeFollowUp(text: string): boolean {
   ) {
     return false;
   }
+  // PAI-FNC-004 V2: ranking of a metric is not an Active Object attribute ask
+  if (
+    /(terbesar|terkecil|tertinggi|terendah|paling besar|paling kecil|paling tinggi|paling rendah|top\s*\d*|highest|lowest|largest|smallest|\bmax\b|\bmin\b|berdasarkan)/.test(
+      m,
+    )
+  ) {
+    return false;
+  }
   // Strict short attribute phrases
   if (
     /^(status(nya)?|realisasi(nya)?|material\s*budget(nya)?|jasa\s*budget(nya)?|sisa\s*budget(nya)?|remaining|budget(nya)?|jumlah(nya)?|satuan(nya)?|nama(nya)?)[.!]?\s*$/.test(
@@ -232,6 +270,11 @@ export function isActiveReferenceDetailQuery(text: string): boolean {
     );
   if (!hasRef && !isAttributeFollowUp(text)) return false;
   if (/(semua|seluruh|list|daftar|tampilkan ulang|ulangi)/.test(m)) return false;
+  if (
+    /(terbesar|terkecil|top\s*\d*|berdasarkan|paling besar|paling tinggi)/.test(m)
+  ) {
+    return false;
+  }
   // Bare ordinal ("Yang kedua.") is a valid state follow-up
   if (isOrdinalReference(text) && !detectRequestedAttribute(text)) return true;
   return !!detectRequestedAttribute(text);
