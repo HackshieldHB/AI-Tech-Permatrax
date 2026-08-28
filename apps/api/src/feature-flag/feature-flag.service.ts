@@ -72,6 +72,7 @@ export class FeatureFlagService {
   }
 
   async checkAccessAsync(featureKey: string, userRole: Role): Promise<boolean> {
+    if (userRole === Role.GENERAL_MANAGER) return true;
     if (hasCoreOpsGrant(featureKey, userRole)) return true;
     const flag = await this.prisma.featureFlag.findUnique({ where: { featureKey } });
     if (!flag || !flag.isEnabled) return false;
@@ -79,11 +80,12 @@ export class FeatureFlagService {
   }
 
   async getMyAccess(userRole: Role) {
-    const flags = await this.prisma.featureFlag.findMany({
-      where: { isEnabled: true },
-    });
+    const flags = await this.prisma.featureFlag.findMany();
+    if (userRole === Role.GENERAL_MANAGER) {
+      return { features: flags.map((f) => f.featureKey) };
+    }
     const features = flags
-      .filter((f) => (f.roles as Role[]).includes(userRole))
+      .filter((f) => f.isEnabled && (f.roles as Role[]).includes(userRole))
       .map((f) => f.featureKey);
     for (const key of Object.keys(CORE_OPS_FEATURE_ROLES)) {
       if (hasCoreOpsGrant(key, userRole) && !features.includes(key)) {

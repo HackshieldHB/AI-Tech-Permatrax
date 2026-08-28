@@ -50,20 +50,32 @@ export const useAuthStore = create<AuthState>()(
       setFeatureAccess: (keys) => set({ featureAccess: keys }),
       setFeatureAccessReady: (v) => set({ featureAccessReady: v }),
       canAccess: (featureKey: string) => {
+        // GM owns Settings; prod flag rows must not hide menus the same user can
+        // open on DEV.
+        if (get().user?.role === 'GENERAL_MANAGER') return true;
         const { featureAccess, featureAccessReady } = get();
         if (!featureAccessReady) return false;
         return featureAccess.includes(featureKey);
       },
       resetFeatureAccess: () => set({ featureAccess: [], featureAccessReady: false }),
       fetchFeatureAccess: async () => {
-        const flagsRes = await apiFetch('/feature-flags/my-access');
-        if (flagsRes.ok) {
-          const body = await flagsRes.json();
-          const keys = Array.isArray(body.features) ? body.features : [];
-          set({ featureAccess: keys, featureAccessReady: true });
-        } else {
-          set({ featureAccess: [], featureAccessReady: false });
+        const isGm = get().user?.role === 'GENERAL_MANAGER';
+        try {
+          const flagsRes = await apiFetch('/feature-flags/my-access');
+          if (flagsRes.ok) {
+            const body = await flagsRes.json();
+            const keys = Array.isArray(body.features) ? body.features : [];
+            set({ featureAccess: keys, featureAccessReady: true });
+            return;
+          }
+        } catch {
+          /* fall through */
         }
+        if (isGm) {
+          set({ featureAccess: [], featureAccessReady: true });
+          return;
+        }
+        set({ featureAccess: [], featureAccessReady: false });
       },
       setLoading: (v) => set({ isLoading: v }),
 

@@ -480,9 +480,6 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       if (item.roles && !item.roles.includes(user.role as Role)) return false;
       if (!shouldShowSection(item.section, user.role)) return false;
       if (item.featureKey && !canAccess(item.featureKey)) {
-        // Prod Settings can drop DESIGNER (and others) from GIS_MAP /
-        // PERMIT_PIPELINE while DEV flags still include them — hide only by
-        // NAV role list for those two, same pattern as Daftar Dokumen.
         const coreOpsMenu =
           item.featureKey === 'GIS_MAP' || item.featureKey === 'PERMIT_PIPELINE';
         if (!coreOpsMenu) return false;
