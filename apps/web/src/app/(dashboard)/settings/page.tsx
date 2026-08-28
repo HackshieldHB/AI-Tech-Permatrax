@@ -326,7 +326,9 @@ function SettingsPageContent() {
         setFlags(data);
         const d: Record<string, { roles: string[]; isEnabled: boolean }> = {};
         for (const f of data) {
-          d[f.featureKey] = { roles: [...f.roles], isEnabled: f.isEnabled };
+          const roles = [...f.roles];
+          if (!roles.includes('GENERAL_MANAGER')) roles.push('GENERAL_MANAGER');
+          d[f.featureKey] = { roles, isEnabled: f.isEnabled };
         }
         setFlagDrafts(d);
       }
@@ -341,6 +343,9 @@ function SettingsPageContent() {
 
   const saveFlag = async (featureKey: string) => {
     const draft = flagDrafts[featureKey];
+    if (draft && !draft.roles.includes('GENERAL_MANAGER')) {
+      draft.roles = [...draft.roles, 'GENERAL_MANAGER'];
+    }
     if (!draft) return;
     try {
       const res = await apiFetch(`/feature-flags/${featureKey}`, {
@@ -356,6 +361,7 @@ function SettingsPageContent() {
   };
 
   const toggleRoleInFlag = (featureKey: string, role: string, on: boolean) => {
+    if (role === 'GENERAL_MANAGER' && !on) return;
     setFlagDrafts((prev) => {
       const d = { ...prev[featureKey], roles: [...(prev[featureKey]?.roles ?? [])] };
       if (on) {
@@ -1920,7 +1926,7 @@ function SettingsPageContent() {
           <div>
             <h2 className="text-lg font-black text-slate-800">Akses Fitur</h2>
             <p className="text-sm text-slate-500 mt-0.5">
-              Atur fitur mana yang dapat diakses oleh setiap role pengguna. Perubahan tersimpan per fitur.
+              Atur fitur mana yang dapat diakses oleh setiap role. General Manager selalu punya akses dan tidak bisa dihapus dari matriks.
             </p>
           </div>
 
@@ -2012,28 +2018,30 @@ function SettingsPageContent() {
 
                         <div className="flex flex-wrap gap-1.5">
                           {RoleEnum().map((role) => {
-                            const isOn = draft.roles.includes(role);
-                            // FIX Fix 2B: humanized role label with consistent color drawn from top-of-file ROLE_COLORS (flat string map)
+                            const isGm = role === 'GENERAL_MANAGER';
+                            const isOn = isGm || draft.roles.includes(role);
                             const label = ROLE_LABELS[role] || role.replace(/_/g, ' ');
                             const color = ROLE_COLORS[role] || '#475569';
+                            const locked = isGm || !draft.isEnabled;
                             return (
                               <button
                                 type="button"
                                 key={role}
+                                title={isGm ? 'General Manager selalu punya akses' : undefined}
                                 onClick={() => toggleRoleInFlag(f.featureKey, role, !isOn)}
-                                disabled={!draft.isEnabled}
+                                disabled={locked}
                                 className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all ${
                                   isOn
                                     ? 'shadow-sm'
                                     : 'bg-slate-50 text-slate-400 border border-slate-200 hover:bg-slate-100'
-                                } ${!draft.isEnabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`}
+                                } ${isGm ? 'cursor-not-allowed' : !draft.isEnabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`}
                                 style={
                                   isOn
                                     ? { background: `${color}18`, color, border: `1px solid ${color}40` }
                                     : undefined
                                 }
                               >
-                                {isOn ? '✓ ' : ''}{label}
+                                {isOn ? '✓ ' : ''}{label}{isGm ? ' 🔒' : ''}
                               </button>
                             );
                           })}

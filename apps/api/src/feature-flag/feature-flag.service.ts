@@ -1,50 +1,44 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { Role } from '@prisma/client';
 import { NotificationsGateway } from '../notifications/notifications.gateway';
 import { UpdateFeatureFlagDto } from './feature-flag.dto';
-
-/** Sidebar/API roles that must keep GIS + Pipeline even if Settings.roles was narrowed (prod). */
-const CORE_OPS_FEATURE_ROLES: Record<string, Role[]> = {
-  GIS_MAP: [
-    Role.SURVEYOR_FTTH,
-    Role.SURVEYOR_FTTB,
-    Role.SURVEYOR_FTTT,
-    Role.PM_FTTH,
-    Role.PM_FTTB,
-    Role.PM_FTTT,
-    Role.PM_SENIOR,
-    Role.DESIGNER,
-    Role.OPERATIONAL_MANAGER,
-    Role.GENERAL_MANAGER,
-    Role.ADMIN,
-    Role.MAP_VIEWER,
-  ],
-  PERMIT_PIPELINE: [
-    Role.SURVEYOR_FTTH,
-    Role.SURVEYOR_FTTB,
-    Role.SURVEYOR_FTTT,
-    Role.PM_FTTH,
-    Role.PM_FTTB,
-    Role.PM_FTTT,
-    Role.PM_SENIOR,
-    Role.DESIGNER,
-    Role.OPERATIONAL_MANAGER,
-    Role.GENERAL_MANAGER,
-    Role.ADMIN,
-  ],
-};
-
-function hasCoreOpsGrant(featureKey: string, userRole: Role): boolean {
-  return (CORE_OPS_FEATURE_ROLES[featureKey] ?? []).includes(userRole);
-}
+import {
+  CORE_OPS_FEATURE_ROLES,
+  hasCoreOpsGrant,
+  unionDefaultRoles,
+  withGuaranteedGm,
+} from './feature-flag.defaults';
 
 @Injectable()
-export class FeatureFlagService {
+export class FeatureFlagService implements OnModuleInit {
+  private readonly log = new Logger(FeatureFlagService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly gateway: NotificationsGateway,
   ) {}
+
+  async onModuleInit() {
+    await this.healFlagGrants();
+  }
+
+  /** Restore GM + seed/core-ops roles without stripping extra grants. */
+  async healFlagGrants() {
+    const flags = await this.prisma.featureFlag.findMany();
+    for (const flag of flags) {
+      const roles = unionDefaultRoles(flag.featureKey, flag.roles as string[]);
+      const same =
+        roles.length === flag.roles.length &&
+        roles.every((r) => flag.roles.includes(r));
+      if (same) continue;
+      await this.prisma.featureFlag.update({
+        where: { featureKey: flag.featureKey },
+        data: { roles },
+      });
+      this.log.log(`Healed feature flag roles: ${flag.featureKey}`);
+    }
+  }
 
   async findAll() {
     return this.prisma.featureFlag.findMany({
@@ -57,10 +51,11 @@ export class FeatureFlagService {
     const row = await this.prisma.featureFlag.findUnique({ where: { featureKey } });
     if (!row) throw new NotFoundException('Feature flag tidak ditemukan');
 
+    const roles = withGuaranteedGm(dto.roles);
     const updated = await this.prisma.featureFlag.update({
       where: { featureKey },
       data: {
-        roles: dto.roles,
+        roles,
         isEnabled: dto.isEnabled,
         updatedBy: gmId,
       },
