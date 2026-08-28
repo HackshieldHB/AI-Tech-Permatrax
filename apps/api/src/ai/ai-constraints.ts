@@ -6,8 +6,10 @@ import {
   extractProjectNeedle,
   hasExplicitRankingMetric,
   detectExplicitTopN,
+  detectRankingDirection,
   isFinanceFilterClearQuery,
   isFinanceFilterRemoveQuery,
+  isResultSetNarrowingQuery,
 } from './ai-nlu';
 import type { ActiveConstraintSet } from './ai-session';
 import { EMPTY_CONSTRAINTS } from './ai-session';
@@ -42,13 +44,16 @@ export function extractConstraintsFromText(text: string): ActiveConstraintSet {
     out.status = 'ARCHIVED';
   }
 
-  // PAI-FNC-005: hierarchy from bare SITE/SEGMENT (+ status/filter)
-  if (/\b(site)\b/.test(m) && !/(site-\d|website)/.test(m)) {
-    out.hierarchy = 'SITE';
-  } else if (/\b(segment)\b/.test(m)) {
-    out.hierarchy = 'SEGMENT';
-  } else if (/\b(standalone)\b/.test(m)) {
-    out.hierarchy = 'STANDALONE';
+  // PAI-FNC-005: hierarchy from bare SITE/SEGMENT (+ status/filter).
+  // Candidate disambiguation ("Yang SEGMENT") must not become a global filter.
+  if (!isResultSetNarrowingQuery(text)) {
+    if (/\b(site)\b/.test(m) && !/(site-\d|website)/.test(m)) {
+      out.hierarchy = 'SITE';
+    } else if (/\b(segment)\b/.test(m)) {
+      out.hierarchy = 'SEGMENT';
+    } else if (/\b(standalone)\b/.test(m)) {
+      out.hierarchy = 'STANDALONE';
+    }
   }
 
   const exclusiveSaja = /\bsaja\b/.test(m) || (/^\s*(sekarang|hanya)\b/.test(m) && /\bsaja\b/.test(m));
@@ -59,14 +64,17 @@ export function extractConstraintsFromText(text: string): ActiveConstraintSet {
     out.extra!.push('exclusive:hierarchy');
   }
 
-  if (/(terbesar|top\s*\d*|ranking|paling besar|paling tinggi)/.test(m)) {
+  const rankDir = detectRankingDirection(text);
+  if (rankDir === 'desc') {
     out.ranking = 'top';
-  } else if (/(terkecil|paling kecil|paling rendah)/.test(m)) {
+  } else if (rankDir === 'asc') {
     out.ranking = 'smallest';
-  } else if (/(paling sedikit|terendah|hampir habis)/.test(m)) {
+  } else if (/(paling sedikit|hampir habis)/.test(m)) {
     out.ranking = 'lowest_stock';
   } else if (/(paling banyak|tertinggi)/.test(m) && /(stok|stock|barang)/.test(m)) {
     out.ranking = 'highest_stock';
+  } else if (/\btop\s*\d+\b/.test(m) || /\branking\b/.test(m)) {
+    out.ranking = 'top';
   }
 
   // PAI-FNC-004: carry ranking metric hint in extra
@@ -101,6 +109,11 @@ export function buildConstrainedFinanceQuery(
     (/(terbesar|top\s*\d*)/i.test(lastDataQuery || '') ? 'top' : null) ||
     (/(terkecil)/i.test(lastDataQuery || '') ? 'smallest' : null);
 
+  const limitHint = constraints.extra?.find((e) => e.startsWith('limit:'))?.replace(
+    'limit:',
+    '',
+  );
+  const n = limitHint && /^\d+$/.test(limitHint) ? limitHint : '10';
   const metricHint =
     constraints.extra?.find((e) => e.startsWith('metric:'))?.replace('metric:', '') ||
     '';
@@ -118,9 +131,9 @@ export function buildConstrainedFinanceQuery(
               : 'budget';
 
   if (ranking === 'top') {
-    parts.push(`Top 10 Finance Project ${metricPhrase} terbesar`);
+    parts.push(`Top ${n} Finance Project ${metricPhrase} terbesar`);
   } else if (ranking === 'smallest') {
-    parts.push(`Top 10 Finance Project ${metricPhrase} terkecil`);
+    parts.push(`Top ${n} Finance Project ${metricPhrase} terkecil`);
   } else if (constraints.projectNeedle) {
     parts.push(`Budget project ${constraints.projectNeedle}`);
   } else if (constraints.status === 'CLOSED') {

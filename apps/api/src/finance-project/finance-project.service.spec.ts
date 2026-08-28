@@ -54,6 +54,9 @@ describe('FinanceProjectService', () => {
     ftttTransaction: {
       groupBy: jest.fn().mockResolvedValue([]),
     },
+    cashOperationRequest: {
+      groupBy: jest.fn().mockResolvedValue([]),
+    },
     $transaction: jest.fn(),
   };
 

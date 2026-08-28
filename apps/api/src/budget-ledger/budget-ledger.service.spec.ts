@@ -72,6 +72,14 @@ describe('BudgetLedgerService', () => {
       }),
     },
     financeProject: {
+      findUnique: jest.fn().mockImplementation(async () => ({
+        ...projectRow,
+        materialSpent,
+        jasaSpent,
+        totalBudget: projectRow.totalBudget,
+        materialBudget: projectRow.materialBudget,
+        jasaBudget: projectRow.jasaBudget,
+      })),
       findUniqueOrThrow: jest.fn().mockImplementation(async () => ({
         ...projectRow,
         materialSpent,
@@ -130,6 +138,7 @@ describe('BudgetLedgerService', () => {
       isOverbudget: false,
       isDefaultUncategorized: false,
       status: FinanceProjectStatus.ACTIVE,
+      projectType: 'FTTH',
     };
 
     mockTx = buildMockTx();
@@ -400,6 +409,14 @@ describe('BudgetLedgerService', () => {
   });
 
   describe('deductForCashOp / refundForCashOp', () => {
+    it('FTTT cash op does not deduct Jasa (overhead is derived from cash ops)', async () => {
+      projectRow.projectType = 'FTTT';
+      await service.deductForCashOp('c-fttt', 'p1', new Prisma.Decimal(200), 'actor', null);
+      expect(ledgerStore).toHaveLength(0);
+      expect(jasaSpent.toNumber()).toBe(0);
+      delete projectRow.projectType;
+    });
+
     it('deduct happy path + jasa spent', async () => {
       await service.deductForCashOp('c1', 'p1', new Prisma.Decimal(25), 'actor', null);
       expect(ledgerStore[0].entryType).toBe(BudgetLedgerEntryType.DEDUCT_JASA);

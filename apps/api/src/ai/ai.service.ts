@@ -27,6 +27,7 @@ import {
   detectRequestedAttribute,
   extractActiveReferenceFromAnswer,
   extractActiveReferenceByDiscriminator,
+  pickPendingFinanceCandidate,
   extractEntityFromAnswer,
   extractExplicitEntityCode,
   hasConversationalReference,
@@ -293,8 +294,27 @@ export class AiService {
     // do NOT re-run full ranking/list retrieval.
     let referenceDetail: string | null = null;
     let liveObjectLookup: string | null = null;
+    const pendingPick =
+      (isResultSetNarrowingQuery(text) ||
+        (!!explicitCode && (session.pendingCandidates?.length ?? 0) > 0)) &&
+      !isModuleDataRankingQuery(text) &&
+      !isAttributeFollowUp(text)
+        ? pickPendingFinanceCandidate(session.pendingCandidates, text)
+        : null;
+    if (pendingPick?.code) {
+      liveObjectLookup = `Detail budget project ${pendingPick.code}`;
+      session = {
+        ...session,
+        activeObject: `${pendingPick.code} ${pendingPick.name}`.trim(),
+        activeReference: `${pendingPick.code} ${pendingPick.name} (${pendingPick.hierarchyLevel})`,
+        pendingCandidates: null,
+        activeAttribute: requestedAttr,
+      };
+      intent = 'data';
+    }
     if (
-      (stateFollowUp || explicitCode) &&
+      !liveObjectLookup &&
+      (stateFollowUp || (explicitCode && !/\bcari\b/i.test(text))) &&
       !isModuleDataRankingQuery(text) &&
       !isFinanceContextFilterQuery(text) &&
       !isFinanceFilterOnlyQuery(text)
@@ -379,6 +399,7 @@ export class AiService {
           ...session,
           activeObject: picked.label,
           activeReference: picked.detailLine,
+          pendingCandidates: null,
         };
         intent = 'data';
       }
@@ -481,6 +502,8 @@ export class AiService {
           : extractEntityFromAnswer(answer) || nextState.activeObject;
       const refFromAnswer = extractActiveReferenceFromAnswer(answer);
       const isRankedList = /^\s*\d+\.\s+/m.test(answer) && (answer.match(/^\s*\d+\.\s+/gm) || []).length >= 2;
+      const isCandidateSet =
+        /pilih salah satu|ditemukan \d+\s+project/i.test(answer);
       const responseStrategy =
         opts.responseStrategy ??
         mapResponseStrategy(opts.intent ?? intent, opts.strategy, opts.refusal);
@@ -502,7 +525,7 @@ export class AiService {
         activeDatasetAnswer:
           opts.patch?.activeDatasetAnswer !== undefined
             ? opts.patch.activeDatasetAnswer
-            : isRankedList
+            : isRankedList || isCandidateSet
               ? answer
               : nextState.activeDatasetAnswer,
         activeAttribute:
@@ -1205,7 +1228,7 @@ export class AiService {
       useTools &&
       session.activeTopic === 'finance' &&
       !toolNames.includes('finance_analytics') &&
-      (/budget|project|proyek|berapa|jumlah|total|terbesar|terkecil|over|material|jasa|realisasi|sisa|active|closed|archived|site|segment/i.test(
+      (/budget|project|proyek|berapa|jumlah|total|terbesar|terkecil|over|material|jasa|realisasi|sisa|active|closed|archived|site|segment|\bcari\b|(?:site|seg|fin)-\d{4}/i.test(
         effectiveText,
       ) ||
         isFinanceFilterOrAggregateQuery(text) ||
@@ -1230,17 +1253,23 @@ export class AiService {
     // PAI-FNC-005: inherit SITE/ACTIVE on ranking follow-ups only.
     // PAI-FNC-001/002: standalone aggregates must not inherit a narrower dataset.
     let toolMessage = effectiveText;
+    const rankingMode = detectFinanceMode(text);
+    const applyRankingInherit =
+      rankingMode === 'top_budget' ||
+      rankingMode === 'smallest' ||
+      rankingMode === 'ranking';
     if (
       toolNames.includes('finance_analytics') &&
       hasUsableConstraint(session.constraints) &&
-      shouldApplySessionFinanceFilters(text)
+      (shouldApplySessionFinanceFilters(text) || applyRankingInherit)
     ) {
-      toolMessage = appendFinanceConstraintTags(
-        effectiveText,
-        session.constraints,
-      );
-      const mode = detectFinanceMode(text);
-      if (mode === 'top_budget' || mode === 'smallest' || mode === 'ranking') {
+      if (shouldApplySessionFinanceFilters(text)) {
+        toolMessage = appendFinanceConstraintTags(
+          effectiveText,
+          session.constraints,
+        );
+      }
+      if (applyRankingInherit) {
         toolMessage = appendInheritedRankingLimitTag(
           toolMessage,
           session.constraints,
@@ -1464,6 +1493,31 @@ export class AiService {
           : '')
       : null;
 
+    const searchRows = (() => {
+      const t = toolTraces.find((x) => x.name === 'finance_analytics' && x.ok);
+      return Array.isArray(t?.data) ? t.data : null;
+    })();
+    const searchCandidates =
+      searchRows &&
+      searchRows.length > 1 &&
+      searchRows.every(
+        (r) => r && typeof r === 'object' && 'code' in (r as object),
+      )
+        ? (
+            searchRows as Array<{
+              code: string;
+              name?: string;
+              hierarchyLevel?: string;
+            }>
+          ).map((r) => ({
+            code: r.code,
+            name: r.name || r.code,
+            hierarchyLevel: r.hierarchyLevel || '',
+          }))
+        : liveObjectLookup
+          ? null
+          : session.pendingCandidates;
+
     return reply(answer, {
       citations,
       toolTraces,
@@ -1481,10 +1535,13 @@ export class AiService {
       reasoningNote,
       patch: {
         activeTopic: session.activeTopic || sessionCtx.activeTopic,
+        pendingCandidates: searchCandidates,
         activeObject:
-          liveObjectLookup || explicitCode
-            ? session.activeObject || extractEntityFromAnswer(answer)
-            : extractEntityFromAnswer(answer) || session.activeObject,
+          searchCandidates && searchCandidates.length > 1
+            ? null
+            : liveObjectLookup || explicitCode
+              ? session.activeObject || extractEntityFromAnswer(answer)
+              : extractEntityFromAnswer(answer) || session.activeObject,
         activeReference:
           session.activeReference ||
           extractActiveReferenceFromAnswer(answer)?.detailLine ||

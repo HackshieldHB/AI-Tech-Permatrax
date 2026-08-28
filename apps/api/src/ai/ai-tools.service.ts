@@ -7,6 +7,7 @@ import {
   detectFinanceMetrics,
   detectFinanceMode,
   detectRankingMetric,
+  detectRankingDirection,
   detectExplicitTopN,
   hasExplicitRankingMetric,
   extractHierarchyConstraint,
@@ -356,6 +357,7 @@ export class AiToolsService {
     const topN =
       explicitN ??
       (taggedLimit ? Math.min(50, Math.max(1, Number(taggedLimit[1]))) : 10);
+    const rankDir = detectRankingDirection(bareMessage);
     const broaderScope =
       /\[broader_retry\]|\[scope_non_archived\]|\[scope_all\]/i.test(message) ||
       /non.?arsip|non.?archived|termasuk closed|active\s*\+\s*closed/i.test(
@@ -490,6 +492,62 @@ export class AiToolsService {
     if (mode === 'search') {
       const needle =
         extractProjectNeedle(message) || extractSearchNeedle(message);
+      const exactCode = (needle || message).match(
+        /\b((?:SITE|SEG|FIN)-\d{4}-\d+)\b/i,
+      )?.[1];
+      const isCari =
+        /\bcari\b/i.test(normalizeId(bareMessage)) ||
+        /\bcari\b/i.test(normalizeId(message));
+      const isDetailLookup = /^detail\b/i.test(bareMessage.trim());
+      if (exactCode && isDetailLookup && !isCari) {
+        const exactRows = await this.prisma.financeProject.findMany({
+          where: {
+            status: { not: 'ARCHIVED' },
+            ...(hierarchyLevel ? { hierarchyLevel } : {}),
+          },
+          select: {
+            code: true,
+            name: true,
+            description: true,
+            totalBudget: true,
+            materialBudget: true,
+            jasaBudget: true,
+            materialSpent: true,
+            jasaSpent: true,
+            status: true,
+            hierarchyLevel: true,
+            isOverbudget: true,
+            poCustomerNumber: true,
+            parent: { select: { code: true, name: true } },
+          },
+          take: 20,
+        });
+        const hit = exactRows.filter(
+          (r) => r.code.toUpperCase() === exactCode.toUpperCase(),
+        );
+        if (hit.length === 1) {
+          const r = hit[0];
+          const spent = Number(r.materialSpent) + Number(r.jasaSpent);
+          const budget = Number(r.totalBudget);
+          return {
+            name: 'finance_analytics',
+            ok: true,
+            summary: [
+              `${r.code} — ${r.name}`,
+              `• Status: ${r.status} (${r.hierarchyLevel})`,
+              r.parent ? `• Parent: ${r.parent.code} ${r.parent.name}` : null,
+              r.poCustomerNumber ? `• PO/Client: ${r.poCustomerNumber}` : null,
+              `• Total Budget: ${fmtIdr(budget)}`,
+              `• Material budget: ${fmtIdr(Number(r.materialBudget ?? 0))} | Jasa budget: ${fmtIdr(Number(r.jasaBudget ?? 0))}`,
+              `• Realisasi: ${fmtIdr(spent)} | Sisa: ${fmtIdr(budget - spent)}`,
+              r.isOverbudget ? `• Over budget` : null,
+            ]
+              .filter(Boolean)
+              .join('\n'),
+            data: hit,
+          };
+        }
+      }
       if (needle) {
         const tokens = meaningfulTokens(needle);
         const parts = tokens.length > 0 ? tokens : [needle];
@@ -542,10 +600,18 @@ export class AiToolsService {
     }
 
     if (mode === 'top_budget' || mode === 'smallest' || mode === 'ranking') {
+      const dir: 'asc' | 'desc' =
+        rankDir === 'asc'
+          ? 'asc'
+          : rankDir === 'desc'
+            ? 'desc'
+            : mode === 'smallest'
+              ? 'asc'
+              : 'desc';
       return this.financeRankingList(
         baseWhere,
         rankingMetric,
-        mode === 'smallest' ? 'asc' : 'desc',
+        dir,
         hierarchyLevel,
         topN,
       );

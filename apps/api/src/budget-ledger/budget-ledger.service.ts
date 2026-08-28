@@ -281,6 +281,16 @@ export class BudgetLedgerService {
       });
       if (existing) return;
 
+      const project = await client.financeProject.findUnique({
+        where: { id: projectId },
+      });
+      if (!project) throw new NotFoundException('Finance project tidak ditemukan');
+      // FTTT Cash Advance/Reimburse hits Overhead / Biaya Lain-lain, not Jasa.
+      // Realisasi is derived from approved cash ops in FinanceProjectService.
+      if (project.projectType === 'FTTT') {
+        return;
+      }
+
       try {
         await client.budgetLedger.create({
           data: {

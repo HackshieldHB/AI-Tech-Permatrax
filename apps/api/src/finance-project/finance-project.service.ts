@@ -947,6 +947,24 @@ export class FinanceProjectService {
       else entry.lainLain += val;
       map.set(r.financeProjectId, entry);
     }
+
+    const cashRows = await this.prisma.cashOperationRequest.groupBy({
+      by: ['financeProjectId'],
+      where: {
+        financeProjectId: { in: financeProjectIds },
+        finalApprovedAmount: { not: null },
+        status: {
+          notIn: ['DRAFT', 'SUBMITTED', 'IN_REVIEW', 'REJECTED', 'CANCELLED'],
+        },
+      },
+      _sum: { finalApprovedAmount: true },
+    });
+    for (const r of cashRows) {
+      if (!r.financeProjectId) continue;
+      const entry = map.get(r.financeProjectId) ?? { perizinan: 0, material: 0, jasa: 0, lainLain: 0 };
+      entry.lainLain += Number(r._sum.finalApprovedAmount ?? 0);
+      map.set(r.financeProjectId, entry);
+    }
     return map;
   }
 

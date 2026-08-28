@@ -69,6 +69,15 @@ export type ConversationSessionState = {
   activeDatasetAnswer: string | null;
   /** Last requested attribute on Active Object (status/realisasi/…) */
   activeAttribute: string | null;
+  /**
+   * Temporary Finance Project candidate set after a multi-hit search
+   * (PAI-FNC-005 disambiguation).
+   */
+  pendingCandidates: Array<{
+    code: string;
+    hierarchyLevel: string;
+    name: string;
+  }> | null;
   /** Intent within active module — preserved across follow-ups */
   activeIntent: ActiveIntent;
   /** Merged recovery / filter constraints */
@@ -104,6 +113,7 @@ export const EMPTY_SESSION: ConversationSessionState = {
   activeDataset: null,
   activeDatasetAnswer: null,
   activeAttribute: null,
+  pendingCandidates: null,
   activeIntent: 'none',
   constraints: { ...EMPTY_CONSTRAINTS, extra: [] },
   lastDataQuery: null,
@@ -129,6 +139,7 @@ export function normalizeSessionState(
       ...(raw?.constraints || {}),
       extra: [...(raw?.constraints?.extra || [])],
     },
+    pendingCandidates: raw?.pendingCandidates ?? null,
   };
 }
 
@@ -261,15 +272,19 @@ export function mergeConstraints(
   const dropStatus = inExtra.includes('drop:status');
   const exclusiveStatus = inExtra.includes('exclusive:status');
   const incomingHasMetric = inExtra.some((e) => e.startsWith('metric:'));
-  const incomingHasRanking = incoming.ranking != null;
   const incomingLimit = inExtra.find((e) => e.startsWith('limit:'));
-  const metricExtra =
-    incomingHasRanking || incomingHasMetric
-      ? [
-          ...curExtra.filter((e) => !e.startsWith('metric:')),
+  // PAI-FNC-004: ranking-only follow-ups ("yang terkecil") must keep the last metric.
+  const metricExtra = incomingHasMetric
+    ? [
+        ...curExtra.filter((e) => !e.startsWith('metric:')),
+        ...inExtra.filter((e) => e.startsWith('metric:')),
+      ]
+    : [
+        ...new Set([
+          ...curExtra.filter((e) => e.startsWith('metric:')),
           ...inExtra.filter((e) => e.startsWith('metric:')),
-        ]
-      : [...new Set([...curExtra.filter((e) => e.startsWith('metric:')), ...inExtra.filter((e) => e.startsWith('metric:'))])];
+        ]),
+      ];
   const limitExtra = incomingLimit
     ? [incomingLimit]
     : curExtra.filter((e) => e.startsWith('limit:'));

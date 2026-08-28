@@ -323,14 +323,16 @@ function SettingsPageContent() {
       const res = await apiFetch('/feature-flags', {}, currentUser?.id);
       if (res.ok) {
         const data = await res.json();
-        setFlags(data);
+        setFlags(Array.isArray(data) ? data : []);
         const d: Record<string, { roles: string[]; isEnabled: boolean }> = {};
-        for (const f of data) {
+        for (const f of Array.isArray(data) ? data : []) {
           const roles = [...f.roles];
           if (!roles.includes('GENERAL_MANAGER')) roles.push('GENERAL_MANAGER');
           d[f.featureKey] = { roles, isEnabled: f.isEnabled };
         }
         setFlagDrafts(d);
+      } else {
+        toast.error('Gagal memuat Akses Fitur');
       }
     } finally {
       setFlagsLoading(false);
@@ -430,21 +432,22 @@ function SettingsPageContent() {
     if (tab === 'overview') loadOverview();
   }, [tab, loadOverview]);
 
-  const canManageGeneralSettings = currentUser?.role === 'GENERAL_MANAGER'; // NEW: preserve existing GM-only tabs
+  const canManageGeneralSettings = currentUser?.role === 'GENERAL_MANAGER';
   const canAccessIspEmail =
     currentUser?.role === 'GENERAL_MANAGER' ||
     currentUser?.role === 'PM_SENIOR' ||
     currentUser?.role === 'PM_FTTH' ||
     currentUser?.role === 'PM_FTTB' ||
     currentUser?.role === 'PM_FTTT' ||
-    currentUser?.role === 'ADMIN'; // NEW: ISP email tab role access
+    currentUser?.role === 'ADMIN';
 
-  if (!currentUser || (!canManageGeneralSettings && !canAccessIspEmail)) return null;
   useEffect(() => {
     if (!canManageGeneralSettings && canAccessIspEmail && tab !== 'isp-email') {
-      setTab('isp-email'); // FIX: non-GM users should land on the only visible tab
+      setTab('isp-email');
     }
   }, [canManageGeneralSettings, canAccessIspEmail, tab]);
+
+  if (!currentUser || (!canManageGeneralSettings && !canAccessIspEmail)) return null;
 
   return (
     <div className="max-w-6xl mx-auto space-y-6">
@@ -1935,12 +1938,14 @@ function SettingsPageContent() {
           ) : (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
               {flags
-                .filter((f) => FEATURE_KEYS_SHOW.includes(f.featureKey))
+                .slice()
                 .sort((a, b) => {
-                  // FIX Fix 2B: stable ordering using the curated FEATURE_KEYS_SHOW list
                   const ia = FEATURE_KEYS_SHOW.indexOf(a.featureKey);
                   const ib = FEATURE_KEYS_SHOW.indexOf(b.featureKey);
-                  return ia - ib;
+                  const sa = ia === -1 ? 999 : ia;
+                  const sb = ib === -1 ? 999 : ib;
+                  if (sa !== sb) return sa - sb;
+                  return String(a.featureKey).localeCompare(String(b.featureKey));
                 })
                 .map((f) => {
                   const draft = flagDrafts[f.featureKey];
@@ -2397,7 +2402,9 @@ function RoleEnum(): string[] {
     'PM_FTTH', 'PM_FTTB', 'PM_FTTT', 'PM_SENIOR',
     'ADMIN', 'ADMIN_STOCK', 'FINANCE', 'GENERAL_MANAGER',
     'MARKETING', 'MARKETING_HEAD', 'OPERATIONAL_MANAGER', // NEW: cash operation roles
-    'DESIGNER', // FIX Fix 2B: include Designer role in permission picker
+    'DESIGNER',
+    'PURCHASING',
+    'MAP_VIEWER',
   ];
 }
 
@@ -2414,6 +2421,8 @@ const FEATURE_LABELS: Record<string, { label: string; description: string; icon:
   GIS_MAP:             { label: 'GIS Map',              description: 'Peta geospasial lokasi cluster & jaringan.',        icon: '🗺️' },
   PERMIT_PIPELINE:     { label: 'Pipeline Perizinan',   description: 'Workflow end-to-end perizinan cluster.',            icon: '🔄' },
   CASH_OPERATION:      { label: 'Cash Operation',       description: 'Pencairan dana operasional perizinan.',             icon: '💵' },
+  DOCUMENT_LIST:       { label: 'Daftar Dokumen',       description: 'Akses daftar dokumen operasional.',                 icon: '📁' },
+  SETTINGS:            { label: 'Pengaturan',           description: 'Menu pengaturan sistem.',                           icon: '⚙️' },
   SIP_MODULE:          { label: 'Modul SIP',            description: 'Pengajuan SIP ke Marketing.',                       icon: '📮' },
   HLD_MODULE:          { label: 'Modul HLD',            description: 'Upload dan review High Level Design.',              icon: '📐' },
   LLD_MODULE:          { label: 'Modul LLD',            description: 'Upload dan review Low Level Design.',               icon: '📊' },

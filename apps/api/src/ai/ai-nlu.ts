@@ -1115,12 +1115,17 @@ export function isFinanceFilterRemoveQuery(text: string): boolean {
  */
 export function isResultSetNarrowingQuery(text: string): boolean {
   const m = normalizeId(primaryUtterance(text));
-  if (/(top\s*\d*|terbesar|terkecil|tampilkan|list|daftar|filter|hanya|hapus)/.test(m)) {
+  if (/(top\s*\d*|terbesar|terkecil|tampilkan|list|daftar|hanya|hapus)/.test(m)) {
+    return false;
+  }
+  if (/\bfilter\b/.test(m) && !/\byang\b/.test(m)) {
     return false;
   }
   return (
     /^(yang\s+)?(site|segment|standalone|active|aktif|closed)\??$/.test(m) ||
-    /^yang\s+(site|segment|standalone)\b/.test(m)
+    /^yang\s+(site|segment|standalone|seg|fin)\b/.test(m) ||
+    /^(yang\s+)?(kode\s+)?((?:site|seg|fin)-\d{4}-\d+)/.test(m) ||
+    /(segment-nya|site-nya|yang kode)/.test(m)
   );
 }
 
@@ -1239,6 +1244,9 @@ export function isFinanceBudgetQuery(text: string): boolean {
   ) {
     return true;
   }
+  if (/\b((?:site|seg|fin)-\d{4}-\d+)\b/.test(m)) {
+    return true;
+  }
   return false;
 }
 
@@ -1299,6 +1307,31 @@ export function detectExplicitTopN(text: string): number | null {
 /** Top-N limit from ranking wording. Default 10 when unspecified. */
 export function detectTopNLimit(text: string): number {
   return detectExplicitTopN(text) ?? 10;
+}
+
+/**
+ * Ranking sort direction from THIS utterance only (PAI-FNC-004).
+ * Last mentioned direction wins when both terbesar and terkecil appear.
+ * `Top N` alone does not imply terbesar when terkecil is also present.
+ */
+export function detectRankingDirection(text: string): 'desc' | 'asc' | null {
+  const t = normalizeId(primaryUtterance(text));
+  const smallRe =
+    /terkecil|paling kecil|paling rendah|terendah|lowest|smallest|ascending/g;
+  const largeRe =
+    /terbesar|paling besar|paling tinggi|tertinggi|highest|largest|maximum/g;
+  let lastSmall = -1;
+  let lastLarge = -1;
+  for (const m of t.matchAll(smallRe)) {
+    if (m.index != null) lastSmall = m.index;
+  }
+  for (const m of t.matchAll(largeRe)) {
+    if (m.index != null) lastLarge = m.index;
+  }
+  if (lastSmall < 0 && lastLarge < 0) return null;
+  if (lastSmall > lastLarge) return 'asc';
+  if (lastLarge > lastSmall) return 'desc';
+  return lastSmall >= 0 ? 'asc' : 'desc';
 }
 
 /**
@@ -1398,12 +1431,25 @@ export function detectRankingMetric(text: string): FinanceRankingMetric {
   // Scan the whole tool message so inherited "realisasi terbesar" cannot beat
   // this-turn "Top 5 budget terbesar" (PAI-FNC-004).
   const src = `${m} ${full}`;
-  if (/(over\s*budget|overbudget)/.test(src)) return 'overbudget';
-  if (/(sisa\s*budget|remaining(\s*budget)?)/.test(src) || /\bsisa\b/.test(m)) {
+  const tag = text.match(/\[METRIC_([A-Z_]+)\]/i);
+  const fromTag = (): FinanceRankingMetric | null => {
+    if (!tag) return null;
+    const key = tag[1].toLowerCase();
+    if (key === 'realization') return 'realization';
+    if (key === 'remaining') return 'remaining';
+    if (key === 'materialbudget') return 'materialBudget';
+    if (key === 'jasabudget') return 'jasaBudget';
+    if (key === 'overbudget') return 'overbudget';
+    if (key === 'totalbudget') return 'totalBudget';
+    return null;
+  };
+  // This-turn wording on the primary utterance wins over inherited tags.
+  if (/(over\s*budget|overbudget)/.test(m)) return 'overbudget';
+  if (/(sisa\s*budget|remaining(\s*budget)?)/.test(m) || /\bsisa\b/.test(m)) {
     return 'remaining';
   }
-  if (/\bmaterial\b/.test(src)) return 'materialBudget';
-  if (/\b(jasa|service)\b/.test(src)) return 'jasaBudget';
+  if (/\bmaterial\b/.test(m)) return 'materialBudget';
+  if (/\b(jasa|service)\b/.test(m)) return 'jasaBudget';
   const namedTotalBudget =
     /(total\s*)?(budget|anggaran)\s*(terbesar|tertinggi|terkecil|terendah|paling)/.test(
       src,
@@ -1413,18 +1459,17 @@ export function detectRankingMetric(text: string): FinanceRankingMetric {
       src,
     );
   if (namedTotalBudget) return 'totalBudget';
+  if (/(realisasi|spent|terpakai)/.test(m)) return 'realization';
+  const tagged = fromTag();
+  if (tagged && !hasExplicitRankingMetric(primaryUtterance(text))) return tagged;
+  if (/(budget|anggaran)/.test(m) && !tagged) return 'totalBudget';
+  if (tagged) return tagged;
+  if (/(over\s*budget|overbudget)/.test(src)) return 'overbudget';
+  if (/(sisa\s*budget|remaining(\s*budget)?)/.test(src)) return 'remaining';
+  if (/\bmaterial\b/.test(src)) return 'materialBudget';
+  if (/\b(jasa|service)\b/.test(src)) return 'jasaBudget';
   if (/(realisasi|spent|terpakai)/.test(src)) return 'realization';
   if (/(budget|anggaran)/.test(src)) return 'totalBudget';
-  const tag = text.match(/\[METRIC_([A-Z_]+)\]/i);
-  if (tag) {
-    const key = tag[1].toLowerCase();
-    if (key === 'realization') return 'realization';
-    if (key === 'remaining') return 'remaining';
-    if (key === 'materialbudget') return 'materialBudget';
-    if (key === 'jasabudget') return 'jasaBudget';
-    if (key === 'overbudget') return 'overbudget';
-    if (key === 'totalbudget') return 'totalBudget';
-  }
   return 'totalBudget';
 }
 
@@ -1623,9 +1668,8 @@ export function detectFinanceMode(text: string): FinanceMode {
       m,
     );
   if (wantsRank) {
-    if (/(terkecil|paling kecil|paling rendah|ascending|terendah)/.test(m)) {
-      return 'smallest';
-    }
+    const dir = detectRankingDirection(text);
+    if (dir === 'asc') return 'smallest';
     return 'top_budget';
   }
 
@@ -1930,6 +1974,7 @@ export {
   extractEntityFromAnswer,
   extractActiveReferenceFromAnswer,
   extractActiveReferenceByDiscriminator,
+  pickPendingFinanceCandidate,
   extractReferenceOrdinal,
   extractExplicitEntityCode,
   detectRequestedAttribute,

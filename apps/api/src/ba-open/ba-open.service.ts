@@ -289,7 +289,7 @@ export class BaOpenService {
         doc.fontSize(13).font('Helvetica-Bold')
           .text('OPEN CLUSTER', 60, 84, { width: pageWidth, align: 'center' });
         doc.fontSize(9).font('Helvetica').fillColor('#555555')
-          .text('PT. INFRASTRUKTUR LINTAS TEKNOLOGI (ILT)',
+          .text('PT INTEGRA LINTAS TEKNOLOGI',
             60, 105, { width: pageWidth, align: 'center' });
 
         doc.moveDown(2);

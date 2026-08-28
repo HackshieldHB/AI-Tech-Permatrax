@@ -111,20 +111,35 @@ export function extractActiveReferenceByDiscriminator(
 ): { label: string; detailLine: string; code?: string } | null {
   if (!answer) return null;
   const m = normalizeId(text);
-  const wantSeg = /\bsegment\b/.test(m);
+  const wantSeg = /\bsegment\b|\bseg\b/.test(m);
   const wantSite = /\bsite\b/.test(m) && !wantSeg;
   const wantStand = /\bstandalone\b/.test(m);
   const wantClosed = /\bclosed\b/.test(m);
   const wantActive = /\b(active|aktif)\b/.test(m);
+  const codeHint = text.match(/\b((?:SITE|SEG|FIN)-\d{4}-\d+)\b/i)?.[1];
   const lines = answer.split(/\n/).map((l) => l.trim()).filter(Boolean);
-  const hit = lines.find((line) => {
-    if (wantSeg) return /SEG-\d{4}-\d+|\[\s*SEGMENT\s*\]|\/\s*SEGMENT/i.test(line);
-    if (wantSite) return /SITE-\d{4}-\d+|\[\s*SITE\s*\]|\/\s*SITE/i.test(line);
+  const typed = lines.filter((line) => {
+    if (wantSeg)
+      return /SEG-\d{4}-\d+|\bSEGMENT\b/i.test(line) && !/\bSITE\b/i.test(line.replace(/SEG-\d{4}-\d+/i, ''));
+    if (wantSite)
+      return /SITE-\d{4}-\d+|FIN-\d{4}-\d+|\bSITE\b/i.test(line) && !/\bSEGMENT\b/i.test(line);
     if (wantStand) return /STANDALONE/i.test(line);
     if (wantClosed) return /\bCLOSED\b/i.test(line);
     if (wantActive) return /\bACTIVE\b/i.test(line);
     return false;
   });
+  const hit =
+    (codeHint
+      ? typed.find((line) =>
+          new RegExp(`\\b${codeHint.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(
+            line,
+          ),
+        ) || lines.find((line) =>
+          new RegExp(`\\b${codeHint.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(
+            line,
+          ),
+        )
+      : typed[0]) || null;
   if (!hit) return null;
   const code = hit.match(/\b((?:SITE|SEG|FIN)-\d{4}-\d+)\b/i)?.[1];
   return {
@@ -132,6 +147,40 @@ export function extractActiveReferenceByDiscriminator(
     detailLine: hit.replace(/^\d+\.\s*/, ''),
     code,
   };
+}
+
+export function pickPendingFinanceCandidate(
+  candidates:
+    | Array<{ code: string; hierarchyLevel: string; name: string }>
+    | null
+    | undefined,
+  text: string,
+): { code: string; hierarchyLevel: string; name: string } | null {
+  if (!candidates || candidates.length === 0) return null;
+  const m = normalizeId(text);
+  const exact = text.match(/\b((?:SITE|SEG|FIN)-\d{4}-\d+)\b/i)?.[1]?.toUpperCase();
+  if (exact) {
+    const byCode = candidates.filter((c) => c.code.toUpperCase() === exact);
+    if (byCode.length === 1) return byCode[0];
+  }
+  const wantSeg = /\bsegment\b|\bseg\b/.test(m);
+  const wantSite = /\bsite\b/.test(m) && !wantSeg;
+  const typed = wantSeg
+    ? candidates.filter(
+        (c) =>
+          c.hierarchyLevel === 'SEGMENT' || /^SEG-/i.test(c.code),
+      )
+    : wantSite
+      ? candidates.filter(
+          (c) => c.hierarchyLevel === 'SITE' || /^(SITE|FIN)-/i.test(c.code),
+        )
+      : candidates;
+  if (typed.length === 1) return typed[0];
+  if (exact) {
+    const typedExact = typed.find((c) => c.code.toUpperCase() === exact);
+    if (typedExact) return typedExact;
+  }
+  return null;
 }
 
 /** Count numbered rows in a ranked/list answer. */
