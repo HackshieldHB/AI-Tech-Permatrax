@@ -27,9 +27,10 @@ import {
   detectRequestedAttribute,
   extractActiveReferenceFromAnswer,
   extractActiveReferenceByDiscriminator,
-  pickPendingFinanceCandidate,
+  filterPendingFinanceCandidates,
   extractEntityFromAnswer,
   extractExplicitEntityCode,
+  extractSessionProjectCode,
   hasConversationalReference,
   isActiveReferenceDetailQuery,
   isAttributeFollowUp,
@@ -41,6 +42,7 @@ import {
   isFinanceFilterClearQuery,
   isResultSetNarrowingQuery,
   isModuleDataRankingQuery,
+  isRankingPatchFollowUp,
   isOrdinalReference,
   isPicOrRequestorQuery,
   isProjectCountQuery,
@@ -60,6 +62,9 @@ import {
   buildActiveDatasetKey,
   attributeNeedsLiveLookup,
   buildMetaReasoningAnswer,
+  buildBusinessDiagnosticAnswer,
+  isBusinessDiagnosticQuery,
+  isKnowledgeDefinitionQuery,
   isMetaReasoningInquiry,
   isUnknownInformationInquiry,
   mapResponseStrategy,
@@ -69,17 +74,28 @@ import {
   appendFinanceConstraintTags,
   appendInheritedRankingMetricTag,
   appendInheritedRankingLimitTag,
+  appendInheritedRankingDirectionTag,
   buildConstrainedDomainQuery,
   extractConstraintsFromText,
   hasUsableConstraint,
 } from './ai-constraints';
 import { extractSlots } from './ai-slot-fill';
 import {
+  commitConversationFrame,
+  hydrateConstraintsFromFrame,
+  inferConversationGoal,
+  type ConversationGoal,
+} from './ai-frame';
+import { buildCashWhyTemplate } from './ai-explain';
+import { polishWhyWithLlm } from './ai-frame-llm';
+import { buildPaiCapabilityCard } from './ai-capability';
+import {
   EMPTY_CONSTRAINTS,
   encodeSessionInTraces,
   extractSessionFromHistory,
   isContextDependentFollowUp,
   mergeConstraints,
+  hasActiveRankingState,
   normalizeSessionState,
   sessionTopicHint,
   type ActiveIntent,
@@ -182,15 +198,26 @@ export class AiService {
       dbSession.lastDataQuery ||
       dbSession.activeReference ||
       dbSession.activeDataset ||
-      dbSession.activeObject
+      dbSession.activeObject ||
+      (dbSession.pendingCandidates?.length ?? 0) > 0
         ? dbSession
         : historySession;
+    session.constraints = hydrateConstraintsFromFrame(
+      session.constraints,
+      session.frame,
+    );
 
     // P0/P3: extract + merge constraints (optional LLM slot fill)
     const slotResult = await extractSlots(text, this.ollama);
     const incomingConstraints =
       slotResult.constraints || extractConstraintsFromText(text);
-    if (isStandaloneFinanceAggregateQuery(text)) {
+    if (
+      isStandaloneFinanceAggregateQuery(text) &&
+      !(
+        hasActiveRankingState(session.constraints) &&
+        isRankingPatchFollowUp(text)
+      )
+    ) {
       // PAI-FNC-001/002: new aggregate/status/metric resets leftover SITE/ACTIVE
       session = {
         ...session,
@@ -202,12 +229,21 @@ export class AiService {
           ? session.activeObject
           : null,
       };
+      session.frame = commitConversationFrame(session, 'aggregate');
     } else if (hasUsableConstraint(incomingConstraints)) {
       session = {
         ...session,
         constraints: mergeConstraints(session.constraints, incomingConstraints),
       };
     }
+    const stateBefore = {
+      topic: session.activeTopic,
+      object: session.activeObject,
+      ranking: session.constraints.ranking ?? null,
+      extras: session.constraints.extra ?? [],
+      pending: session.pendingCandidates?.length ?? 0,
+    };
+
     const sessionCtx = resolveSessionContext({
       message: text,
       priorUsers,
@@ -294,14 +330,16 @@ export class AiService {
     // do NOT re-run full ranking/list retrieval.
     let referenceDetail: string | null = null;
     let liveObjectLookup: string | null = null;
-    const pendingPick =
-      (isResultSetNarrowingQuery(text) ||
-        (!!explicitCode && (session.pendingCandidates?.length ?? 0) > 0)) &&
+    const pendingFilterAttempt =
+      (session.pendingCandidates?.length ?? 0) > 0 &&
+      (isResultSetNarrowingQuery(text) || !!explicitCode) &&
       !isModuleDataRankingQuery(text) &&
-      !isAttributeFollowUp(text)
-        ? pickPendingFinanceCandidate(session.pendingCandidates, text)
-        : null;
-    if (pendingPick?.code) {
+      !isAttributeFollowUp(text);
+    const pendingMatches = pendingFilterAttempt
+      ? filterPendingFinanceCandidates(session.pendingCandidates, text)
+      : null;
+    if (pendingMatches?.length === 1) {
+      const pendingPick = pendingMatches[0];
       liveObjectLookup = `Detail budget project ${pendingPick.code}`;
       session = {
         ...session,
@@ -312,8 +350,12 @@ export class AiService {
       };
       intent = 'data';
     }
+    const businessDiagnostic =
+      isBusinessDiagnosticQuery(text) && !isMetaReasoningInquiry(text);
+
     if (
       !liveObjectLookup &&
+      !businessDiagnostic &&
       (stateFollowUp || (explicitCode && !/\bcari\b/i.test(text))) &&
       !isModuleDataRankingQuery(text) &&
       !isFinanceContextFilterQuery(text) &&
@@ -386,6 +428,7 @@ export class AiService {
     if (
       !referenceDetail &&
       !liveObjectLookup &&
+      !pendingFilterAttempt &&
       isResultSetNarrowingQuery(text) &&
       (session.activeDatasetAnswer || lastAssistant)
     ) {
@@ -417,9 +460,15 @@ export class AiService {
       !isFinanceFilterOrAggregateQuery(text) &&
       // PAI-FNC-004: "Top 5 budget terbesar" must not replay prior realisasi ranking
       !isModuleDataRankingQuery(text) &&
+      !isResultSetNarrowingQuery(text) &&
+      !(session.pendingCandidates?.length) &&
+      !extractExplicitEntityCode(text) &&
       // PAI-FNC-001/002: standalone metric/count must not replay prior Summary
       !isProjectCountQuery(text) &&
-      detectFinanceMetrics(text).length === 0
+      detectFinanceMetrics(text).length === 0 &&
+      session.frame?.goal !== 'rank' &&
+      session.frame?.goal !== 'search' &&
+      session.frame?.goal !== 'object_attr'
     ) {
       if (intent === 'faq' || intent === 'howto' || intent === 'navigation') {
         intent =
@@ -453,6 +502,11 @@ export class AiService {
         effectiveText = `Barang yang paling sedikit di stok\n(konteks referensi: ${text})`;
         intent = 'analytics';
       }
+    }
+
+    if (businessDiagnostic) {
+      liveObjectLookup = null;
+      referenceDetail = null;
     }
 
     if (liveObjectLookup) {
@@ -494,6 +548,7 @@ export class AiService {
         reasoningNote?: string | null;
         dataQuery?: string | null;
         patch: Partial<ConversationSessionState>;
+        frameGoal?: ConversationGoal;
       }> = {},
     ) => {
       const entity =
@@ -553,11 +608,51 @@ export class AiService {
           opts.reasoningNote !== undefined
             ? opts.reasoningNote
             : (opts.patch?.lastReasoningNote ?? nextState.lastReasoningNote),
+        frame: nextState.frame,
       };
+      state.frame = commitConversationFrame(
+        state,
+        opts.frameGoal ??
+          inferConversationGoal({
+            diagnostic: isBusinessDiagnosticQuery(text),
+            rankedList: isRankedList,
+            candidateSet: isCandidateSet,
+            pendingCount: state.pendingCandidates?.length ?? 0,
+            hasRanking: hasActiveRankingState(state.constraints),
+            filterOnly: isFinanceFilterOnlyQuery(text),
+            aggregate: isStandaloneFinanceAggregateQuery(text),
+            objectCode:
+              extractExplicitEntityCode(state.activeObject || '') ||
+              extractExplicitEntityCode(state.activeReference || ''),
+            previousGoal: nextState.frame?.goal ?? 'none',
+          }),
+      );
       const traces = encodeSessionInTraces(
         (opts.toolTraces ?? []).filter((t) => t.name !== '_session'),
         state,
       ) as ToolTrace[];
+
+      this.logger.log(
+        JSON.stringify({
+          evt: 'PAI_TURN',
+          intent: opts.intent ?? intent,
+          mode: opts.activeIntent ?? state.activeIntent,
+          state_before: stateBefore,
+          state_after: {
+            topic: state.activeTopic,
+            object: state.activeObject,
+            ranking: state.constraints.ranking ?? null,
+            extras: state.constraints.extra ?? [],
+            pending: state.pendingCandidates?.length ?? 0,
+            frame: {
+              goal: state.frame?.goal ?? 'none',
+              ranking: state.frame?.ranking ?? null,
+              object: state.frame?.activeObjectCode ?? null,
+            },
+          },
+          snippet: text.slice(0, 80),
+        }),
+      );
 
       return this.persistAssistant({
         conversationId: conversation!.id,
@@ -590,6 +685,52 @@ export class AiService {
         started,
       });
     };
+
+    if (
+      pendingFilterAttempt &&
+      pendingMatches &&
+      !liveObjectLookup &&
+      session.pendingCandidates?.length
+    ) {
+      const labels = session.pendingCandidates
+        .map((c) => `${c.code} (${c.hierarchyLevel})`)
+        .join(', ');
+      if (pendingMatches.length === 0) {
+        return reply(
+          `Dari kandidat tadi (${labels}), tidak ada yang cocok dengan pilihan itu. Mau pilih salah satu kandidat yang ada, atau cari project lain?`,
+          {
+            intent: 'clarify',
+            sticker: '🔎',
+            strategy: 'clarify',
+            responseStrategy: 'clarification',
+            reasoningNote: 'Pending candidate zero-match — keep candidate set',
+            patch: {
+              pendingCandidates: session.pendingCandidates,
+              activeObject: null,
+            },
+          },
+        );
+      }
+      if (pendingMatches.length > 1) {
+        const remain = pendingMatches
+          .map((c) => `${c.code} — ${c.name} (${c.hierarchyLevel})`)
+          .join('; ');
+        return reply(
+          `Ada ${pendingMatches.length} project yang cocok: ${remain}. Pilih salah satu (sebutkan kode).`,
+          {
+            intent: 'clarify',
+            sticker: '🔎',
+            strategy: 'clarify',
+            responseStrategy: 'clarification',
+            reasoningNote: 'Pending candidate still ambiguous',
+            patch: {
+              pendingCandidates: pendingMatches,
+              activeObject: null,
+            },
+          },
+        );
+      }
+    }
 
     if (session.activeTopic === 'finance' && isFinanceFilterClearQuery(text)) {
       const cleared = { ...EMPTY_CONSTRAINTS, extra: [] as string[] };
@@ -754,6 +895,95 @@ export class AiService {
           responseStrategy: unknown ? 'unknown_information' : 'meta_reasoning',
           activeIntent: 'meta',
           toolTraces: [],
+        },
+      );
+    }
+
+    if (businessDiagnostic) {
+      const rawCode =
+        extractExplicitEntityCode(text) || extractSessionProjectCode(session);
+      const code =
+        rawCode && /^(SITE|SEG|FIN)-\d{4}-\d+$/i.test(rawCode)
+          ? rawCode.toUpperCase()
+          : null;
+      const cashWhy =
+        !code &&
+        /(belum cair|belum disetujui|belum approve|pending.*dana|dana.*pending)/i.test(
+          text,
+        );
+      const clusterWhy =
+        !code &&
+        /(cluster|permit)/i.test(text) &&
+        /(lambat|stuck|hold|on.?hold)/i.test(text);
+
+      let factSummary: string | null = null;
+      let toolTraces: ToolTrace[] = [];
+      if (code) {
+        toolTraces = await this.tools.runTools(
+          ['explain_finance_project'],
+          user,
+          `Explain finance project ${code} ${text}`,
+        );
+        const ok = toolTraces.find((t) => t.ok && t.summary);
+        if (
+          ok?.summary &&
+          !/tidak ditemukan|tidak ketemu|belum punya akses/i.test(ok.summary)
+        ) {
+          factSummary = ok.summary;
+        }
+      } else if (clusterWhy) {
+        toolTraces = await this.tools.runTools(
+          ['explain_permit_cluster'],
+          user,
+          text,
+        );
+        factSummary = toolTraces.find((t) => t.ok && t.summary)?.summary ?? null;
+      } else if (cashWhy) {
+        toolTraces = await this.tools.runTools(
+          ['pending_fund_approvals'],
+          user,
+          text,
+        );
+        const pending = toolTraces.find((t) => t.name === 'pending_fund_approvals');
+        const count = Array.isArray(pending?.data) ? pending.data.length : 0;
+        factSummary = buildCashWhyTemplate({
+          pendingSummary: pending?.summary ?? null,
+          pendingCount: count,
+        });
+      }
+      if (factSummary) {
+        const explainPack = toolTraces.find(
+          (t) => t.name === 'explain_finance_project' && t.data,
+        )?.data;
+        factSummary = await polishWhyWithLlm(
+          this.ollama,
+          factSummary,
+          explainPack && typeof explainPack === 'object'
+            ? (explainPack as import('./ai-explain').FinanceExplainPack)
+            : null,
+        );
+      }
+      return reply(
+        buildBusinessDiagnosticAnswer({ code, factSummary }),
+        {
+          sticker: '🤔',
+          intent: 'data',
+          strategy: 'none',
+          responseStrategy: 'unknown_information',
+          activeIntent: 'data',
+          grounded: Boolean(factSummary),
+          refusal: !factSummary,
+          failureKind: factSummary ? null : 'unknown',
+          toolTraces,
+          dataQuery: text,
+          frameGoal: 'diagnostic',
+          reasoningNote:
+            'Business diagnostic: template 5-why from DB facts; unknown levels stop',
+          patch: {
+            activeTopic: session.activeTopic || sessionCtx.activeTopic,
+            activeObject: session.activeObject,
+            activeReference: session.activeReference,
+          },
         },
       );
     }
@@ -1189,6 +1419,7 @@ export class AiService {
       const { answer, ollamaUsed } = await this.composeAnswer({
         user,
         text: effectiveText,
+        intent: 'howto',
         chunks,
         toolTraces: [],
         proposedAction,
@@ -1228,9 +1459,11 @@ export class AiService {
       useTools &&
       session.activeTopic === 'finance' &&
       !toolNames.includes('finance_analytics') &&
-      (/budget|project|proyek|berapa|jumlah|total|terbesar|terkecil|over|material|jasa|realisasi|sisa|active|closed|archived|site|segment|\bcari\b|(?:site|seg|fin)-\d{4}/i.test(
+      (/budget|project|proyek|berapa|jumlah|total|terbesar|terkecil|over|material|jasa|realisasi|sisa|active|closed|archived|site|segment|\bcari\b|\btop\s*\d+|(?:site|seg|fin)-\d{4}/i.test(
         effectiveText,
       ) ||
+        isModuleDataRankingQuery(text) ||
+        isRankingPatchFollowUp(text) ||
         isFinanceFilterOrAggregateQuery(text) ||
         isFinanceFilterOrAggregateQuery(effectiveText))
     ) {
@@ -1276,6 +1509,11 @@ export class AiService {
           text,
         );
         toolMessage = appendInheritedRankingMetricTag(
+          toolMessage,
+          session.constraints,
+          text,
+        );
+        toolMessage = appendInheritedRankingDirectionTag(
           toolMessage,
           session.constraints,
           text,
@@ -1393,7 +1631,12 @@ export class AiService {
     let chunks: RetrievedChunk[] = [];
     // Never retrieve generic FAQ while finance topic is locked / data intent
     // PAI-RSN-001: hard-filter knowledge modules to active domain
-    if (!hasUsefulTools && intent === 'faq' && !session.correctionApplied) {
+    if (
+      !hasUsefulTools &&
+      intent === 'faq' &&
+      !session.correctionApplied &&
+      (!session.activeTopic || isKnowledgeDefinitionQuery(text))
+    ) {
       const domainModules = session.activeTopic
         ? topicToKnowledgeModules(session.activeTopic)
         : undefined;
@@ -1470,6 +1713,7 @@ export class AiService {
     const { answer, ollamaUsed } = await this.composeAnswer({
       user,
       text: effectiveText,
+      intent,
       chunks: hasUsefulTools ? [] : chunks,
       toolTraces: hasUsefulTools ? toolTraces : [],
       proposedAction,
@@ -1493,6 +1737,44 @@ export class AiService {
           : '')
       : null;
 
+    const rankingToolData = (() => {
+      const t = toolTraces.find((x) => x.name === 'finance_analytics' && x.ok);
+      const d = t?.data;
+      if (
+        d &&
+        typeof d === 'object' &&
+        'rankingMetric' in (d as object) &&
+        'dir' in (d as object)
+      ) {
+        return d as {
+          rankingMetric: string;
+          dir: 'asc' | 'desc';
+          limit?: number;
+        };
+      }
+      return null;
+    })();
+    const rankingConstraints = rankingToolData
+      ? {
+          ...session.constraints,
+          ranking: (rankingToolData.dir === 'asc' ? 'smallest' : 'top') as
+            | 'smallest'
+            | 'top',
+          extra: [
+            ...(session.constraints.extra || []).filter(
+              (e) => !e.startsWith('metric:') && !e.startsWith('limit:'),
+            ),
+            `metric:${rankingToolData.rankingMetric}`,
+            `limit:${rankingToolData.limit ?? 10}`,
+          ],
+        }
+      : session.constraints;
+    if (rankingToolData) {
+      this.logger.debug(
+        `PAI-FNC-004 commit ranking metric=${rankingToolData.rankingMetric} dir=${rankingToolData.dir} limit=${rankingToolData.limit ?? 10}`,
+      );
+    }
+
     const searchRows = (() => {
       const t = toolTraces.find((x) => x.name === 'finance_analytics' && x.ok);
       return Array.isArray(t?.data) ? t.data : null;
@@ -1514,7 +1796,7 @@ export class AiService {
             name: r.name || r.code,
             hierarchyLevel: r.hierarchyLevel || '',
           }))
-        : liveObjectLookup
+        : liveObjectLookup || rankingToolData
           ? null
           : session.pendingCandidates;
 
@@ -1524,18 +1806,19 @@ export class AiService {
       ollamaUsed,
       proposedAction,
       strategy: hasUsefulTools ? 'summary' : 'howto',
-      activeIntent: resolvedIntent,
+      activeIntent: rankingToolData ? 'analytics' : resolvedIntent,
       dataQuery: hasUsefulTools
         ? /(terbesar|terkecil|paling|top\s*\d*|ranking|stoknya|sedikit)/i.test(
             text,
-          )
+          ) || isRankingPatchFollowUp(text)
           ? text
           : effectiveText.split('\n')[0]
         : session.lastDataQuery,
       reasoningNote,
       patch: {
         activeTopic: session.activeTopic || sessionCtx.activeTopic,
-        pendingCandidates: searchCandidates,
+        pendingCandidates: rankingToolData ? null : searchCandidates,
+        constraints: rankingConstraints,
         activeObject:
           searchCandidates && searchCandidates.length > 1
             ? null
@@ -1610,6 +1893,7 @@ export class AiService {
       model: this.ollama.getModelName(),
       knowledgeArticles: articles,
       mode: ollama ? 'ollama+rag+tools' : 'rag+tools-fallback',
+      capabilityCard: buildPaiCapabilityCard(),
     };
   }
 
@@ -1629,6 +1913,7 @@ export class AiService {
   private async composeAnswer(input: {
     user: AuthUser;
     text: string;
+    intent?: string;
     chunks: RetrievedChunk[];
     toolTraces: ToolTrace[];
     proposedAction: { action: string; label: string; href: string } | null;
@@ -1663,11 +1948,6 @@ ${
     : ''
 }`;
 
-    const llm = await this.ollama.chat(system, userPrompt);
-    if (llm.used && llm.text) {
-      return { answer: llm.text, ollamaUsed: true };
-    }
-
     const okTools = input.toolTraces.filter(
       (t) => t.ok && t.summary && t.name !== '_session',
     );
@@ -1676,6 +1956,13 @@ ${
         answer: okTools.map((t) => t.summary).join('\n\n'),
         ollamaUsed: false,
       };
+    }
+
+    if (input.intent === 'howto') {
+      const llm = await this.ollama.chat(system, userPrompt);
+      if (llm.used && llm.text) {
+        return { answer: llm.text, ollamaUsed: true };
+      }
     }
 
     const parts: string[] = [];

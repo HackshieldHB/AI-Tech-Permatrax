@@ -25,6 +25,13 @@ import {
   type FinanceRankingMetric,
 } from './ai-nlu';
 
+import {
+  buildClusterWhyTemplate,
+  buildFinanceWhyTemplate,
+  detectWhyFocus,
+  type FinanceExplainPack,
+} from './ai-explain';
+
 export type ToolTrace = {
   name: string;
   ok: boolean;
@@ -179,6 +186,10 @@ export class AiToolsService {
       // legacy alias
       case 'finance_project_totals':
         return this.financeAnalytics(user, message);
+      case 'explain_finance_project':
+        return this.explainFinanceProject(user, message);
+      case 'explain_permit_cluster':
+        return this.explainPermitCluster(user, message);
       case 'last_fund_disbursement':
         return this.lastFundDisbursement(user);
       case 'pending_fund_approvals':
@@ -328,10 +339,17 @@ export class AiToolsService {
 
     // Strip constraint/recovery tags for NLU so session tags don't hijack mode
     const bareMessage = message
-      .replace(/\s*\[(SCOPE_|HIERARCHY_|BROADER_|USER_|METRIC).*?\]/gi, ' ')
+      .replace(/\s*\[(SCOPE_|HIERARCHY_|BROADER_|USER_|METRIC|LIMIT_|DIR_).*?\]/gi, ' ')
       .replace(/\s+/g, ' ')
       .trim();
     let mode = detectFinanceMode(bareMessage);
+    if (
+      (mode === 'metric_aggregate' || mode === 'summary') &&
+      (/\[METRIC_/i.test(message) || /\[LIMIT_/i.test(message) || /\[DIR_/i.test(message)) &&
+      !isProjectCountQuery(bareMessage)
+    ) {
+      mode = /\[DIR_ASC\]/i.test(message) ? 'smallest' : 'top_budget';
+    }
     // PAI-FNC-002: hard-prefer project_count over inherited Summary prose
     if (
       isProjectCountQuery(bareMessage) &&
@@ -357,7 +375,12 @@ export class AiToolsService {
     const topN =
       explicitN ??
       (taggedLimit ? Math.min(50, Math.max(1, Number(taggedLimit[1]))) : 10);
-    const rankDir = detectRankingDirection(bareMessage);
+    const taggedDir: 'asc' | 'desc' | null = /\[DIR_ASC\]/i.test(message)
+      ? 'asc'
+      : /\[DIR_DESC\]/i.test(message)
+        ? 'desc'
+        : null;
+    const rankDir = detectRankingDirection(bareMessage) ?? taggedDir;
     const broaderScope =
       /\[broader_retry\]|\[scope_non_archived\]|\[scope_all\]/i.test(message) ||
       /non.?arsip|non.?archived|termasuk closed|active\s*\+\s*closed/i.test(
@@ -549,17 +572,26 @@ export class AiToolsService {
         }
       }
       if (needle) {
-        const tokens = meaningfulTokens(needle);
-        const parts = tokens.length > 0 ? tokens : [needle];
-        const attrOr = (p: string): Prisma.FinanceProjectWhereInput[] => [
-          { name: { contains: p, mode: 'insensitive' } },
-          { code: { contains: p, mode: 'insensitive' } },
-          { description: { contains: p, mode: 'insensitive' } },
-          { poCustomerNumber: { contains: p, mode: 'insensitive' } },
-          { parent: { name: { contains: p, mode: 'insensitive' } } },
-          { parent: { code: { contains: p, mode: 'insensitive' } } },
-        ];
-        baseWhere.OR = parts.flatMap((p) => attrOr(p));
+        if (exactCode) {
+          // Exact object + children of that code. Do not tokenize SEG-2026-005
+          // into "005" (that falsely matches FIN-2026-005 via contains).
+          baseWhere.OR = [
+            { code: { equals: exactCode, mode: 'insensitive' } },
+            { parent: { code: { equals: exactCode, mode: 'insensitive' } } },
+          ];
+        } else {
+          const tokens = meaningfulTokens(needle);
+          const parts = tokens.length > 0 ? tokens : [needle];
+          const attrOr = (p: string): Prisma.FinanceProjectWhereInput[] => [
+            { name: { contains: p, mode: 'insensitive' } },
+            { code: { contains: p, mode: 'insensitive' } },
+            { description: { contains: p, mode: 'insensitive' } },
+            { poCustomerNumber: { contains: p, mode: 'insensitive' } },
+            { parent: { name: { contains: p, mode: 'insensitive' } } },
+            { parent: { code: { contains: p, mode: 'insensitive' } } },
+          ];
+          baseWhere.OR = parts.flatMap((p) => attrOr(p));
+        }
         delete (baseWhere as { status?: unknown }).status;
         baseWhere.status = { not: 'ARCHIVED' };
       }
@@ -1073,7 +1105,7 @@ export class AiToolsService {
       name: 'finance_analytics',
       ok: true,
       summary: [title, ...lines, `Data per ${fmtDateId()}.`].join('\n'),
-      data: { rankingMetric, dir, rows: top.map((t) => t.r) },
+      data: { rankingMetric, dir, limit: n, rows: top.map((t) => t.r) },
     };
   }
 
@@ -1313,6 +1345,213 @@ export class AiToolsService {
       ok: true,
       summary: latest.summary,
       data: latest.data,
+    };
+  }
+
+  private async explainFinanceProject(
+    user: AuthUser,
+    message: string,
+  ): Promise<ToolTrace> {
+    if (!this.canAccessFinance(user.role)) {
+      return {
+        name: 'explain_finance_project',
+        ok: true,
+        summary:
+          'Role kamu belum punya akses explain Finance Project. Buka menu Finance Projects jika tersedia.',
+      };
+    }
+    const code = message.match(/\b((?:SITE|SEG|FIN)-\d{4}-\d+)\b/i)?.[1];
+    if (!code) {
+      return {
+        name: 'explain_finance_project',
+        ok: false,
+        summary: 'Sebutkan kode project (SITE/SEG/FIN-YYYY-NNN) untuk 5-why faktual.',
+      };
+    }
+    const scope: Prisma.FinanceProjectWhereInput = {
+      status: { not: 'ARCHIVED' },
+    };
+    if (!this.canSeeAllFinance(user.role)) {
+      scope.createdById = user.userId;
+    }
+    const rows = await this.prisma.financeProject.findMany({
+      where: scope,
+      select: {
+        id: true,
+        code: true,
+        name: true,
+        status: true,
+        hierarchyLevel: true,
+        totalBudget: true,
+        materialBudget: true,
+        jasaBudget: true,
+        materialSpent: true,
+        jasaSpent: true,
+        isOverbudget: true,
+        poCustomerNumber: true,
+        poApprovalStatus: true,
+        parent: { select: { code: true } },
+      },
+      take: 40,
+    });
+    const r = rows.find((x) => x.code.toUpperCase() === code.toUpperCase());
+    if (!r) {
+      return {
+        name: 'explain_finance_project',
+        ok: true,
+        summary: `Project ${code.toUpperCase()} tidak ditemukan di data live / scope akses Anda.`,
+      };
+    }
+
+    let ledgerNotes: string[] = [];
+    try {
+      const ledger = await this.prisma.budgetLedger.findMany({
+        where: {
+          financeProjectId: r.id,
+          notes: { not: null },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 5,
+        select: { notes: true, entryType: true, amount: true },
+      });
+      ledgerNotes = ledger
+        .map((l) =>
+          l.notes
+            ? `${l.entryType} ${fmtIdr(Number(l.amount))}: ${l.notes}`.slice(0, 120)
+            : '',
+        )
+        .filter(Boolean);
+    } catch {
+      ledgerNotes = [];
+    }
+
+    let cashPendingCount = 0;
+    let cashLatestStatus: string | null = null;
+    try {
+      const cash = await this.prisma.cashOperationRequest.findMany({
+        where: {
+          financeProjectId: r.id,
+          status: { in: ['SUBMITTED', 'IN_REVIEW', 'APPROVED'] },
+        },
+        orderBy: { updatedAt: 'desc' },
+        take: 5,
+        select: { status: true },
+      });
+      cashPendingCount = cash.length;
+      cashLatestStatus = cash[0]?.status ?? null;
+    } catch {
+      cashPendingCount = 0;
+    }
+
+    const pack: FinanceExplainPack = {
+      code: r.code,
+      name: r.name,
+      status: r.status,
+      hierarchyLevel: r.hierarchyLevel,
+      totalBudget: Number(r.totalBudget),
+      materialBudget: Number(r.materialBudget ?? 0),
+      jasaBudget: Number(r.jasaBudget ?? 0),
+      materialSpent: Number(r.materialSpent),
+      jasaSpent: Number(r.jasaSpent),
+      isOverbudget: r.isOverbudget,
+      poCustomerNumber: r.poCustomerNumber,
+      poApprovalStatus: r.poApprovalStatus,
+      parentCode: r.parent?.code ?? null,
+      ledgerNotes,
+      cashPendingCount,
+      cashLatestStatus,
+    };
+    return {
+      name: 'explain_finance_project',
+      ok: true,
+      summary: buildFinanceWhyTemplate(pack, detectWhyFocus(message)),
+      data: pack,
+    };
+  }
+
+  private async explainPermitCluster(
+    user: AuthUser,
+    message: string,
+  ): Promise<ToolTrace> {
+    const where: Prisma.PermitClusterWhereInput = {};
+    if (!this.canSeeAllClusters(user.role)) {
+      if (user.role.startsWith('PM_')) {
+        where.assignedPmId = user.userId;
+      } else if (user.fiberType) {
+        where.fiberType = user.fiberType;
+      } else {
+        return {
+          name: 'explain_permit_cluster',
+          ok: true,
+          summary: buildClusterWhyTemplate({
+            clusterCode: null,
+            phase: null,
+            status: null,
+            daysSinceUpdate: null,
+            holdNote: null,
+          }),
+        };
+      }
+    }
+    const needle = message.match(/\b([A-Z0-9][A-Z0-9._-]{2,})\b/i)?.[1];
+    const rows = await this.prisma.permitCluster.findMany({
+      where,
+      select: {
+        id: true,
+        clusterCode: true,
+        currentPhase: true,
+        status: true,
+        updatedAt: true,
+      },
+      orderBy: { updatedAt: 'desc' },
+      take: 20,
+    });
+    const row =
+      (needle
+        ? rows.find((c) =>
+            c.clusterCode.toUpperCase().includes(needle.toUpperCase()),
+          )
+        : null) ||
+      rows.find((c) => c.status === 'ON_HOLD') ||
+      rows[0] ||
+      null;
+    let holdNote: string | null = null;
+    if (row) {
+      try {
+        const stages = await this.prisma.clusterStageProgress.findMany({
+          where: { clusterId: row.id },
+          select: { notes: true, status: true },
+          take: 8,
+        });
+        holdNote =
+          stages
+            .filter((s) => s.notes)
+            .map((s) => `${s.status}: ${s.notes}`)
+            .join('; ') || null;
+      } catch {
+        holdNote = null;
+      }
+    }
+    const days =
+      row?.updatedAt != null
+        ? Math.max(
+            0,
+            Math.floor(
+              (Date.now() - new Date(row.updatedAt).getTime()) / 86400000,
+            ),
+          )
+        : null;
+    return {
+      name: 'explain_permit_cluster',
+      ok: true,
+      summary: buildClusterWhyTemplate({
+        clusterCode: row?.clusterCode ?? null,
+        phase: row?.currentPhase ?? null,
+        status: row?.status ?? null,
+        daysSinceUpdate: days,
+        holdNote,
+      }),
+      data: row,
     };
   }
 

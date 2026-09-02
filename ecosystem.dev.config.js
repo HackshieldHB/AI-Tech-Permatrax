@@ -87,7 +87,8 @@ module.exports = {
         FILE_BASE_URL: 'https://aitech-ilt.co.id/Permatrax/api/files',
         MAX_FILE_SIZE: '52428800',
         // PAI P3: optional Ollama slot fill (heuristic always remains fallback)
-        PAI_SLOT_FILL: 'true',
+        PAI_SLOT_FILL: 'false',
+        PAI_FRAME_LLM: 'true',
         OLLAMA_URL: 'http://127.0.0.1:11434',
         OLLAMA_MODEL: 'llama3.2',
       },

@@ -10,6 +10,8 @@ import {
   isFinanceFilterClearQuery,
   isFinanceFilterRemoveQuery,
   isResultSetNarrowingQuery,
+  isModuleDataRankingQuery,
+  isRankingPatchFollowUp,
 } from './ai-nlu';
 import type { ActiveConstraintSet } from './ai-session';
 import { EMPTY_CONSTRAINTS } from './ai-session';
@@ -77,8 +79,14 @@ export function extractConstraintsFromText(text: string): ActiveConstraintSet {
     out.ranking = 'top';
   }
 
-  // PAI-FNC-004: carry ranking metric hint in extra
-  if (out.ranking === 'top' || out.ranking === 'smallest') {
+  // PAI-FNC-004 V4: metric + Top-N attach to ranking utterances / patches
+  // even when direction is inherited from the latest ranking state.
+  const rankingTurn =
+    out.ranking === 'top' ||
+    out.ranking === 'smallest' ||
+    isModuleDataRankingQuery(text) ||
+    isRankingPatchFollowUp(text);
+  if (rankingTurn) {
     if (/(over\s*budget|overbudget)/.test(m)) out.extra!.push('metric:overbudget');
     else if (/(sisa|remaining)/.test(m)) out.extra!.push('metric:remaining');
     else if (/(material)/.test(m)) out.extra!.push('metric:materialBudget');
@@ -104,10 +112,8 @@ export function buildConstrainedFinanceQuery(
   lastDataQuery?: string | null,
 ): string {
   const parts: string[] = [];
-  const ranking =
-    constraints.ranking ||
-    (/(terbesar|top\s*\d*)/i.test(lastDataQuery || '') ? 'top' : null) ||
-    (/(terkecil)/i.test(lastDataQuery || '') ? 'smallest' : null);
+  // PAI Phase 2: ranking comes from the committed constraint frame only.
+  const ranking = constraints.ranking || null;
 
   const limitHint = constraints.extra?.find((e) => e.startsWith('limit:'))?.replace(
     'limit:',
@@ -175,6 +181,19 @@ export function appendInheritedRankingMetricTag(
   if (!hint) return message;
   const key = hint.replace('metric:', '');
   return `${message} [METRIC_${key}]`.trim();
+}
+
+/** Carry previous sort direction only when this turn did not name one. */
+export function appendInheritedRankingDirectionTag(
+  message: string,
+  constraints: ActiveConstraintSet,
+  text: string,
+): string {
+  if (/\[DIR_/i.test(message)) return message;
+  if (detectRankingDirection(text) != null) return message;
+  if (constraints.ranking === 'smallest') return `${message} [DIR_ASC]`.trim();
+  if (constraints.ranking === 'top') return `${message} [DIR_DESC]`.trim();
+  return message;
 }
 
 /** Carry previous Top-N only when this turn did not name a count. */

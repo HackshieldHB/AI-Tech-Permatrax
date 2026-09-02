@@ -50,6 +50,17 @@ export function extractEntityFromAnswer(
   return null;
 }
 
+/** SITE/SEG/FIN code from locked Active Object / Active Reference. */
+export function extractSessionProjectCode(session: {
+  activeObject?: string | null;
+  activeReference?: string | null;
+}): string | null {
+  return (
+    extractExplicitEntityCode(session.activeObject || '') ||
+    extractExplicitEntityCode(session.activeReference || '')
+  );
+}
+
 /** Explicit project/stock code in the user utterance. */
 export function extractExplicitEntityCode(text: string): string | null {
   const finance = text.match(/\b((?:SITE|SEG|FIN)-\d{4}-\d+)\b/i);
@@ -149,6 +160,47 @@ export function extractActiveReferenceByDiscriminator(
   };
 }
 
+export type PendingFinanceCandidate = {
+  code: string;
+  hierarchyLevel: string;
+  name: string;
+};
+
+/**
+ * Filter an existing candidate set. Exact object.code always outranks
+ * parent/child relationship matches (PAI-FNC-005).
+ */
+export function filterPendingFinanceCandidates(
+  candidates: PendingFinanceCandidate[] | null | undefined,
+  text: string,
+): PendingFinanceCandidate[] {
+  if (!candidates || candidates.length === 0) return [];
+  const m = normalizeId(text);
+  const exact = text
+    .match(/\b((?:SITE|SEG|FIN)-\d{4}-\d+)\b/i)?.[1]
+    ?.toUpperCase();
+  let pool = candidates;
+  if (exact) {
+    const byCode = pool.filter((c) => c.code.toUpperCase() === exact);
+    if (byCode.length > 0) pool = byCode;
+  }
+  const wantStand = /\bstandalone\b/.test(m);
+  const wantSeg = /\bsegment\b/.test(m) || (/\bseg\b/.test(m) && !exact);
+  const wantSite = /\bsite\b/.test(m) && !wantSeg && !wantStand;
+  if (wantStand) {
+    pool = pool.filter((c) => c.hierarchyLevel === 'STANDALONE');
+  } else if (wantSeg) {
+    pool = pool.filter(
+      (c) => c.hierarchyLevel === 'SEGMENT' || /^SEG-/i.test(c.code),
+    );
+  } else if (wantSite) {
+    pool = pool.filter(
+      (c) => c.hierarchyLevel === 'SITE' || /^(SITE|FIN)-/i.test(c.code),
+    );
+  }
+  return pool;
+}
+
 export function pickPendingFinanceCandidate(
   candidates:
     | Array<{ code: string; hierarchyLevel: string; name: string }>
@@ -156,31 +208,8 @@ export function pickPendingFinanceCandidate(
     | undefined,
   text: string,
 ): { code: string; hierarchyLevel: string; name: string } | null {
-  if (!candidates || candidates.length === 0) return null;
-  const m = normalizeId(text);
-  const exact = text.match(/\b((?:SITE|SEG|FIN)-\d{4}-\d+)\b/i)?.[1]?.toUpperCase();
-  if (exact) {
-    const byCode = candidates.filter((c) => c.code.toUpperCase() === exact);
-    if (byCode.length === 1) return byCode[0];
-  }
-  const wantSeg = /\bsegment\b|\bseg\b/.test(m);
-  const wantSite = /\bsite\b/.test(m) && !wantSeg;
-  const typed = wantSeg
-    ? candidates.filter(
-        (c) =>
-          c.hierarchyLevel === 'SEGMENT' || /^SEG-/i.test(c.code),
-      )
-    : wantSite
-      ? candidates.filter(
-          (c) => c.hierarchyLevel === 'SITE' || /^(SITE|FIN)-/i.test(c.code),
-        )
-      : candidates;
-  if (typed.length === 1) return typed[0];
-  if (exact) {
-    const typedExact = typed.find((c) => c.code.toUpperCase() === exact);
-    if (typedExact) return typedExact;
-  }
-  return null;
+  const typed = filterPendingFinanceCandidates(candidates, text);
+  return typed.length === 1 ? typed[0] : null;
 }
 
 /** Count numbered rows in a ranked/list answer. */

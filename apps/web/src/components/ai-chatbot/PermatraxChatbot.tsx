@@ -9,7 +9,7 @@ import {
   type CSSProperties,
 } from 'react';
 import Link from 'next/link';
-import { apiPost } from '../../lib/api';
+import { apiGet, apiPost } from '../../lib/api';
 import { useAuthStore } from '../../store/authStore';
 
 type Citation = {
@@ -42,12 +42,27 @@ type UiMessage = {
   at?: string;
 };
 
+const FALLBACK_CAPABILITY_CARD = [
+  'Kartu kemampuan PAI',
+  '',
+  'Bisa:',
+  '• Fakta live: Finance Project, Stok, Cash Operation, Visit Request, Purchase Request (jumlah, ranking, cari kode/nama, filter status/SITE/SEGMENT, PIC).',
+  '• 5-why terbatas: angka DB (budget vs realisasi, material/jasa, status cash/cluster) lalu berhenti di unknown.',
+  '• Cara pakai / letak menu jika ada di knowledge, sesuai Active Module.',
+  '',
+  'Tidak bisa:',
+  '• Akar masalah cerita / 5-why lengkap (audit, komentar, invoice line, timeline BA) — PAI tidak mengarang Why4–5.',
+  '• Opini hukum atau data di luar role Anda.',
+  '• PII (email, telepon, NIK) dan angka yang tidak ada di tool/database.',
+  '',
+  'Kalau tidak tahu: tolak 1–2 kalimat + arahkan ke menu modul — bukan dump Guide.',
+].join('\n');
+
 const SUGGESTIONS = [
+  'Apa saja yang bisa kamu lakukan?',
   'Berapa total budget project aktif?',
-  'Approval dana yang pending?',
   'Top 10 budget terbesar',
-  'Kapan dana terakhir keluar?',
-  'Ringkas Finance Project dong',
+  'Approval dana yang pending?',
 ];
 
 const QUICK_EMOJIS = ['👍', '🔥', '😂', '😮', '😢', '👏'];
@@ -144,6 +159,8 @@ export function PermatraxChatbot() {
   const [greeted, setGreeted] = useState(false);
   const [messages, setMessages] = useState<UiMessage[]>([]);
   const [emojiOpen, setEmojiOpen] = useState(false);
+  const [cardOpen, setCardOpen] = useState(true);
+  const [capabilityCard, setCapabilityCard] = useState(FALLBACK_CAPABILITY_CARD);
   const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -152,7 +169,7 @@ export function PermatraxChatbot() {
       id: 'welcome',
       role: 'assistant',
       sticker: '👋',
-      content: `Hai ${name}! Aku PAI 💬\nAsisten PermaTrax — bisa nanya data real kayak budget, dana, approval, stok, dll.\n\nLangsung chat aja seperti Messenger ya.`,
+      content: `Hai ${name}! Aku PAI 💬\nAsisten fakta live PermaTrax — bukan analis 5-why cerita.\n\nKartu kemampuan ada di atas chat. Tanya jumlah, ranking, kode project, atau cara menu.`,
       at: new Date().toLocaleTimeString('id-ID', {
         hour: '2-digit',
         minute: '2-digit',
@@ -176,6 +193,19 @@ export function PermatraxChatbot() {
 
   useEffect(() => {
     if (open) setTimeout(() => inputRef.current?.focus(), 120);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    void apiGet<{ capabilityCard?: string }>('/ai/health')
+      .then((h) => {
+        if (h.capabilityCard?.includes('Kartu kemampuan PAI')) {
+          setCapabilityCard(h.capabilityCard);
+        }
+      })
+      .catch(() => {
+        /* keep fallback card */
+      });
   }, [open]);
 
   const send = useCallback(
@@ -340,7 +370,9 @@ export function PermatraxChatbot() {
               >
                 PAI
               </div>
-              <div style={{ fontSize: 12, color: '#0084FF' }}>Active now</div>
+              <div style={{ fontSize: 12, color: '#0084FF' }}>
+                Fakta live · bukan 5-why cerita
+              </div>
             </div>
             <button
               type="button"
@@ -358,6 +390,47 @@ export function PermatraxChatbot() {
             >
               ×
             </button>
+          </div>
+
+          <div
+            style={{
+              borderBottom: '1px solid #E4E6EB',
+              background: '#F7F9FC',
+              padding: '8px 12px 10px',
+            }}
+          >
+            <button
+              type="button"
+              onClick={() => setCardOpen((v) => !v)}
+              aria-expanded={cardOpen}
+              style={{
+                width: '100%',
+                border: 'none',
+                background: 'transparent',
+                cursor: 'pointer',
+                textAlign: 'left',
+                padding: 0,
+                fontSize: 13,
+                fontWeight: 650,
+                color: '#050505',
+              }}
+            >
+              Kartu kemampuan PAI {cardOpen ? '▾' : '▸'}
+            </button>
+            {cardOpen && (
+              <pre
+                style={{
+                  margin: '8px 0 0',
+                  whiteSpace: 'pre-wrap',
+                  fontFamily: 'inherit',
+                  fontSize: 11.5,
+                  lineHeight: 1.45,
+                  color: '#4B4F56',
+                }}
+              >
+                {capabilityCard.replace(/^Kartu kemampuan PAI\n\n/, '')}
+              </pre>
+            )}
           </div>
 
           {/* Chat area — Messenger grey wallpaper vibe */}

@@ -9,9 +9,11 @@ import {
   isOrdinalReference,
 } from './ai-reference';
 import {
+  isBusinessDiagnosticQuery,
   isMetaReasoningInquiry,
   isUnknownInformationInquiry,
 } from './ai-strategy';
+import { buildPaiCapabilityCard } from './ai-capability';
 
 export { normalizeId };
 
@@ -154,7 +156,7 @@ export function primaryUtterance(text: string): string {
   return text
     .split(/\n/)[0]
     .replace(/\s*\(konteks[^)]*\)/gi, ' ')
-    .replace(/\s*\[(SCOPE_|HIERARCHY_|BROADER_|USER_|METRIC).*?\]/gi, ' ')
+    .replace(/\s*\[(SCOPE_|HIERARCHY_|BROADER_|USER_|METRIC|LIMIT_|DIR_).*?\]/gi, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -395,6 +397,7 @@ export function topicAllowedTools(topic: SessionTopic): string[] | null {
       return [
         'finance_analytics',
         'finance_project_totals',
+        'explain_finance_project',
         'lookup_project_pic',
       ];
     case 'cash':
@@ -410,7 +413,11 @@ export function topicAllowedTools(topic: SessionTopic): string[] | null {
     case 'stock':
       return ['search_stock'];
     case 'permit':
-      return ['count_permit_clusters', 'lookup_project_pic'];
+      return [
+        'count_permit_clusters',
+        'explain_permit_cluster',
+        'lookup_project_pic',
+      ];
     case 'fttt':
       return ['count_fttt_projects'];
     default:
@@ -719,6 +726,60 @@ export function isAmbiguousQuery(text: string): boolean {
   return false;
 }
 
+/**
+ * PAI-FNC-004 V4: partial ranking follow-up (metric / direction / limit only).
+ * Must patch the latest active ranking state — not start an aggregate.
+ */
+export function isRankingPatchFollowUp(text: string): boolean {
+  const m = normalizeId(primaryUtterance(text));
+  if (!m) return false;
+  if (isResultSetNarrowingQuery(text)) return false;
+  if (isFinanceFilterClearQuery(text) || isFinanceFilterRemoveQuery(text)) {
+    return false;
+  }
+  if (
+    /\b(berapa|jumlah|count|ada berapa)\b/.test(m) &&
+    !/(terbesar|terkecil|top\s*\d*)/.test(m)
+  ) {
+    return false;
+  }
+  if (
+    isFinanceContextFilterQuery(text) &&
+    !hasExplicitRankingMetric(text) &&
+    detectRankingDirection(text) == null &&
+    detectExplicitTopN(text) == null
+  ) {
+    return false;
+  }
+  // Locked FNC-001 short aggregates ("Material Budget?") stay aggregates.
+  if (
+    /^(material|jasa|realisasi|sisa|remaining|over)(\s+budget)?\??$/.test(m) &&
+    detectRankingDirection(text) == null &&
+    detectExplicitTopN(text) == null
+  ) {
+    return false;
+  }
+
+  const hasDir =
+    detectRankingDirection(text) != null ||
+    /\byang\s+(terkecil|terbesar)\b/.test(m);
+  const hasLimit = detectExplicitTopN(text) != null;
+  const hasMetric = hasExplicitRankingMetric(text);
+  const glue =
+    /\b(sekarang|kalau|kita lihat|dilihat dari|berdasarkan|gimana|bagaimana|jadikan|pake|pakai|ganti (jadi|ke|menjadi))\b/.test(
+      m,
+    );
+
+  if (hasLimit && (hasDir || hasMetric || glue || /^top\s*\d+$/.test(m))) {
+    return true;
+  }
+  if (hasDir && (hasMetric || glue || /yang (terkecil|terbesar)/.test(m))) {
+    return true;
+  }
+  if (hasMetric && glue) return true;
+  return false;
+}
+
 /** Data ranking / live lookup inside a module (not howto). */
 export function isModuleDataRankingQuery(text: string): boolean {
   const m = normalizeId(text);
@@ -736,7 +797,8 @@ export function isModuleDataRankingQuery(text: string): boolean {
     ) ||
     /(kalau|gimana|bagaimana).*(berdasarkan|dari)\s+(realisasi|budget|material|jasa|sisa)/.test(
       m,
-    )
+    ) ||
+    isRankingPatchFollowUp(text)
   );
 }
 
@@ -777,11 +839,14 @@ export function buildClarificationPrompt(text: string): string {
 
 export function buildCapabilityAnswer(text: string): string {
   const m = normalizeId(text);
+  const card = buildPaiCapabilityCard();
   if (/(hitung|menghitung).*(budget|anggaran)|budget.*(hitung|menghitung)/.test(m)) {
     return [
       'Ya, saya dapat membantu menghitung total budget Finance Project berdasarkan data yang tersedia.',
       '',
       'Apabila Anda ingin saya menghitungnya, silakan beri tahu ruang lingkup project yang dimaksud (misalnya seluruh project atau hanya ACTIVE).',
+      '',
+      card,
     ].join('\n');
   }
   const financeFocus = /finance|budget|cash|invoice|payment|dana|anggaran/.test(
@@ -789,26 +854,19 @@ export function buildCapabilityAnswer(text: string): string {
   );
   if (financeFocus) {
     return [
-      'Tentu bisa. Aku PAI — bisa bantu seputar modul Finance di PermaTrax, misalnya:',
+      'Tentu bisa — seputar Finance di PermaTrax, sesuai kartu kemampuan di bawah. Saya belum menjalankan pencarian.',
       '',
-      '• Ringkasan / total budget Finance Project (aktif / keseluruhan)',
-      '• Cari budget project tertentu (nama atau kode)',
-      '• Top budget / over budget',
-      '• Approval Dana & Cash Operation',
-      '• Dana terakhir cair / pending approval',
+      card,
       '',
-      'Belum saya jalankan pencarian data — silakan sampaikan pertanyaan spesifiknya ya.',
+      'Contoh: “berapa total budget project ACTIVE?” atau “Top 10 budget terbesar”.',
     ].join('\n');
   }
   return [
-    'Tentu. Aku PAI, asisten PermaTrax. Aku bisa bantu:',
+    'Tentu. Aku PAI, asisten PermaTrax. Saya belum mengeksekusi pencarian.',
     '',
-    '• Data live: Finance Project, Cash Op, Visit Request, PR, Stok, FTTT, cluster',
-    '• Cara pakai / SOP modul',
-    '• Letak menu di sidebar',
-    '• Approval & status terkait role kamu',
+    card,
     '',
-    'Saya belum mengeksekusi pencarian. Langsung tanya aja — contoh: “berapa total budget project aktif?” atau “cara add stock”.',
+    'Contoh: “berapa total budget project aktif?” atau “cara add stock”.',
   ].join('\n');
 }
 
@@ -895,6 +953,9 @@ export function classifyPaIntent(text: string): PaIntent {
   // Ranking / live data inside module — before howto keyword traps
   if (isModuleDataRankingQuery(raw)) return 'analytics';
 
+  // Causal 5-why before overbudget/analytics keyword traps
+  if (isBusinessDiagnosticQuery(raw)) return 'data';
+
   if (
     (/(bagaimana|gimana|cara|langkah|tutorial|caranya|gimana cara)/.test(m) ||
       /(mau ajuin|mau ajukan|kalau mau).*(gimana|cara)?/.test(m) ||
@@ -945,6 +1006,13 @@ export function classifyPaIntent(text: string): PaIntent {
 
   if (/(apa itu|jelaskan|pengertian)/.test(m)) return 'faq';
   return 'faq';
+}
+
+/** Definition / glossary — allowed FAQ while a module topic is locked. */
+export function isKnowledgeDefinitionQuery(text: string): boolean {
+  const m = normalizeId(text);
+  if (/(cara |tutorial|langkah|gimana cara)/.test(m)) return false;
+  return /(apa itu|pengertian|definisi)/.test(m);
 }
 
 /** PAI-FNC-001/005: status / hierarchy / metric tokens as data filters, not Guide. */
@@ -1223,6 +1291,12 @@ export function isFinanceBudgetQuery(text: string): boolean {
   ) {
     return true;
   }
+  if (isRankingPatchFollowUp(text) && !/(stok|stock|barang)/.test(m)) {
+    return true;
+  }
+  if (/^(sekarang\s+)?top\s*\d+(\s+saja)?$/.test(m)) {
+    return true;
+  }
   if (
     /(top\s*\d*|terbesar|terkecil|over\s*budget|overbudget)/.test(m) &&
     /(budget|project|proyek|finance|realisasi|sisa|material|jasa)/.test(m)
@@ -1293,6 +1367,8 @@ export function detectExplicitTopN(text: string): number | null {
     /\b(\d{1,2})\s+yang\s+(?:terbesar|terkecil|teratas|terendah|paling)/,
     /\b(\d{1,2})\s+(?:project\s+)?(?:dengan\s+)?(?:total\s+)?(?:budget|anggaran|realisasi|sisa|material|jasa)?\s*(terbesar|terkecil|teratas|terendah|paling)/,
     /\b(?:sekarang|tampilkan|ambil|lihat)\s+(\d{1,2})\s+(?:yang\s+)?(?:budget|anggaran|realisasi|sisa|material|jasa|project|proyek)/,
+    /\b(?:jadikan|ambil|pakai|pake|limit)\s+(?:top\s*)?(\d{1,2})\b/,
+    /\b(?:sekarang|hanya)\s+(\d{1,2})\s*(?:saja)?$/,
     /\b(\d{1,2})\s+(?:budget|anggaran|realisasi|material|sisa)/,
   ];
   for (const p of patterns) {
@@ -1426,10 +1502,10 @@ export function detectFinanceMetric(text: string): FinanceMetric | null {
 }
 
 export function detectRankingMetric(text: string): FinanceRankingMetric {
+  const ctxRaw = text.match(/konteks referensi:\s*([^)\n]+)/i)?.[1];
   const m = normalizeId(primaryUtterance(text));
+  const ctx = ctxRaw ? normalizeId(ctxRaw) : '';
   const full = normalizeId(text);
-  // Scan the whole tool message so inherited "realisasi terbesar" cannot beat
-  // this-turn "Top 5 budget terbesar" (PAI-FNC-004).
   const src = `${m} ${full}`;
   const tag = text.match(/\[METRIC_([A-Z_]+)\]/i);
   const fromTag = (): FinanceRankingMetric | null => {
@@ -1443,33 +1519,36 @@ export function detectRankingMetric(text: string): FinanceRankingMetric {
     if (key === 'totalbudget') return 'totalBudget';
     return null;
   };
+  const namedTotalBudget = (s: string) =>
+    /(\btotal\s+)?(\bbudget\b|\banggaran\b)\s*(terbesar|tertinggi|terkecil|terendah|paling)/.test(
+      s,
+    ) ||
+    /top\s*\d+\s*(project\s*)?(dengan\s*)?(total\s*)?(\bbudget\b|\banggaran\b)/.test(
+      s,
+    ) ||
+    /(terbesar|tertinggi|terkecil|paling besar|paling tinggi).*(total\s+)?(\bbudget\b|\banggaran\b)/.test(
+      s,
+    );
   // This-turn wording on the primary utterance wins over inherited tags.
+  // Do not scan METRIC/LIMIT tags as "budget" — "materialBudget" contains "budget".
   if (/(over\s*budget|overbudget)/.test(m)) return 'overbudget';
   if (/(sisa\s*budget|remaining(\s*budget)?)/.test(m) || /\bsisa\b/.test(m)) {
     return 'remaining';
   }
   if (/\bmaterial\b/.test(m)) return 'materialBudget';
   if (/\b(jasa|service)\b/.test(m)) return 'jasaBudget';
-  const namedTotalBudget =
-    /(total\s*)?(budget|anggaran)\s*(terbesar|tertinggi|terkecil|terendah|paling)/.test(
-      src,
-    ) ||
-    /top\s*\d+\s*(project\s*)?(dengan\s*)?(total\s*)?(budget|anggaran)/.test(src) ||
-    /(terbesar|tertinggi|terkecil|paling besar|paling tinggi).*(total\s*)?(budget|anggaran)/.test(
-      src,
-    );
-  if (namedTotalBudget) return 'totalBudget';
+  if (namedTotalBudget(m) || namedTotalBudget(ctx)) return 'totalBudget';
   if (/(realisasi|spent|terpakai)/.test(m)) return 'realization';
   const tagged = fromTag();
   if (tagged && !hasExplicitRankingMetric(primaryUtterance(text))) return tagged;
-  if (/(budget|anggaran)/.test(m) && !tagged) return 'totalBudget';
+  if (/(\bbudget\b|\banggaran\b)/.test(m) && !tagged) return 'totalBudget';
   if (tagged) return tagged;
   if (/(over\s*budget|overbudget)/.test(src)) return 'overbudget';
   if (/(sisa\s*budget|remaining(\s*budget)?)/.test(src)) return 'remaining';
   if (/\bmaterial\b/.test(src)) return 'materialBudget';
   if (/\b(jasa|service)\b/.test(src)) return 'jasaBudget';
   if (/(realisasi|spent|terpakai)/.test(src)) return 'realization';
-  if (/(budget|anggaran)/.test(src)) return 'totalBudget';
+  if (/(\bbudget\b|\banggaran\b)/.test(src)) return 'totalBudget';
   return 'totalBudget';
 }
 
@@ -1666,7 +1745,8 @@ export function detectFinanceMode(text: string): FinanceMode {
     ) ||
     /(kalau|gimana|bagaimana).*(berdasarkan|dari)\s+(realisasi|budget|material|jasa|sisa)/.test(
       m,
-    );
+    ) ||
+    isRankingPatchFollowUp(text);
   if (wantsRank) {
     const dir = detectRankingDirection(text);
     if (dir === 'asc') return 'smallest';
@@ -1926,8 +2006,8 @@ export function buildUnknownAnswer(kind: UnknownKind): string {
       ].join('\n');
     case 'no_knowledge':
       return [
-        'Maaf, informasi tersebut belum tersedia dalam knowledge yang saya miliki.',
-        'Coba sebut modulnya lebih spesifik, atau buka menu Guide di aplikasi.',
+        'Informasi itu belum ada di knowledge PAI.',
+        'Buka menu modul terkait (Finance Project, Cash Operation, Stok, Visit, atau PR).',
       ].join('\n');
     case 'retrieval_failed':
       return [
@@ -1938,7 +2018,7 @@ export function buildUnknownAnswer(kind: UnknownKind): string {
     default:
       return [
         'Informasi itu belum bisa aku pastikan dari knowledge maupun database PermaTrax.',
-        'Boleh diperjelas pertanyaannya, atau sebut modul yang dimaksud?',
+        'Buka menu modul yang dimaksud, atau sebut kode/nama supaya saya cek fakta live.',
       ].join('\n');
   }
 }
@@ -1975,8 +2055,10 @@ export {
   extractActiveReferenceFromAnswer,
   extractActiveReferenceByDiscriminator,
   pickPendingFinanceCandidate,
+  filterPendingFinanceCandidates,
   extractReferenceOrdinal,
   extractExplicitEntityCode,
+  extractSessionProjectCode,
   detectRequestedAttribute,
   isOrdinalReference,
   isAttributeFollowUp,
@@ -1993,6 +2075,8 @@ export {
 export {
   isMetaReasoningInquiry,
   isUnknownInformationInquiry,
+  isBusinessDiagnosticQuery,
+  buildBusinessDiagnosticAnswer,
   buildMetaReasoningAnswer,
   mapResponseStrategy,
 } from './ai-strategy';

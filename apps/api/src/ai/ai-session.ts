@@ -2,6 +2,11 @@
 
 import type { SessionTopic, UnknownKind } from './ai-nlu';
 import { detectTopic, extractEntityFromAnswer, topicLabel } from './ai-nlu';
+import {
+  EMPTY_FRAME,
+  normalizeConversationFrame,
+  type ConversationFrame,
+} from './ai-frame';
 
 export type RetrievalStrategy =
   | 'summary'
@@ -95,6 +100,8 @@ export type ConversationSessionState = {
   lastAnswerFp: string | null;
   /** Short note of how last answer was produced (meta reasoning) */
   lastReasoningNote: string | null;
+  /** Committed operational frame (PAI Phase 2) */
+  frame: ConversationFrame;
 };
 
 export const EMPTY_CONSTRAINTS: ActiveConstraintSet = {
@@ -124,6 +131,7 @@ export const EMPTY_SESSION: ConversationSessionState = {
   pendingRecovery: false,
   lastAnswerFp: null,
   lastReasoningNote: null,
+  frame: { ...EMPTY_FRAME, ranking: { ...EMPTY_FRAME.ranking }, filters: { ...EMPTY_FRAME.filters } },
 };
 
 const SESSION_TOOL = '_session';
@@ -140,6 +148,7 @@ export function normalizeSessionState(
       extra: [...(raw?.constraints?.extra || [])],
     },
     pendingCandidates: raw?.pendingCandidates ?? null,
+    frame: normalizeConversationFrame(raw?.frame ?? base.frame),
   };
 }
 
@@ -257,6 +266,14 @@ export function isContextDependentFollowUp(text: string): boolean {
     return true;
   }
   return false;
+}
+
+export function hasActiveRankingState(c: ActiveConstraintSet): boolean {
+  return !!(
+    c.ranking === 'top' ||
+    c.ranking === 'smallest' ||
+    c.extra?.some((e) => e.startsWith('metric:') || e.startsWith('limit:'))
+  );
 }
 
 export function mergeConstraints(
