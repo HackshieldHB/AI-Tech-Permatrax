@@ -176,9 +176,9 @@ export const PERMATRAX_KNOWLEDGE_SEED: SeedArticle[] = [
     chunks: [
       {
         content:
-          'Purchase Request (PR) dibuat saat stok tidak mencukupi atau butuh pembelian. Status PR: PENDING, IN_REVIEW, APPROVED, ORDERED, RECEIVED, REJECTED, CANCELLED. Order Barang dan Surat Jalan terkait alur pengadaan/pengeluaran barang.',
+          'Purchase Request (PR) dipakai saat stok tidak mencukupi atau butuh pembelian. Status PR: PENDING, IN_REVIEW, APPROVED, ORDERED, RECEIVED, REJECTED, CANCELLED. Finance memproses inbox PR di Sidebar → Inventaris → Pembelian (path /purchase-requests). Order Barang dan Surat Jalan terkait alur pengadaan/pengeluaran barang.',
         keywords:
-          'purchase request pr order surat jalan procurement cara buat pembelian',
+          'purchase request pr order surat jalan procurement cara buat pembelian apa itu overview',
       },
     ],
   },
@@ -224,9 +224,9 @@ export const PERMATRAX_KNOWLEDGE_SEED: SeedArticle[] = [
     chunks: [
       {
         content:
-          'Cara ajuin / ajukan budget perizinan implementasi: 1) Pastikan Permit Cluster sudah di tahap yang butuh anggaran (mis. SKOM_BUDGET / Management Approval). 2) Buka Finance Projects atau detail cluster terkait. 3) Isi / ajukan anggaran perizinan (komponen budget perizinan / lain-lain) sesuai kebutuhan site/segment. 4) Submit untuk rantai approval (PM Senior / Management sesuai matrix). 5) Setelah disetujui, lanjut Fund Disbursement / Cash Operation bila perlu pencairan. Bukan sekadar definisi Finance Project — ini alur pengajuan anggaran operasional perizinan.',
+          'Cara ajuin / ajukan budget perizinan implementasi (alur Permit Cluster / FTTH yang memakai Finance Project): 1) Pastikan Permit Cluster sudah di tahap yang butuh anggaran (mis. SKOM_BUDGET / Management Approval). 2) Buka Sidebar → Finance Projects (path /finance-projects) atau detail cluster terkait. 3) Isi / ajukan anggaran perizinan (komponen budget perizinan / lain-lain) sesuai kebutuhan site/segment. 4) Submit untuk rantai approval (PM Senior / Management sesuai matrix). 5) Setelah disetujui, lanjut Fund Disbursement / Cash Operation bila perlu pencairan. PAI tidak men-submit untuk kamu. Catatan: FTTT, FTTB, atau Tower bisa punya menu/stage berbeda — sebutkan Project Type jika bukan FTTH/Permit Cluster.',
         keywords:
-          'ajuin ajukan budget perizinan implementasi cara gimana workflow sop skom anggaran',
+          'ajuin ajukan budget perizinan implementasi cara gimana workflow sop skom anggaran pengajuan lewat mana',
       },
     ],
   },
@@ -240,9 +240,9 @@ export const PERMATRAX_KNOWLEDGE_SEED: SeedArticle[] = [
     chunks: [
       {
         content:
-          'Cara ajuin dana Cash Operation: 1) Sidebar → Operasional → Cash Operation. 2) Buat request baru, isi deskripsi, amount, lampiran. 3) Submit. 4) Tunggu approval sesuai role. 5) Setelah APPROVED / DISBURSED, lengkapi realisasi bila diminta. Path: /cash-operation.',
+          'Cash Advance (Advance) di modul Cash Operation: minta dana dulu sebelum pengeluaran, lalu realisasi. Bukan Reimbursement. Cara ajukan dana / Cash Advance: 1) Sidebar → Operasional → Cash Operation (path /cash-operation). 2) Buat request baru, pilih tipe Cash Advance. 3) Isi judul/deskripsi, jumlah, periode dari–sampai (wajib untuk Advance), dan lampiran bila ada. 4) Submit. 5) Tunggu approval sesuai role. 6) Setelah APPROVED / DISBURSED, lengkapi realisasi. PAI tidak men-submit untuk kamu.',
         keywords:
-          'cara ajuin ajukan dana cash operation cash op pengajuan advance',
+          'cara ajuin ajukan dana cash operation cash op pengajuan advance cash advance',
       },
     ],
   },
@@ -271,9 +271,57 @@ export const PERMATRAX_KNOWLEDGE_SEED: SeedArticle[] = [
     chunks: [
       {
         content:
-          'Finance Project menyimpan anggaran proyek (totalBudget, material, jasa, perizinan/lain-lain). Status umum: ACTIVE, CLOSED, ARCHIVED. Untuk mengetahui total budget semua Finance Project aktif, tanyakan ke asisten AI atau buka menu Finance Projects. AI dapat menghitung agregat totalBudget dan spent dari database.',
+          'Apa itu Finance Project: modul anggaran proyek di PermaTrax (totalBudget, material, jasa, perizinan/lain-lain). Status umum: ACTIVE, CLOSED, ARCHIVED. Bukan ranking live. Untuk angka total budget / realisasi, tanya PAI sebagai data (contoh: berapa total budget ACTIVE) atau buka menu Finance Projects. AI dapat menghitung agregat dari database.',
         keywords:
-          'finance project proyek finance total budget berapa jumlah nilai aggregate',
+          'apa itu finance project pengertian definisi overview proyek finance total budget berapa jumlah nilai aggregate',
+      },
+    ],
+  },
+  {
+    slug: 'howto-buat-pr',
+    title: 'Cara membuat Purchase Request',
+    module: 'procurement',
+    category: 'sop',
+    rolesAllowed: [],
+    sourceUri: '/orders/new',
+    chunks: [
+      {
+        content:
+          'Step membuat Purchase Request (PR) di PermaTrax: 1) Cek stok di Sidebar → Inventaris → Stok Barang (/stock). 2) Jika barang tidak cukup, buka Sidebar → Inventaris → Order Barang → Buat Order (path /orders/new). 3) Isi item, qty, dan project/keperluan lalu submit Order. 4) Sistem membentuk Purchase Request untuk pengadaan. 5) Finance memproses PR di Sidebar → Inventaris → Pembelian (/purchase-requests): PENDING → IN_REVIEW → APPROVED → ORDERED → RECEIVED (atau REJECTED/CANCELLED). 6) Penerimaan barang / Surat Jalan mengikuti alur gudang. PAI tidak membuat PR untuk kamu. Ini langkah buat PR, bukan hanya definisi status.',
+        keywords:
+          'cara buat purchase request pr step langkah membuat pengajuan pembelian order barang how to gimana',
+      },
+    ],
+  },
+  {
+    slug: 'howto-cash-reimbursement',
+    title: 'Cara pengajuan Reimbursement',
+    module: 'cash-operation',
+    category: 'sop',
+    rolesAllowed: [],
+    sourceUri: '/cash-operation',
+    chunks: [
+      {
+        content:
+          'Reimbursement di Cash Operation: penggantian uang yang sudah dikeluarkan pribadi. Bukan Cash Advance. Cara pengajuan Reimbursement: 1) Sidebar → Operasional → Cash Operation (/cash-operation). 2) Buat request baru, pilih tipe Reimbursement. 3) Isi judul/deskripsi dan jumlah. 4) Wajib unggah minimal 1 foto/bukti pengeluaran. 5) Submit dan tunggu approval. 6) Setelah disetujui, proses pencairan/penggantian sesuai role Finance. Nomor request biasanya berawalan RM. PAI tidak men-submit untuk kamu.',
+        keywords:
+          'reimbursement reimburse penggantian uang pribadi cara pengajuan cash operation bukti foto',
+      },
+    ],
+  },
+  {
+    slug: 'cash-advance-vs-reimbursement',
+    title: 'Perbedaan Advance dan Reimbursement',
+    module: 'cash-operation',
+    category: 'glossary',
+    rolesAllowed: [],
+    sourceUri: '/cash-operation',
+    chunks: [
+      {
+        content:
+          'Perbedaan Advance dan Reimbursement di Cash Operation: Cash Advance = minta dana dulu (periode wajib), pakai, lalu realisasi; nomor biasanya CA. Reimbursement = sudah keluar uang dulu, minta penggantian, wajib bukti foto; nomor biasanya RM. Keduanya hidup di menu yang sama (/cash-operation) tetapi tipe proses dan syaratnya berbeda. Jangan samakan Advance dengan seluruh modul Cash Operation.',
+        keywords:
+          'apa bedanya advance reimbursement perbedaan cash advance vs reimburse penggantian dana',
       },
     ],
   },

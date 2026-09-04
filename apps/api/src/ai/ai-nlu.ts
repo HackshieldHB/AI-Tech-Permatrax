@@ -233,6 +233,9 @@ export function isErrorRecovery(text: string): boolean {
 /** Capability / can-you-help inquiry — explain ability, do NOT execute (PAI-BHV-006). */
 export function isCapabilityInquiry(text: string): boolean {
   const m = normalizeId(text);
+  if (isProceduralGuidanceQuery(text) || isKnowledgeDefinitionQuery(text)) {
+    return false;
+  }
   // Imperative / live data / module-switch are NOT capability
   if (
     /^(hitung|hitungin|tampilkan|cari|berapa|brapa|jumlah|list|yang tadi|total budget project aktif)/.test(
@@ -265,7 +268,9 @@ export function isCapabilityInquiry(text: string): boolean {
       m,
     ) &&
     /(finance|budget|cash|stok|stock|visit|permit|approval|project)/.test(m) &&
-    !/(berapa|brapa|jumlah|status|cari|tampilkan|cara|gimana)/.test(m)
+    !/(berapa|brapa|jumlah|status|cari|tampilkan|cara|gimana|ajukan|ajuin|ngajuin|lewat)/.test(
+      m,
+    )
   ) {
     return true;
   }
@@ -321,7 +326,8 @@ export function detectTopic(text: string): SessionTopic | null {
   if (/procurement|purchase request|\bpr\b|pembelian|order barang|surat jalan/.test(m))
     return 'procurement';
   if (/(stok|stock)\b/.test(m) && !/finance|budget/.test(m)) return 'stock';
-  if (/cash\s*op|cash operation|pengajuan dana|approval dana/.test(m)) return 'cash';
+  if (/cash\s*op|cash operation|pengajuan dana|approval dana|reimbursement|cash advance/.test(m))
+    return 'cash';
   if (/visit request|kunjungan|clean list/.test(m)) return 'visit';
   if (/permit|pipeline|cluster/.test(m)) return 'permit';
   if (/\bfttt\b/.test(m)) return 'fttt';
@@ -667,9 +673,78 @@ export function isGreetingOnly(text: string): boolean {
   );
 }
 
+/**
+ * PAI-KNW-001: procedural / how-to intent (not live ranking or aggregates).
+ * "budget" in "cara ajukan budget" is a process noun, not a metric.
+ */
+export function isProceduralGuidanceQuery(text: string): boolean {
+  const m = normalizeId(primaryUtterance(text));
+  if (!m) return false;
+  if (
+    /(top[\s-]*\d+|terbesar|terkecil|paling besar|paling kecil|paling tinggi|paling rendah)/.test(
+      m,
+    ) &&
+    !/(cara|ajukan|ajuin|ngajuin|pengajuan|langkah|lewat mana|step)/.test(m)
+  ) {
+    return false;
+  }
+  if (
+    /(berdasarkan|dilihat dari)\s+(total\s+)?(realisasi|budget|anggaran|material|jasa|sisa)/.test(
+      m,
+    )
+  ) {
+    return false;
+  }
+  return (
+    /(cara|langkah|tutorial|caranya|step)\b/.test(m) ||
+    /(lewat mana|melalui proses|proses apa)/.test(m) ||
+    /(ajuin|ajukan|ngajuin|pengajuan)\b/.test(m) ||
+    /(mau ajuin|mau ajukan|kalau mau).*(budget|izin|dana|pr|purchase|advance|reimburs)/.test(
+      m,
+    ) ||
+    /\b(terus|lalu|kalau begitu).*(cara|langkah|pengajuan|ajukan|buat)/.test(m) ||
+    /(gimana|bagaimana).*(cara|ajukan|ajuin|pengajuan|buat|tambah|lewat|melalui|proses)/.test(
+      m,
+    )
+  );
+}
+
+/** Generic Cash Operation how-to without Advance vs Reimbursement (PAI-KNW-003). */
+export function isGenericCashOperationHowTo(text: string): boolean {
+  const m = normalizeId(primaryUtterance(text));
+  if (!isProceduralGuidanceQuery(text) && !/(cash\s*op|cash operation)/.test(m)) {
+    return false;
+  }
+  if (
+    /(advance|reimbursement|reimburse|penggantian|sudah keluar uang|uang pribadi)/.test(
+      m,
+    )
+  ) {
+    return false;
+  }
+  if (/(ajukan|ajuin|pengajuan|minta)\s+dana/.test(m)) return false;
+  return /(cash\s*op|cash operation)/.test(m);
+}
+
+/** Permitting payment SOP needs Project Type when PU/generic (PAI-KNW-002 T15). */
+export function needsPermittingProjectType(text: string): boolean {
+  const m = normalizeId(primaryUtterance(text));
+  if (/(ftth|fttt|fttb|tower)/.test(m)) return false;
+  if (!/(perizinan\s*pu|\bpu\b|membayar perizinan|bayar.*perizinan)/.test(m)) {
+    return false;
+  }
+  return (
+    isProceduralGuidanceQuery(text) ||
+    /(proses|diajukan|membayar|bagaimana|gimana)/.test(m)
+  );
+}
+
 /** Ambiguous / underspecified — ask clarification first (PAI-BHV-004). */
 export function isAmbiguousQuery(text: string): boolean {
   const m = normalizeId(text);
+  if (isKnowledgeDefinitionQuery(text) || isProceduralGuidanceQuery(text)) {
+    return false;
+  }
   // Conversation-state follow-ups are never ambiguous (PAI-CSM-002)
   if (
     isOrdinalReference(text) ||
@@ -733,6 +808,7 @@ export function isAmbiguousQuery(text: string): boolean {
 export function isRankingPatchFollowUp(text: string): boolean {
   const m = normalizeId(primaryUtterance(text));
   if (!m) return false;
+  if (isProceduralGuidanceQuery(text)) return false;
   if (isResultSetNarrowingQuery(text)) return false;
   if (isFinanceFilterClearQuery(text) || isFinanceFilterRemoveQuery(text)) {
     return false;
@@ -782,6 +858,7 @@ export function isRankingPatchFollowUp(text: string): boolean {
 
 /** Data ranking / live lookup inside a module (not howto). */
 export function isModuleDataRankingQuery(text: string): boolean {
+  if (isProceduralGuidanceQuery(text)) return false;
   const m = normalizeId(text);
   return (
     /(paling sedikit|paling kecil|terendah|terkecil|lowest|min stock|hampir habis)/.test(
@@ -881,6 +958,10 @@ export function expandWithContext(
     recentUserMessages.find((u) => !isFollowUpShort(u) && !isUserCorrection(u)) ??
     recentUserMessages[0];
 
+  if (isProceduralGuidanceQuery(m) || isKnowledgeDefinitionQuery(m)) {
+    return m;
+  }
+
   if (isFollowUpShort(m) && prior) {
     return `${prior}\n${m}`;
   }
@@ -940,6 +1021,10 @@ export function classifyPaIntent(text: string): PaIntent {
   if (isCapabilityInquiry(raw)) return 'capability';
   if (isFinanceFilterClearQuery(raw) || isFinanceFilterRemoveQuery(raw)) {
     return 'data';
+  }
+  if (isKnowledgeDefinitionQuery(raw)) return 'faq';
+  if (isProceduralGuidanceQuery(raw) && !isMetaReasoningInquiry(raw)) {
+    return 'howto';
   }
   if (isAmbiguousQuery(raw)) return 'clarify';
 
@@ -1011,8 +1096,13 @@ export function classifyPaIntent(text: string): PaIntent {
 /** Definition / glossary — allowed FAQ while a module topic is locked. */
 export function isKnowledgeDefinitionQuery(text: string): boolean {
   const m = normalizeId(text);
-  if (/(cara |tutorial|langkah|gimana cara)/.test(m)) return false;
-  return /(apa itu|pengertian|definisi)/.test(m);
+  if (isProceduralGuidanceQuery(text)) return false;
+  return (
+    /(apa itu|pengertian|definisi|jelaskan|apa bedanya|perbedaan)\b/.test(m) ||
+    /^apa\s+(itu\s+)?(finance\s*project|cash\s*op|purchase\s*request|\bpr\b)/.test(
+      m,
+    )
+  );
 }
 
 /** PAI-FNC-001/005: status / hierarchy / metric tokens as data filters, not Guide. */
@@ -1182,7 +1272,9 @@ export function isFinanceFilterRemoveQuery(text: string): boolean {
  * it does not start a new dataset filter.
  */
 export function isResultSetNarrowingQuery(text: string): boolean {
-  const m = normalizeId(primaryUtterance(text));
+  const m = normalizeId(primaryUtterance(text))
+    .replace(/[.?!]+$/g, '')
+    .trim();
   if (/(top\s*\d*|terbesar|terkecil|tampilkan|list|daftar|hanya|hapus)/.test(m)) {
     return false;
   }
@@ -1266,6 +1358,8 @@ export function shouldApplySessionFinanceFilters(text: string): boolean {
 
 export function isFinanceBudgetQuery(text: string): boolean {
   const m = normalizeId(text);
+  if (isProceduralGuidanceQuery(text)) return false;
+  if (isKnowledgeDefinitionQuery(text)) return false;
   if (isProjectCountQuery(text)) return true;
   if (isFinanceFilterOrAggregateQuery(text)) return true;
   if (/(finance\s*project|proyek\s*finance|project\s*finance|fp\b)/.test(m)) {
@@ -1361,13 +1455,15 @@ export type FinanceMode =
 
 /** Explicit Top-N, or null when the user did not name a count (PAI-FNC-004). */
 export function detectExplicitTopN(text: string): number | null {
-  const t = normalizeId(primaryUtterance(text)).replace(/\bbbudget\b/g, 'budget');
+  const t = normalizeId(primaryUtterance(text))
+    .replace(/\u00a0/g, ' ')
+    .replace(/\bbbudget\b/g, 'budget');
   const patterns = [
-    /\btop\s*(\d{1,2})\b/,
+    /\btop[\s-]*(\d{1,2})\b/,
     /\b(\d{1,2})\s+yang\s+(?:terbesar|terkecil|teratas|terendah|paling)/,
     /\b(\d{1,2})\s+(?:project\s+)?(?:dengan\s+)?(?:total\s+)?(?:budget|anggaran|realisasi|sisa|material|jasa)?\s*(terbesar|terkecil|teratas|terendah|paling)/,
     /\b(?:sekarang|tampilkan|ambil|lihat)\s+(\d{1,2})\s+(?:yang\s+)?(?:budget|anggaran|realisasi|sisa|material|jasa|project|proyek)/,
-    /\b(?:jadikan|ambil|pakai|pake|limit)\s+(?:top\s*)?(\d{1,2})\b/,
+    /\b(?:jadikan|ambil|pakai|pake|limit)\s+(?:top[\s-]*)?(\d{1,2})\b/,
     /\b(?:sekarang|hanya)\s+(\d{1,2})\s*(?:saja)?$/,
     /\b(\d{1,2})\s+(?:budget|anggaran|realisasi|material|sisa)/,
   ];

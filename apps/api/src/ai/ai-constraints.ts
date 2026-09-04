@@ -75,7 +75,7 @@ export function extractConstraintsFromText(text: string): ActiveConstraintSet {
     out.ranking = 'lowest_stock';
   } else if (/(paling banyak|tertinggi)/.test(m) && /(stok|stock|barang)/.test(m)) {
     out.ranking = 'highest_stock';
-  } else if (/\btop\s*\d+\b/.test(m) || /\branking\b/.test(m)) {
+  } else if (/\btop[\s-]*\d+\b/.test(m) || /\branking\b/.test(m)) {
     out.ranking = 'top';
   }
 

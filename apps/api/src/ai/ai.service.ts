@@ -43,6 +43,9 @@ import {
   isResultSetNarrowingQuery,
   isModuleDataRankingQuery,
   isRankingPatchFollowUp,
+  isProceduralGuidanceQuery,
+  isGenericCashOperationHowTo,
+  needsPermittingProjectType,
   isOrdinalReference,
   isPicOrRequestorQuery,
   isProjectCountQuery,
@@ -308,19 +311,25 @@ export class AiService {
         lastAssistant
       ) &&
       isConversationStateFollowUp(text);
-    if (stateFollowUp) {
+    if (stateFollowUp && !isProceduralGuidanceQuery(text)) {
       intent = 'data';
     }
 
     // PAI-RSN-002: preserve Active Intent — ranking/data inside locked module
     if (
       session.activeTopic &&
-      (isModuleDataRankingQuery(text) ||
-        ((session.activeIntent === 'data' ||
-          session.activeIntent === 'analytics') &&
-          hasConversationalReference(text)))
+      isModuleDataRankingQuery(text) &&
+      !isProceduralGuidanceQuery(text)
     ) {
-      intent = isModuleDataRankingQuery(text) ? 'analytics' : 'data';
+      intent = 'analytics';
+    } else if (
+      session.activeTopic &&
+      (session.activeIntent === 'data' ||
+        session.activeIntent === 'analytics') &&
+      hasConversationalReference(text) &&
+      !isProceduralGuidanceQuery(text)
+    ) {
+      intent = 'data';
     }
 
     const requestedAttr = detectRequestedAttribute(text);
@@ -338,8 +347,14 @@ export class AiService {
     const pendingMatches = pendingFilterAttempt
       ? filterPendingFinanceCandidates(session.pendingCandidates, text)
       : null;
+    this.logger.debug(
+      `PAI-FNC-005 pending attempt=${pendingFilterAttempt} pending=${session.pendingCandidates?.length ?? 0} matches=${pendingMatches?.length ?? 'n/a'} explicit=${explicitCode || '-'}`,
+    );
     if (pendingMatches?.length === 1) {
       const pendingPick = pendingMatches[0];
+      this.logger.debug(
+        `PAI-FNC-005 resolve candidate ${pendingPick.code} ${pendingPick.hierarchyLevel}`,
+      );
       liveObjectLookup = `Detail budget project ${pendingPick.code}`;
       session = {
         ...session,
@@ -1362,6 +1377,51 @@ export class AiService {
     }
 
     if (intent === 'howto') {
+      if (needsPermittingProjectType(text) || needsPermittingProjectType(effectiveText)) {
+        return reply(
+          [
+            'Pengajuan dana perizinan (termasuk PU) alurnya bisa berbeda per jenis project.',
+            '',
+            'Sebutkan Project Type dulu ya:',
+            '• FTTH (Permit Cluster / Finance Project)',
+            '• FTTT',
+            '• FTTB',
+            '• Tower / jenis lain',
+            '',
+            'Setelah itu saya jelaskan proses yang sesuai. PAI tidak mengajukan dana untuk kamu.',
+          ].join('\n'),
+          {
+            intent: 'howto',
+            sticker: '📘',
+            strategy: 'howto',
+            responseStrategy: 'clarification',
+            patch: { activeIntent: 'howto' },
+          },
+        );
+      }
+      if (
+        isGenericCashOperationHowTo(text) ||
+        isGenericCashOperationHowTo(effectiveText)
+      ) {
+        return reply(
+          [
+            'Cash Operation punya lebih dari satu proses, tidak hanya satu alur generic.',
+            '',
+            'Mau lihat yang mana?',
+            '• Advance — minta dana dulu, baru dipakai, lalu realisasi',
+            '• Reimbursement — sudah keluar uang pribadi, minta penggantian dengan bukti',
+            '',
+            'Contoh: “Cara pengajuan Cash Advance bagaimana?” atau “Kalau proses pengajuan Reimbursement?”',
+          ].join('\n'),
+          {
+            intent: 'howto',
+            sticker: '📘',
+            strategy: 'howto',
+            responseStrategy: 'clarification',
+            patch: { activeTopic: 'cash', activeIntent: 'howto' },
+          },
+        );
+      }
       // RSN-002 / CSM-002: ranking + Conversation State follow-ups never Guide
       if (
         isModuleDataRankingQuery(text) ||

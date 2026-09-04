@@ -522,11 +522,14 @@ export class AiToolsService {
         /\bcari\b/i.test(normalizeId(bareMessage)) ||
         /\bcari\b/i.test(normalizeId(message));
       const isDetailLookup = /^detail\b/i.test(bareMessage.trim());
-      if (exactCode && isDetailLookup && !isCari) {
+      // Initial "Cari SEG-…" may include children. Detail / exact-code
+      // follow-ups must resolve the object itself (PAI-FNC-005).
+      const exactObjectOnly = !!exactCode && (isDetailLookup || !isCari);
+      if (exactCode && exactObjectOnly) {
         const exactRows = await this.prisma.financeProject.findMany({
           where: {
             status: { not: 'ARCHIVED' },
-            ...(hierarchyLevel ? { hierarchyLevel } : {}),
+            code: { equals: exactCode, mode: 'insensitive' },
           },
           select: {
             code: true,
@@ -543,41 +546,31 @@ export class AiToolsService {
             poCustomerNumber: true,
             parent: { select: { code: true, name: true } },
           },
-          take: 20,
+          take: 5,
         });
         const hit = exactRows.filter(
           (r) => r.code.toUpperCase() === exactCode.toUpperCase(),
         );
         if (hit.length === 1) {
-          const r = hit[0];
-          const spent = Number(r.materialSpent) + Number(r.jasaSpent);
-          const budget = Number(r.totalBudget);
           return {
             name: 'finance_analytics',
             ok: true,
-            summary: [
-              `${r.code} — ${r.name}`,
-              `• Status: ${r.status} (${r.hierarchyLevel})`,
-              r.parent ? `• Parent: ${r.parent.code} ${r.parent.name}` : null,
-              r.poCustomerNumber ? `• PO/Client: ${r.poCustomerNumber}` : null,
-              `• Total Budget: ${fmtIdr(budget)}`,
-              `• Material budget: ${fmtIdr(Number(r.materialBudget ?? 0))} | Jasa budget: ${fmtIdr(Number(r.jasaBudget ?? 0))}`,
-              `• Realisasi: ${fmtIdr(spent)} | Sisa: ${fmtIdr(budget - spent)}`,
-              r.isOverbudget ? `• Over budget` : null,
-            ]
-              .filter(Boolean)
-              .join('\n'),
+            summary: this.formatFinanceSearchCard(hit[0]),
             data: hit,
           };
         }
       }
       if (needle) {
-        if (exactCode) {
+        if (exactCode && !exactObjectOnly) {
           // Exact object + children of that code. Do not tokenize SEG-2026-005
           // into "005" (that falsely matches FIN-2026-005 via contains).
           baseWhere.OR = [
             { code: { equals: exactCode, mode: 'insensitive' } },
             { parent: { code: { equals: exactCode, mode: 'insensitive' } } },
+          ];
+        } else if (exactCode && exactObjectOnly) {
+          baseWhere.OR = [
+            { code: { equals: exactCode, mode: 'insensitive' } },
           ];
         } else {
           const tokens = meaningfulTokens(needle);
@@ -811,6 +804,36 @@ export class AiToolsService {
         smallest,
       },
     };
+  }
+
+  private formatFinanceSearchCard(r: {
+    code: string;
+    name: string;
+    totalBudget: unknown;
+    materialBudget?: unknown;
+    jasaBudget?: unknown;
+    materialSpent: unknown;
+    jasaSpent: unknown;
+    status: string;
+    hierarchyLevel: string;
+    isOverbudget: boolean;
+    poCustomerNumber?: string | null;
+    parent?: { code: string | null; name: string | null } | null;
+  }): string {
+    const spent = Number(r.materialSpent) + Number(r.jasaSpent);
+    const budget = Number(r.totalBudget);
+    return [
+      `${r.code} — ${r.name}`,
+      `• Status: ${r.status} (${r.hierarchyLevel})`,
+      r.parent?.code ? `• Parent: ${r.parent.code} ${r.parent.name}` : null,
+      r.poCustomerNumber ? `• PO/Client: ${r.poCustomerNumber}` : null,
+      `• Total Budget: ${fmtIdr(budget)}`,
+      `• Material budget: ${fmtIdr(Number(r.materialBudget ?? 0))} | Jasa budget: ${fmtIdr(Number(r.jasaBudget ?? 0))}`,
+      `• Realisasi: ${fmtIdr(spent)} | Sisa: ${fmtIdr(budget - spent)}`,
+      r.isOverbudget ? `• Over budget` : null,
+    ]
+      .filter(Boolean)
+      .join('\n');
   }
 
   /** PAI-FNC-005: list projects by status/hierarchy filters, never keyword search. */

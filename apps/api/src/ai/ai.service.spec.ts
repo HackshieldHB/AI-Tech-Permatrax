@@ -27,6 +27,9 @@ import {
   isResultSetNarrowingQuery,
   isModuleDataRankingQuery,
   isRankingPatchFollowUp,
+  isProceduralGuidanceQuery,
+  isGenericCashOperationHowTo,
+  needsPermittingProjectType,
   isAttributeFollowUp,
   isBusinessDiagnosticQuery,
   shouldApplySessionFinanceFilters,
@@ -378,6 +381,98 @@ describe('PermaTrax AI chatbot (logic)', () => {
     expect(res.answer).not.toMatch(/menyimpan anggaran proyek \(totalBudget/i);
   });
 
+  it('KNW-001: apa itu Finance Project is FAQ not clarify', async () => {
+    expect(isAmbiguousQuery('Apa itu Finance Project?')).toBe(false);
+    expect(classifyPaIntent('Apa itu Finance Project?')).toBe('faq');
+    const prisma = makePrisma();
+    const { ai } = makeServices(prisma);
+    const res = await ai.chat(user, 'Apa itu Finance Project?');
+    expect(res.intent).toBe('faq');
+    expect(res.answer).toMatch(/Finance Project/i);
+    expect(res.answer).toMatch(/anggaran|ACTIVE|CLOSED|ARCHIVED/i);
+    expect(res.answer).not.toMatch(/Bisa diperjelas sedikit/i);
+    expect(res.answer).not.toMatch(/Top 10 Finance Project/i);
+  });
+
+  it('KNW-001: cara ajukan budget is howto not ranking', async () => {
+    expect(isProceduralGuidanceQuery('Gimana cara ajukan budget perizinan?')).toBe(
+      true,
+    );
+    expect(isModuleDataRankingQuery('Gimana cara ajukan budget perizinan?')).toBe(
+      false,
+    );
+    expect(classifyPaIntent('Gimana cara ajukan budget perizinan?')).toBe(
+      'howto',
+    );
+    expect(classifyPaIntent('Kalau mau ngajuin budget izin lewat mana?')).toBe(
+      'howto',
+    );
+    expect(classifyPaIntent('Top 5 material budget terbesar')).toBe('analytics');
+    const prisma = makePrisma();
+    const { ai } = makeServices(prisma);
+    const t02 = await ai.chat(user, 'Gimana cara ajukan budget perizinan?');
+    expect(t02.intent).toBe('howto');
+    expect(t02.answer).toMatch(/SKOM|Finance Projects|ajukan/i);
+    expect(t02.answer).not.toMatch(/Top 10 Finance Project/i);
+    const t03 = await ai.chat(user, 'Kalau mau ngajuin budget izin lewat mana?');
+    expect(t03.intent).toBe('howto');
+    expect(t03.answer).not.toMatch(/Top 10 Finance Project/i);
+  });
+
+  it('KNW-001: procedural follow-up after Finance nav stays howto', async () => {
+    const prisma = makePrisma();
+    const { ai } = makeServices(prisma);
+    const nav = await ai.chat(user, 'Menu Finance Project ada di mana?');
+    expect(nav.answer).toMatch(/finance-projects/i);
+    const follow = await ai.chat(
+      user,
+      'Terus cara lakukan pengajuan budgetnya gimana?',
+      nav.conversationId,
+    );
+    expect(follow.intent).toBe('howto');
+    expect(follow.answer).toMatch(/ajukan|SKOM|Finance Projects/i);
+    expect(follow.answer).not.toMatch(/tidak ditemukan di database/i);
+    expect(follow.answer).not.toMatch(/Top 10 Finance Project/i);
+  });
+
+  it('KNW-002/003: PR steps, cash variants, PU needs project type', async () => {
+    expect(isGenericCashOperationHowTo('Gimana cara melakukan Cash Operation?')).toBe(
+      true,
+    );
+    expect(
+      isGenericCashOperationHowTo('Gimana cara ajukan dana Cash Operation?'),
+    ).toBe(false);
+    expect(
+      needsPermittingProjectType(
+        'Kalau aku mau membayar perizinan PU dan dananya perlu diajukan terlebih dahulu, maka harus melalui proses apa dan bagaimana?',
+      ),
+    ).toBe(true);
+    const prisma = makePrisma();
+    const { ai } = makeServices(prisma);
+    const pr = await ai.chat(user, 'Kalau begitu, step membuat PR bagaimana?');
+    expect(pr.intent).toBe('howto');
+    expect(pr.answer).toMatch(/Order Barang|\/orders|Purchase Request/i);
+    expect(pr.answer).toMatch(/1\)|1\./);
+    const cash = await ai.chat(user, 'Gimana cara melakukan Cash Operation?');
+    expect(cash.answer).toMatch(/Advance/i);
+    expect(cash.answer).toMatch(/Reimbursement/i);
+    const adv = await ai.chat(user, 'Cara pengajuan Cash Advance bagaimana?');
+    expect(adv.answer).toMatch(/Advance/i);
+    expect(adv.answer).toMatch(/periode|Cash Operation|\/cash-operation/i);
+    const rm = await ai.chat(user, 'Kalau proses pengajuan Reimbursement?');
+    expect(rm.answer).toMatch(/Reimbursement/i);
+    expect(rm.answer).not.toMatch(/belum ada di knowledge/i);
+    const diff = await ai.chat(user, 'Apa bedanya Advance dan Reimbursement?');
+    expect(diff.answer).toMatch(/Advance/i);
+    expect(diff.answer).toMatch(/Reimbursement/i);
+    const pu = await ai.chat(
+      user,
+      'Kalau aku mau membayar perizinan PU dan dananya perlu diajukan terlebih dahulu, maka harus melalui proses apa dan bagaimana?',
+    );
+    expect(pu.answer).toMatch(/Project Type|FTTH|FTTT/i);
+    expect(pu.answer).not.toMatch(/SKOM_BUDGET/i);
+  });
+
   it('navigation daftar dokumen points to sidebar path', async () => {
     const prisma = makePrisma();
     const { ai } = makeServices(prisma);
@@ -419,6 +514,9 @@ describe('PermaTrax AI chatbot (logic)', () => {
         'howto-add-stock',
         'nav-document-list',
         'howto-budget-perizinan',
+        'howto-buat-pr',
+        'howto-cash-reimbursement',
+        'cash-advance-vs-reimbursement',
       ]),
     );
   });
@@ -2965,6 +3063,115 @@ describe('PermaTrax AI chatbot (logic)', () => {
     );
     expect(again.answer).toMatch(/SEG-2026-005/);
     expect(again.answer).not.toMatch(/pilih salah satu/i);
+  });
+
+  it('FNC-005: exact SEG-2026-005 selects object even when 20+ related rows exist', async () => {
+    expect(isResultSetNarrowingQuery('Yang SEGMENT.')).toBe(true);
+    expect(detectExplicitTopN('Top-5 material budget terbesar')).toBe(5);
+    const prisma = makePrisma();
+    const seg = {
+      code: 'SEG-2026-005',
+      name: 'Segment - PST-PYB',
+      totalBudget: 1000000000,
+      materialBudget: 0,
+      jasaBudget: 0,
+      materialSpent: 0,
+      jasaSpent: 0,
+      status: 'ACTIVE',
+      hierarchyLevel: 'SEGMENT',
+      isOverbudget: false,
+      poCustomerNumber: null,
+      parent: null,
+      updatedAt: new Date(),
+    };
+    const fin = {
+      code: 'FIN-2026-005',
+      name: 'Site related',
+      totalBudget: 500000000,
+      materialBudget: 0,
+      jasaBudget: 0,
+      materialSpent: 0,
+      jasaSpent: 0,
+      status: 'ACTIVE',
+      hierarchyLevel: 'SITE',
+      isOverbudget: false,
+      poCustomerNumber: null,
+      parent: { code: 'SEG-2026-005', name: 'Segment - PST-PYB' },
+      updatedAt: new Date(),
+    };
+    const decoys = Array.from({ length: 25 }, (_, i) => ({
+      code: `OTH-2026-${String(i + 1).padStart(3, '0')}`,
+      name: `Other ${i}`,
+      totalBudget: 1,
+      materialBudget: 0,
+      jasaBudget: 0,
+      materialSpent: 0,
+      jasaSpent: 0,
+      status: 'ACTIVE',
+      hierarchyLevel: 'SITE',
+      isOverbudget: false,
+      poCustomerNumber: null,
+      parent: null,
+      updatedAt: new Date(),
+    }));
+    (prisma as any).financeProject.findMany = jest.fn(async (args: any) => {
+      const codeEq = args?.where?.code?.equals;
+      if (codeEq && String(codeEq).toUpperCase() === 'SEG-2026-005') {
+        return [seg];
+      }
+      if (args?.take === 20 && !args?.where?.OR && !args?.where?.code) {
+        return decoys.slice(0, 20);
+      }
+      return [seg, fin];
+    });
+    const { ai } = makeServices(prisma);
+    const start = await ai.chat(user, 'Aku mau bahas Finance Project.');
+    const search = await ai.chat(user, 'Cari SEG-2026-005', start.conversationId);
+    expect(search.answer).toMatch(/SEG-2026-005/);
+    expect(search.answer).toMatch(/FIN-2026-005/);
+    const byType = await ai.chat(user, 'Yang SEGMENT.', start.conversationId);
+    expect(byType.answer).toMatch(/SEG-2026-005/);
+    expect(byType.answer).not.toMatch(/FIN-2026-005/);
+    expect(byType.answer).not.toMatch(/pilih salah satu/i);
+    const conv2 = await ai.chat(user, 'Aku mau bahas Finance Project.');
+    await ai.chat(user, 'Cari SEG-2026-005', conv2.conversationId);
+    const byCode = await ai.chat(user, 'SEG-2026-005', conv2.conversationId);
+    expect(byCode.answer).toMatch(/SEG-2026-005/);
+    expect(byCode.answer).not.toMatch(/FIN-2026-005/);
+    expect(byCode.answer).not.toMatch(/pilih salah satu/i);
+  });
+
+  it('FNC-004: Top 5 material replaces prior Top 3 limit', async () => {
+    const prisma = makePrisma();
+    (prisma as any).financeProject.findMany = jest.fn().mockResolvedValue(
+      Array.from({ length: 6 }, (_, i) => ({
+        code: `P${i + 1}`,
+        name: `Proj ${i + 1}`,
+        totalBudget: 10 - i,
+        materialBudget: 60 - i * 5,
+        jasaBudget: 1,
+        materialSpent: 0,
+        jasaSpent: 0,
+        status: 'ACTIVE',
+        hierarchyLevel: 'SITE',
+        isOverbudget: false,
+      })),
+    );
+    const { ai } = makeServices(prisma);
+    const start = await ai.chat(user, 'Aku mau bahas Finance Project.');
+    const first = await ai.chat(
+      user,
+      'Top 3 material budget terbesar',
+      start.conversationId,
+    );
+    expect(first.answer).toMatch(/Top 3.*Material Budget terbesar/i);
+    const second = await ai.chat(
+      user,
+      'Top 5 material budget terbesar',
+      start.conversationId,
+    );
+    expect(second.answer).toMatch(/Top 5.*Material Budget terbesar/i);
+    expect(second.answer).not.toMatch(/Top 3 /i);
   });
 
   it('FNC-004 V4 residual: metric-only follow-up keeps Top 5, not aggregate', async () => {
