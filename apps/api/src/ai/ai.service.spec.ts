@@ -30,6 +30,7 @@ import {
   isProceduralGuidanceQuery,
   isGenericCashOperationHowTo,
   needsPermittingProjectType,
+  detectPermitProjectType,
   isAttributeFollowUp,
   isBusinessDiagnosticQuery,
   shouldApplySessionFinanceFilters,
@@ -372,12 +373,13 @@ describe('PermaTrax AI chatbot (logic)', () => {
     expect(res.answer).not.toMatch(/^Purchase Request \(PR\) dibuat/i);
   });
 
-  it('howto ajuin budget perizinan returns SOP workflow', async () => {
+  it('howto ajuin budget perizinan asks Project Type first', async () => {
     const prisma = makePrisma();
     const { ai } = makeServices(prisma);
     const res = await ai.chat(user, 'Ajuin budget perizinan implementasi?');
     expect(res.intent).toBe('howto');
-    expect(res.answer).toMatch(/ajukan|SKOM|approval|perizinan/i);
+    expect(res.answer).toMatch(/Project Type|FTTH|FTTT/i);
+    expect(res.answer).not.toMatch(/SKOM_BUDGET/i);
     expect(res.answer).not.toMatch(/menyimpan anggaran proyek \(totalBudget/i);
   });
 
@@ -412,11 +414,17 @@ describe('PermaTrax AI chatbot (logic)', () => {
     const { ai } = makeServices(prisma);
     const t02 = await ai.chat(user, 'Gimana cara ajukan budget perizinan?');
     expect(t02.intent).toBe('howto');
-    expect(t02.answer).toMatch(/SKOM|Finance Projects|ajukan/i);
+    expect(t02.answer).toMatch(/Project Type|FTTH|FTTT/i);
+    expect(t02.answer).not.toMatch(/SKOM_BUDGET/i);
     expect(t02.answer).not.toMatch(/Top 10 Finance Project/i);
     const t03 = await ai.chat(user, 'Kalau mau ngajuin budget izin lewat mana?');
     expect(t03.intent).toBe('howto');
+    expect(t03.answer).toMatch(/Project Type|FTTH|FTTT/i);
     expect(t03.answer).not.toMatch(/Top 10 Finance Project/i);
+    const typed = await ai.chat(user, 'Untuk FTTT, bagaimana proses budget perizinannya?');
+    expect(typed.answer).toMatch(/FTTT/i);
+    expect(typed.answer).toMatch(/dialokasikan|sudah tercatat|tidak terdapat proses pengajuan/i);
+    expect(typed.answer).not.toMatch(/SKOM_BUDGET/i);
   });
 
   it('KNW-001: procedural follow-up after Finance nav stays howto', async () => {
@@ -430,9 +438,17 @@ describe('PermaTrax AI chatbot (logic)', () => {
       nav.conversationId,
     );
     expect(follow.intent).toBe('howto');
-    expect(follow.answer).toMatch(/ajukan|SKOM|Finance Projects/i);
+    expect(follow.answer).toMatch(/Project Type|FTTH|FTTT/i);
+    expect(follow.answer).not.toMatch(/SKOM_BUDGET/i);
     expect(follow.answer).not.toMatch(/tidak ditemukan di database/i);
     expect(follow.answer).not.toMatch(/Top 10 Finance Project/i);
+    const fttt = await ai.chat(user, 'Kalau untuk FTTT?', nav.conversationId);
+    expect(fttt.answer).toMatch(/FTTT/i);
+    expect(fttt.answer).toMatch(/dialokasikan|sudah tercatat|tidak terdapat proses pengajuan/i);
+    expect(fttt.answer).not.toMatch(/belum ada di knowledge/i);
+    const ftthSwitch = await ai.chat(user, 'Kalau FTTH?', nav.conversationId);
+    expect(ftthSwitch.answer).toMatch(/SKOM|Finance Projects|FTTH|Permit Cluster/i);
+    expect(ftthSwitch.answer).not.toMatch(/belum ada di knowledge/i);
   });
 
   it('KNW-002/003: PR steps, cash variants, PU needs project type', async () => {
@@ -471,6 +487,114 @@ describe('PermaTrax AI chatbot (logic)', () => {
     );
     expect(pu.answer).toMatch(/Project Type|FTTH|FTTT/i);
     expect(pu.answer).not.toMatch(/SKOM_BUDGET/i);
+    const fttt = await ai.chat(user, 'Kalau FTTT?', pu.conversationId);
+    expect(fttt.answer).toMatch(/dialokasikan|sudah tercatat|tidak terdapat proses pengajuan/i);
+    expect(fttt.answer).not.toMatch(/belum ada di knowledge/i);
+    const switched = await ai.chat(user, 'Kalau FTTH?', pu.conversationId);
+    expect(switched.answer).toMatch(/SKOM|Finance Projects|FTTH|Permit Cluster/i);
+    expect(switched.answer).not.toMatch(/belum ada di knowledge/i);
+    const clusterSame = await ai.chat(
+      user,
+      'Kalau Permit cluster?',
+      pu.conversationId,
+    );
+    expect(clusterSame.answer).toMatch(/SKOM|Finance Projects|Permit Cluster|FTTH/i);
+    expect(clusterSame.answer).not.toMatch(/belum ada di knowledge/i);
+    const clarified = await ai.chat(
+      user,
+      'Kalau FTTH Permit Cluster',
+      pu.conversationId,
+    );
+    expect(clarified.answer).toMatch(/SKOM|Finance Projects|FTTH|Permit Cluster/i);
+    expect(clarified.answer).not.toMatch(/belum ada di knowledge/i);
+    const backToFttt = await ai.chat(user, 'Kalau FTTT lagi?', pu.conversationId);
+    expect(backToFttt.answer).toMatch(/dialokasikan|sudah tercatat|tidak terdapat proses pengajuan/i);
+    expect(backToFttt.answer).not.toMatch(/belum ada di knowledge/i);
+    const pu2 = await ai.chat(
+      user,
+      'Kalau aku mau membayar perizinan PU dan dananya perlu diajukan terlebih dahulu, maka harus melalui proses apa dan bagaimana?',
+    );
+    const cluster = await ai.chat(user, 'Kalau Permit Cluster?', pu2.conversationId);
+    expect(cluster.answer).toMatch(/SKOM|Finance Projects|Permit Cluster|FTTH/i);
+    expect(cluster.answer).not.toMatch(/belum ada di knowledge/i);
+    const pu3 = await ai.chat(
+      user,
+      'Kalau aku mau membayar perizinan PU dan dananya perlu diajukan terlebih dahulu, maka harus melalui proses apa dan bagaimana?',
+    );
+    const ftth = await ai.chat(user, 'Kalau FTTH?', pu3.conversationId);
+    expect(ftth.answer).toMatch(/SKOM|Finance Projects|FTTH/i);
+    expect(ftth.answer).not.toMatch(/belum ada di knowledge/i);
+    expect(detectPermitProjectType('Kalau Permit Cluster?')).toBe('ftth');
+    expect(needsPermittingProjectType('Gimana cara ajukan budget perizinan?')).toBe(
+      true,
+    );
+  });
+
+  it('KNW-006/007/008: concept, role, relationship, and contextual unknown', async () => {
+    const prisma = makePrisma();
+    const { ai } = makeServices(prisma);
+    const t16 = await ai.chat(user, 'Apa itu Permit Cluster?');
+    expect(t16.intent).toBe('faq');
+    expect(t16.answer).toMatch(/Permit Cluster/i);
+    expect(t16.answer).toMatch(/FTTH|pipeline|pengelolaan perizinan/i);
+    expect(t16.answer).not.toMatch(/^BA Open:/i);
+    expect(t16.answer).not.toMatch(/Top 10 Finance Project/i);
+    const t19 = await ai.chat(user, 'SIP itu apa dan digunakan untuk apa?');
+    expect(t19.answer).toMatch(/\bSIP\b/i);
+    expect(t19.answer).toMatch(/SIP_REQUEST|pipeline|izin/i);
+    expect(t19.answer).not.toMatch(/belum ada di knowledge/i);
+    const t21 = await ai.chat(
+      user,
+      'Kalau aku Surveyor, apa saja yang bisa aku lakukan di PermaTrax?',
+    );
+    expect(t21.answer).toMatch(/Surveyor/i);
+    expect(t21.answer).toMatch(/Clean List|kunjungan|sosialisasi/i);
+    expect(t21.answer).not.toMatch(/belum ada di knowledge/i);
+    const t22 = await ai.chat(
+      user,
+      'Kalau sebagai Finance, apa saja yang bisa aku lakukan di PermaTrax?',
+    );
+    expect(t22.answer).toMatch(/Finance/i);
+    expect(t22.answer).toMatch(/Purchase Request|procurement|pembelian/i);
+    expect(t22.answer).not.toMatch(/belum ada di knowledge/i);
+    expect(t22.answer).not.toMatch(/ACTIVE Project|99 Project/i);
+    expect(t22.answer).not.toMatch(/sebut nama\/kode project/i);
+    const t18 = await ai.chat(user, 'Apa bedanya HLD dan LLD?');
+    expect(t18.answer).toMatch(/APD/i);
+    expect(t18.answer).toMatch(/HLD/i);
+    expect(t18.answer).toMatch(/ABD/i);
+    expect(t18.answer).toMatch(/LLD/i);
+    expect(t18.answer).toMatch(/rancangan awal|initial|blueprint|implementasi/i);
+    const t20 = await ai.chat(user, 'Apa bedanya BA Open, BAK, dan BAKP?');
+    expect(t20.answer).toMatch(/BA Open/i);
+    expect(t20.answer).toMatch(/BAK/i);
+    expect(t20.answer).toMatch(/PM/i);
+    expect(t20.answer).toMatch(/validasi BAKP/i);
+    expect(t20.answer).not.toMatch(/Admin validasi BAKP/i);
+    const t23 = await ai.chat(
+      user,
+      'Siapa PIC yang bertanggung jawab untuk perizinan PU?',
+    );
+    expect(t23.answer).toMatch(/PM Project|PM/i);
+    expect(t23.answer).not.toMatch(/tidak ketemu PIC|Tidak ketemu/i);
+    expect(t23.toolTraces.some((t) => t.name === 'lookup_project_pic')).toBe(
+      false,
+    );
+    const t24 = await ai.chat(user, 'Siapa yang melakukan validasi BAKP?');
+    expect(t24.answer).toMatch(/PM/i);
+    expect(t24.answer).toMatch(/validasi BAKP/i);
+    expect(t24.answer).not.toMatch(/ACTIVE Project/i);
+    expect(t24.answer).not.toMatch(/99 Project/i);
+    const t24b = await ai.chat(user, 'role apa yang melakukan validasi BAKP?');
+    expect(t24b.answer).toMatch(/PM/i);
+    expect(t24b.answer).not.toMatch(/role apa yang melakukan validasi BAKP\?/i);
+    const t25 = await ai.chat(
+      user,
+      'Kalau HLD sudah selesai, berarti BAKP otomatis bisa dibuat kan?',
+    );
+    expect(t25.answer).toMatch(/belum|tidak dapat memastikan|belum tersedia/i);
+    expect(t25.answer).not.toMatch(/Cash Operation, Stok, Visit, atau PR/i);
+    expect(t25.answer).not.toMatch(/non-arsip/i);
   });
 
   it('navigation daftar dokumen points to sidebar path', async () => {
@@ -513,7 +637,12 @@ describe('PermaTrax AI chatbot (logic)', () => {
         'overview-permatrax',
         'howto-add-stock',
         'nav-document-list',
+        'permit-cluster-definition',
+        'sip-definition',
+        'bakp-responsibility',
+        'pic-perizinan-pu',
         'howto-budget-perizinan',
+        'howto-budget-perizinan-fttt',
         'howto-buat-pr',
         'howto-cash-reimbursement',
         'cash-advance-vs-reimbursement',

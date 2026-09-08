@@ -3,6 +3,7 @@
 import { normalizeId } from './ai-text';
 import {
   extractEntityFromAnswer,
+  extractExplicitEntityCode,
   hasConversationalReference,
   isActiveReferenceDetailQuery,
   isAttributeFollowUp,
@@ -233,7 +234,7 @@ export function isErrorRecovery(text: string): boolean {
 /** Capability / can-you-help inquiry — explain ability, do NOT execute (PAI-BHV-006). */
 export function isCapabilityInquiry(text: string): boolean {
   const m = normalizeId(text);
-  if (isProceduralGuidanceQuery(text) || isKnowledgeDefinitionQuery(text)) {
+  if (isProceduralGuidanceQuery(text) || isRoleCapabilityQuery(text)) {
     return false;
   }
   // Imperative / live data / module-switch are NOT capability
@@ -442,12 +443,60 @@ export function isUnsupportedDataQuery(text: string): boolean {
 
 export function isPicOrRequestorQuery(text: string): boolean {
   const m = normalizeId(text);
+  if (isBusinessRoleResponsibilityQuery(text)) return false;
   if (/(siapa|who).*(pic|pm|project manager|penanggung jawab|owner|requestor)/.test(m))
     return true;
   if (/\bpic\b/.test(m) && /(project|proyek|siapa|cluster)/.test(m)) return true;
   if (/(requestor|requester|pemohon).*(siapa|who|nama)/.test(m)) return true;
   if (/(siapa).*(requestor|requester|pemohon)/.test(m)) return true;
   return false;
+}
+
+/** Role capability in the product (not “can PAI help”). */
+export function isRoleCapabilityQuery(text: string): boolean {
+  const m = normalizeId(text);
+  if (isProceduralGuidanceQuery(text)) return false;
+  if (/(kamu|pai|anda).*(bisa|dapat)/.test(m) && !/(surveyor|finance|admin)/.test(m)) {
+    return false;
+  }
+  return (
+    /(kalau aku|kalau sebagai|kalau saya|sebagai)\s+(seorang\s+)?(surveyor|finance|admin|pm|purchasing|project manager)/.test(
+      m,
+    ) ||
+    /(aku|saya)\s+(seorang\s+)?(surveyor|finance)\b/.test(m) ||
+    /(apa saja yang (bisa|dapat) (aku|saya) (lakukan|akses))/.test(m)
+  );
+}
+
+/**
+ * Business-rule “who does X / which role” without a live project code.
+ */
+export function isBusinessRoleResponsibilityQuery(text: string): boolean {
+  const m = normalizeId(text);
+  if (extractExplicitEntityCode(text)) return false;
+  if (
+    /(siapa|role apa|role mana|jabatan).*(validasi|melakukan|bertanggung jawab|approve|unggah|upload)/.test(
+      m,
+    )
+  ) {
+    return true;
+  }
+  if (
+    /(siapa).*(pic|penanggung jawab).*(perizinan|pu|izin|cluster|bakp)/.test(m) ||
+    /(pic).*(perizinan|pu).*(siapa|bertanggung)/.test(m)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/** Causal link not in knowledge — do not answer with neighboring glossary. */
+export function isUnsupportedKnowledgeCausalQuery(text: string): boolean {
+  const m = normalizeId(text);
+  return (
+    /(otomatis).*(bisa dibuat|bisa dibuat kan|langsung)/.test(m) ||
+    /(kalau|jika|apabila).*(selesai|sudah).*(berarti|otomatis)/.test(m)
+  );
 }
 
 export function buildUnsupportedDataAnswer(text: string): string {
@@ -726,17 +775,79 @@ export function isGenericCashOperationHowTo(text: string): boolean {
   return /(cash\s*op|cash operation)/.test(m);
 }
 
-/** Permitting payment SOP needs Project Type when PU/generic (PAI-KNW-002 T15). */
-export function needsPermittingProjectType(text: string): boolean {
+export type PermitProjectType = 'ftth' | 'fttt' | 'fttb' | 'tower';
+
+/** Resolved Project Type from the current utterance (not from "perizinan" alone). */
+export function detectPermitProjectType(text: string): PermitProjectType | null {
+  const m = normalizeId(text);
+  const hits: Array<{ type: PermitProjectType; index: number }> = [];
+  const add = (type: PermitProjectType, re: RegExp) => {
+    re.lastIndex = 0;
+    const mm = re.exec(m);
+    if (mm && mm.index >= 0) hits.push({ type, index: mm.index });
+  };
+  add('fttt', /\bfttt\b/);
+  add('fttb', /\bfttb\b/);
+  add('tower', /\btower\b/);
+  add('ftth', /\bftth\b/);
+  add('ftth', /permit\s*cluster/);
+  if (!hits.length) return null;
+  hits.sort((a, b) => b.index - a.index);
+  return hits[0].type;
+}
+
+/** Explicit Project Type follow-up / override in the same topic (PAI-KNW-005). */
+export function isPermitProjectTypeFollowUp(text: string): boolean {
+  return detectPermitProjectType(text) != null;
+}
+
+/**
+ * How-to / process questions about permit or generic budget submission.
+ * Ranking, Cash Op, PR, stock, and visit stay out of this lane.
+ */
+export function isPermitBudgetProcessQuery(text: string): boolean {
   const m = normalizeId(primaryUtterance(text));
-  if (/(ftth|fttt|fttb|tower)/.test(m)) return false;
-  if (!/(perizinan\s*pu|\bpu\b|membayar perizinan|bayar.*perizinan)/.test(m)) {
+  if (!m) return false;
+  if (
+    /(top[\s-]*\d+|terbesar|terkecil|paling besar|paling kecil)/.test(m) &&
+    !/(cara|ajukan|pengajuan|langkah)/.test(m)
+  ) {
     return false;
   }
-  return (
+  if (
+    /(cash\s*op|cash operation|cash advance|reimbursement|reimburse|purchase request|\bpr\b|stok|stock|visit request)/.test(
+      m,
+    )
+  ) {
+    return false;
+  }
+  const procedural =
     isProceduralGuidanceQuery(text) ||
-    /(proses|diajukan|membayar|bagaimana|gimana)/.test(m)
-  );
+    /(proses|diajukan|membayar|bagaimana|gimana|lewat mana)/.test(m);
+  if (!procedural) return false;
+  if (/(perizinan|\bizin\b|\bpu\b|membayar perizinan|bayar.*perizinan)/.test(m)) {
+    return true;
+  }
+  return /(ajukan|ajuin|ngajuin|pengajuan).*(budget|anggaran)/.test(m);
+}
+
+/** Permitting / budget-izin SOP needs Project Type when it is not in the prompt. */
+export function needsPermittingProjectType(text: string): boolean {
+  if (!isPermitBudgetProcessQuery(text)) return false;
+  return detectPermitProjectType(text) == null;
+}
+
+export function permitBudgetRetrievalQuery(type: PermitProjectType): string {
+  switch (type) {
+    case 'fttt':
+      return 'budget perizinan FTTT alokasi project tanpa pengajuan tambahan';
+    case 'fttb':
+      return 'budget perizinan FTTB project type';
+    case 'tower':
+      return 'budget perizinan Tower project type';
+    default:
+      return 'cara ajukan budget perizinan Permit Cluster FTTH Finance Project SKOM';
+  }
 }
 
 /** Ambiguous / underspecified — ask clarification first (PAI-BHV-004). */
@@ -1023,6 +1134,9 @@ export function classifyPaIntent(text: string): PaIntent {
     return 'data';
   }
   if (isKnowledgeDefinitionQuery(raw)) return 'faq';
+  if (isRoleCapabilityQuery(raw) || isBusinessRoleResponsibilityQuery(raw)) {
+    return 'faq';
+  }
   if (isProceduralGuidanceQuery(raw) && !isMetaReasoningInquiry(raw)) {
     return 'howto';
   }
@@ -1097,9 +1211,14 @@ export function classifyPaIntent(text: string): PaIntent {
 export function isKnowledgeDefinitionQuery(text: string): boolean {
   const m = normalizeId(text);
   if (isProceduralGuidanceQuery(text)) return false;
+  if (isRoleCapabilityQuery(text) || isBusinessRoleResponsibilityQuery(text)) {
+    return true;
+  }
   return (
     /(apa itu|pengertian|definisi|jelaskan|apa bedanya|perbedaan)\b/.test(m) ||
-    /^apa\s+(itu\s+)?(finance\s*project|cash\s*op|purchase\s*request|\bpr\b)/.test(
+    /\bitu apa\b/.test(m) ||
+    /(digunakan untuk apa|buat apa)\b/.test(m) ||
+    /^apa\s+(itu\s+)?(finance\s*project|cash\s*op|purchase\s*request|\bpr\b|permit\s*cluster|sip)\b/.test(
       m,
     )
   );
@@ -2087,8 +2206,16 @@ export type UnknownKind =
   | 'retrieval_failed'
   | 'unknown';
 
-/** Transparent unknown handling (PAI-BHV-007). */
-export function buildUnknownAnswer(kind: UnknownKind): string {
+/** Transparent unknown handling (PAI-BHV-007 / PAI-KNW-008). */
+export function buildUnknownAnswer(kind: UnknownKind, query?: string): string {
+  const q = query ? normalizeId(query) : '';
+  const knowledgeUnknown = Boolean(
+    q &&
+      (isKnowledgeDefinitionQuery(query!) ||
+        isRoleCapabilityQuery(query!) ||
+        isBusinessRoleResponsibilityQuery(query!) ||
+        isUnsupportedKnowledgeCausalQuery(query!)),
+  );
   switch (kind) {
     case 'no_access':
       return [
@@ -2101,17 +2228,41 @@ export function buildUnknownAnswer(kind: UnknownKind): string {
         'Kalau menurutmu datanya ada di aplikasi, sebutkan nama/kode atau status filter lain supaya aku coba lagi.',
       ].join('\n');
     case 'no_knowledge':
+      if (knowledgeUnknown) {
+        if (isUnsupportedKnowledgeCausalQuery(query!)) {
+          return [
+            'Hubungan otomatis antara proses yang kamu tanyakan belum tersedia dalam knowledge PAI, jadi saya belum dapat memastikannya.',
+            'Saya tidak akan mengarang hubungan antar tahap atau meminta kode project untuk pertanyaan ini.',
+          ].join('\n');
+        }
+        return [
+          'Informasi itu belum ada di knowledge PAI untuk pertanyaan tersebut.',
+          'Saya tidak akan mengarang, dan tidak akan mengalihkan ke menu Finance/Cash/Stok atau meminta kode project jika itu tidak menjawab pertanyaannya.',
+        ].join('\n');
+      }
       return [
         'Informasi itu belum ada di knowledge PAI.',
         'Buka menu modul terkait (Finance Project, Cash Operation, Stok, Visit, atau PR).',
       ].join('\n');
     case 'retrieval_failed':
+      if (knowledgeUnknown) {
+        return [
+          'Saya tidak berhasil menemukan knowledge yang menjawab pertanyaan itu.',
+          'Coba sebut konsep/role yang dimaksud lebih spesifik, tanpa perlu kode project.',
+        ].join('\n');
+      }
       return [
         'Saya tidak berhasil menemukan data yang diminta.',
         'Kemungkinan terjadi perbedaan filter atau kendala pada proses pencarian.',
         'Alternatif: sebut nama/kode, atau minta ringkasan ACTIVE / non-ARCHIVED.',
       ].join('\n');
     default:
+      if (knowledgeUnknown) {
+        return [
+          'Informasi itu belum bisa aku pastikan dari knowledge PermaTrax.',
+          'Saya tidak akan mengarang atau meminta filter project yang tidak relevan.',
+        ].join('\n');
+      }
       return [
         'Informasi itu belum bisa aku pastikan dari knowledge maupun database PermaTrax.',
         'Buka menu modul yang dimaksud, atau sebut kode/nama supaya saya cek fakta live.',

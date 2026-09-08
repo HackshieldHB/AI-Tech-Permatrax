@@ -45,9 +45,14 @@ import {
   isRankingPatchFollowUp,
   isProceduralGuidanceQuery,
   isGenericCashOperationHowTo,
-  needsPermittingProjectType,
+  detectPermitProjectType,
+  isPermitBudgetProcessQuery,
+  permitBudgetRetrievalQuery,
   isOrdinalReference,
   isPicOrRequestorQuery,
+  isRoleCapabilityQuery,
+  isBusinessRoleResponsibilityQuery,
+  isUnsupportedKnowledgeCausalQuery,
   isProjectCountQuery,
   isStandaloneFinanceAggregateQuery,
   isUnsupportedDataQuery,
@@ -202,7 +207,9 @@ export class AiService {
       dbSession.activeReference ||
       dbSession.activeDataset ||
       dbSession.activeObject ||
-      (dbSession.pendingCandidates?.length ?? 0) > 0
+      (dbSession.pendingCandidates?.length ?? 0) > 0 ||
+      dbSession.pendingPermitProjectType ||
+      dbSession.permitBudgetContextActive
         ? dbSession
         : historySession;
     session.constraints = hydrateConstraintsFromFrame(
@@ -311,7 +318,16 @@ export class AiService {
         lastAssistant
       ) &&
       isConversationStateFollowUp(text);
-    if (stateFollowUp && !isProceduralGuidanceQuery(text)) {
+    if (
+      stateFollowUp &&
+      !isProceduralGuidanceQuery(text) &&
+      !session.pendingPermitProjectType &&
+      !session.permitBudgetContextActive &&
+      !isPermitBudgetProcessQuery(text) &&
+      !isKnowledgeDefinitionQuery(text) &&
+      !isRoleCapabilityQuery(text) &&
+      !isBusinessRoleResponsibilityQuery(text)
+    ) {
       intent = 'data';
     }
 
@@ -701,6 +717,127 @@ export class AiService {
       });
     };
 
+    const permitTypeNow =
+      detectPermitProjectType(text) || detectPermitProjectType(effectiveText);
+    const askPermitProjectType = () =>
+      reply(
+        [
+          'Proses budget perizinan dapat berbeda tergantung Project Type.',
+          '',
+          'Budget perizinan yang kamu maksud terkait project FTTH, FTTT, FTTB, Tower, atau tipe project lainnya?',
+          '',
+          '• FTTH (Permit Cluster / Finance Project)',
+          '• FTTT',
+          '• FTTB',
+          '• Tower / jenis lain',
+        ].join('\n'),
+        {
+          intent: 'howto',
+          sticker: '📘',
+          strategy: 'howto',
+          responseStrategy: 'clarification',
+          patch: {
+            pendingPermitProjectType: true,
+            permitBudgetContextActive: true,
+            resolvedPermitProjectType: null,
+            activeIntent: 'howto',
+          },
+        },
+      );
+    const answerPermitBudgetByType = async (
+      type: NonNullable<ReturnType<typeof detectPermitProjectType>>,
+    ) => {
+      const chunks = await this.knowledge.retrieve(
+        permitBudgetRetrievalQuery(type),
+        user.role,
+        { topK: 4, categories: ['sop'] },
+      );
+      const preferred = chunks.filter((c) => {
+        const hay = `${c.title} ${c.content}`.toLowerCase();
+        if (type === 'ftth') return /ftth|permit cluster/.test(hay);
+        if (type === 'fttt') return /\bfttt\b/.test(hay);
+        if (type === 'fttb') return /\bfttb\b/.test(hay);
+        return /tower/.test(hay);
+      });
+      const used = preferred.length ? preferred : chunks;
+      if (used.length) {
+        const { answer, ollamaUsed } = await this.composeAnswer({
+          user,
+          text: permitBudgetRetrievalQuery(type),
+          intent: 'howto',
+          chunks: used,
+          toolTraces: [],
+          proposedAction: null,
+        });
+        return reply(answer, {
+          intent: 'howto',
+          citations: used.map((c) => ({
+            title: c.title,
+            module: c.module,
+            sourceUri: c.sourceUri,
+            chunkId: c.chunkId,
+            score: c.score,
+          })),
+          ollamaUsed,
+          strategy: 'howto',
+          patch: {
+            pendingPermitProjectType: false,
+            permitBudgetContextActive: true,
+            resolvedPermitProjectType: type,
+            activeIntent: 'howto',
+          },
+        });
+      }
+      return reply(buildUnknownAnswer('no_knowledge'), {
+        intent: 'howto',
+        refusal: true,
+        grounded: false,
+        sticker: '🤔',
+        strategy: 'howto',
+        failureKind: 'no_knowledge',
+        patch: {
+          pendingPermitProjectType: false,
+          permitBudgetContextActive: true,
+          resolvedPermitProjectType: type,
+          activeIntent: 'howto',
+        },
+      });
+    };
+    const awaitingPermitType =
+      session.pendingPermitProjectType ||
+      session.permitBudgetContextActive ||
+      /tergantung project type/i.test(lastAssistant || '');
+    if (awaitingPermitType && permitTypeNow) {
+      if (
+        !isKnowledgeDefinitionQuery(text) &&
+        !isRoleCapabilityQuery(text) &&
+        !isBusinessRoleResponsibilityQuery(text)
+      ) {
+        return answerPermitBudgetByType(permitTypeNow);
+      }
+    }
+    if (isPermitBudgetProcessQuery(text) || isPermitBudgetProcessQuery(effectiveText)) {
+      if (!permitTypeNow) {
+        return askPermitProjectType();
+      }
+      return answerPermitBudgetByType(permitTypeNow);
+    }
+
+    if (
+      isUnsupportedKnowledgeCausalQuery(text) ||
+      isUnsupportedKnowledgeCausalQuery(effectiveText)
+    ) {
+      return reply(buildUnknownAnswer('no_knowledge', text), {
+        intent: 'faq',
+        refusal: true,
+        grounded: false,
+        sticker: '🤔',
+        strategy: 'none',
+        failureKind: 'no_knowledge',
+        responseStrategy: 'unknown_information',
+      });
+    }
+
     if (
       pendingFilterAttempt &&
       pendingMatches &&
@@ -845,7 +982,12 @@ export class AiService {
     }
 
     // PAI P1: PIC / requestor — live tools (not unsupported refuse)
-    if (isPicOrRequestorQuery(text) && !isUnsupportedDataQuery(text)) {
+    // PAI P1: assigned PIC on a named project — not generic role responsibility
+    if (
+      isPicOrRequestorQuery(text) &&
+      !isUnsupportedDataQuery(text) &&
+      extractExplicitEntityCode(text)
+    ) {
       const picTools = this.tools.detectToolIntent(text);
       const names =
         picTools.length > 0
@@ -1377,28 +1519,6 @@ export class AiService {
     }
 
     if (intent === 'howto') {
-      if (needsPermittingProjectType(text) || needsPermittingProjectType(effectiveText)) {
-        return reply(
-          [
-            'Pengajuan dana perizinan (termasuk PU) alurnya bisa berbeda per jenis project.',
-            '',
-            'Sebutkan Project Type dulu ya:',
-            '• FTTH (Permit Cluster / Finance Project)',
-            '• FTTT',
-            '• FTTB',
-            '• Tower / jenis lain',
-            '',
-            'Setelah itu saya jelaskan proses yang sesuai. PAI tidak mengajukan dana untuk kamu.',
-          ].join('\n'),
-          {
-            intent: 'howto',
-            sticker: '📘',
-            strategy: 'howto',
-            responseStrategy: 'clarification',
-            patch: { activeIntent: 'howto' },
-          },
-        );
-      }
       if (
         isGenericCashOperationHowTo(text) ||
         isGenericCashOperationHowTo(effectiveText)
@@ -1465,7 +1585,7 @@ export class AiService {
                 `Maaf, panduan langkah untuk ${topicLabel(session.activeTopic)} belum tersedia dalam knowledge domain aktif.`,
                 'Coba sebutkan lebih spesifik, atau buka menu modul tersebut di aplikasi.',
               ].join('\n')
-            : buildUnknownAnswer('no_knowledge'),
+            : buildUnknownAnswer('no_knowledge', text),
           {
             refusal: true,
             grounded: false,
@@ -1697,29 +1817,57 @@ export class AiService {
       !session.correctionApplied &&
       (!session.activeTopic || isKnowledgeDefinitionQuery(text))
     ) {
+      const skipDomainLock =
+        isKnowledgeDefinitionQuery(text) ||
+        isRoleCapabilityQuery(text) ||
+        isBusinessRoleResponsibilityQuery(text);
       const domainModules = session.activeTopic
         ? topicToKnowledgeModules(session.activeTopic)
         : undefined;
-      chunks = await this.knowledge.retrieve(effectiveText, user.role, {
+      const faqOpts = {
         topK: 5,
-        categories: ['faq', 'glossary', 'user-guide'],
-        modules: domainModules?.length ? domainModules : undefined,
-      });
+        modules:
+          !skipDomainLock && domainModules?.length ? domainModules : undefined,
+      };
+      if (isRoleCapabilityQuery(text)) {
+        chunks = await this.knowledge.retrieve(effectiveText, user.role, {
+          ...faqOpts,
+          categories: ['role-guide'],
+        });
+      } else if (isBusinessRoleResponsibilityQuery(text)) {
+        chunks = await this.knowledge.retrieve(effectiveText, user.role, {
+          ...faqOpts,
+          categories: ['business-rules', 'glossary'],
+        });
+      }
+      if (!chunks.length) {
+        chunks = await this.knowledge.retrieve(effectiveText, user.role, {
+          ...faqOpts,
+          categories: [
+            'faq',
+            'glossary',
+            'user-guide',
+            'role-guide',
+            'business-rules',
+          ],
+        });
+      }
       // BHV-007 / RSN-004: if only overview junk matched, prefer unknown
       if (
         chunks.length &&
         /overview|apa itu permatrax|kebijakan scope/i.test(chunks[0].title) &&
         !/apa itu permatrax|jelaskan permatrax/i.test(text)
       ) {
-        return reply(buildUnknownAnswer('no_knowledge'), {
+        return reply(buildUnknownAnswer('no_knowledge', text), {
           refusal: true,
           grounded: false,
           failureKind: 'no_knowledge',
           strategy: 'none',
         });
       }
-      // Cross-domain leak guard
+      // Cross-domain leak guard (not for definition/role semantic targets)
       if (
+        !skipDomainLock &&
         chunks.length &&
         domainModules?.length &&
         !domainModules.includes(chunks[0].module)
@@ -1736,7 +1884,7 @@ export class AiService {
     if (!hasUsefulTools && chunks.length === 0 && !proposedAction) {
       const kind: UnknownKind =
         intent === 'faq' ? 'no_knowledge' : 'unknown';
-      return reply(buildUnknownAnswer(kind), {
+      return reply(buildUnknownAnswer(kind, text), {
         refusal: true,
         grounded: false,
         toolTraces,

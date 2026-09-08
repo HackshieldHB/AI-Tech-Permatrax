@@ -83,6 +83,14 @@ export type ConversationSessionState = {
     hierarchyLevel: string;
     name: string;
   }> | null;
+  /** Awaiting Project Type before permit-budget SOP (PAI-KNW P3). */
+  pendingPermitProjectType: boolean;
+  /**
+   * Permit-budget topic is open in this conversation so Project Type can
+   * be overridden (FTTT → FTTH) without a new chat (PAI-KNW-005).
+   */
+  permitBudgetContextActive: boolean;
+  resolvedPermitProjectType: 'ftth' | 'fttt' | 'fttb' | 'tower' | null;
   /** Intent within active module — preserved across follow-ups */
   activeIntent: ActiveIntent;
   /** Merged recovery / filter constraints */
@@ -121,6 +129,9 @@ export const EMPTY_SESSION: ConversationSessionState = {
   activeDatasetAnswer: null,
   activeAttribute: null,
   pendingCandidates: null,
+  pendingPermitProjectType: false,
+  permitBudgetContextActive: false,
+  resolvedPermitProjectType: null,
   activeIntent: 'none',
   constraints: { ...EMPTY_CONSTRAINTS, extra: [] },
   lastDataQuery: null,
