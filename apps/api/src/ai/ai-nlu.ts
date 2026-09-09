@@ -2230,15 +2230,12 @@ export function buildUnknownAnswer(kind: UnknownKind, query?: string): string {
     case 'no_knowledge':
       if (knowledgeUnknown) {
         if (isUnsupportedKnowledgeCausalQuery(query!)) {
-          return [
-            'Hubungan otomatis antara proses yang kamu tanyakan belum tersedia dalam knowledge PAI, jadi saya belum dapat memastikannya.',
-            'Saya tidak akan mengarang hubungan antar tahap atau meminta kode project untuk pertanyaan ini.',
-          ].join('\n');
+          if (/\bhld\b/.test(q) && /bakp/.test(q)) {
+            return 'Hubungan otomatis antara penyelesaian HLD dan pembuatan BAKP belum tersedia dalam knowledge PAI, sehingga PAI belum dapat memastikan apakah BAKP otomatis dapat dibuat setelah HLD selesai.';
+          }
+          return 'Hubungan otomatis antara proses yang kamu tanyakan belum tersedia dalam knowledge PAI, sehingga PAI belum dapat memastikannya.';
         }
-        return [
-          'Informasi itu belum ada di knowledge PAI untuk pertanyaan tersebut.',
-          'Saya tidak akan mengarang, dan tidak akan mengalihkan ke menu Finance/Cash/Stok atau meminta kode project jika itu tidak menjawab pertanyaannya.',
-        ].join('\n');
+        return 'Informasi itu belum ada di knowledge PAI untuk pertanyaan tersebut.';
       }
       return [
         'Informasi itu belum ada di knowledge PAI.',

@@ -539,10 +539,15 @@ describe('PermaTrax AI chatbot (logic)', () => {
     expect(t16.answer).toMatch(/FTTH|pipeline|pengelolaan perizinan/i);
     expect(t16.answer).not.toMatch(/^BA Open:/i);
     expect(t16.answer).not.toMatch(/Top 10 Finance Project/i);
+    expect(t16.answer).not.toMatch(/bukan daftar BA Open|path: \/permit-clusters/i);
+    const t17 = await ai.chat(user, 'Permit Cluster itu sebenarnya buat apa?');
+    expect(t17.answer).toMatch(/mengelola|pipeline|FTTH/i);
+    expect(t17.answer).not.toMatch(/path: \/permit-clusters/i);
     const t19 = await ai.chat(user, 'SIP itu apa dan digunakan untuk apa?');
     expect(t19.answer).toMatch(/\bSIP\b/i);
     expect(t19.answer).toMatch(/SIP_REQUEST|pipeline|izin/i);
     expect(t19.answer).not.toMatch(/belum ada di knowledge/i);
+    expect(t19.answer).not.toMatch(/SIP bukan HLD/i);
     const t21 = await ai.chat(
       user,
       'Kalau aku Surveyor, apa saja yang bisa aku lakukan di PermaTrax?',
@@ -550,6 +555,7 @@ describe('PermaTrax AI chatbot (logic)', () => {
     expect(t21.answer).toMatch(/Surveyor/i);
     expect(t21.answer).toMatch(/Clean List|kunjungan|sosialisasi/i);
     expect(t21.answer).not.toMatch(/belum ada di knowledge/i);
+    expect(t21.answer).not.toMatch(/Mulai dari menu Clean List/i);
     const t22 = await ai.chat(
       user,
       'Kalau sebagai Finance, apa saja yang bisa aku lakukan di PermaTrax?',
@@ -559,23 +565,29 @@ describe('PermaTrax AI chatbot (logic)', () => {
     expect(t22.answer).not.toMatch(/belum ada di knowledge/i);
     expect(t22.answer).not.toMatch(/ACTIVE Project|99 Project/i);
     expect(t22.answer).not.toMatch(/sebut nama\/kode project/i);
+    expect(t22.answer).not.toMatch(/Admin Stok/i);
+    expect(t22.answer).not.toMatch(/bukan ranking/i);
     const t18 = await ai.chat(user, 'Apa bedanya HLD dan LLD?');
     expect(t18.answer).toMatch(/APD/i);
     expect(t18.answer).toMatch(/HLD/i);
     expect(t18.answer).toMatch(/ABD/i);
     expect(t18.answer).toMatch(/LLD/i);
     expect(t18.answer).toMatch(/rancangan awal|initial|blueprint|implementasi/i);
+    expect(t18.answer).not.toMatch(/Designer upload/i);
     const t20 = await ai.chat(user, 'Apa bedanya BA Open, BAK, dan BAKP?');
     expect(t20.answer).toMatch(/BA Open/i);
     expect(t20.answer).toMatch(/BAK/i);
-    expect(t20.answer).toMatch(/PM/i);
-    expect(t20.answer).toMatch(/validasi BAKP/i);
+    expect(t20.answer).toMatch(/BAKP/i);
+    expect(t20.answer).toMatch(/berita acara|paket dokumen/i);
     expect(t20.answer).not.toMatch(/Admin validasi BAKP/i);
+    expect(t20.answer).not.toMatch(/PM melakukan validasi BAKP/i);
+    expect(t20.answer).not.toMatch(/Jangan menukar/i);
     const t23 = await ai.chat(
       user,
       'Siapa PIC yang bertanggung jawab untuk perizinan PU?',
     );
     expect(t23.answer).toMatch(/PM Project|PM/i);
+    expect(t23.answer).not.toMatch(/bukan lookup PIC|bukan pencarian/i);
     expect(t23.answer).not.toMatch(/tidak ketemu PIC|Tidak ketemu/i);
     expect(t23.toolTraces.some((t) => t.name === 'lookup_project_pic')).toBe(
       false,
@@ -585,6 +597,8 @@ describe('PermaTrax AI chatbot (logic)', () => {
     expect(t24.answer).toMatch(/validasi BAKP/i);
     expect(t24.answer).not.toMatch(/ACTIVE Project/i);
     expect(t24.answer).not.toMatch(/99 Project/i);
+    expect(t24.answer).not.toMatch(/Finance dapat|Admin bertanggung/i);
+    expect(t24.answer).not.toMatch(/bukan pencarian project live/i);
     const t24b = await ai.chat(user, 'role apa yang melakukan validasi BAKP?');
     expect(t24b.answer).toMatch(/PM/i);
     expect(t24b.answer).not.toMatch(/role apa yang melakukan validasi BAKP\?/i);
@@ -595,6 +609,7 @@ describe('PermaTrax AI chatbot (logic)', () => {
     expect(t25.answer).toMatch(/belum|tidak dapat memastikan|belum tersedia/i);
     expect(t25.answer).not.toMatch(/Cash Operation, Stok, Visit, atau PR/i);
     expect(t25.answer).not.toMatch(/non-arsip/i);
+    expect(t25.answer).not.toMatch(/Saya tidak akan mengarang/i);
   });
 
   it('navigation daftar dokumen points to sidebar path', async () => {

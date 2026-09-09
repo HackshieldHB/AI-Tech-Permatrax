@@ -8,6 +8,7 @@ import {
 } from './ai-knowledge.service';
 import { AiOllamaService } from './ai-ollama.service';
 import { AiToolsService, type ToolTrace } from './ai-tools.service';
+import { scopeKnowledgeAnswer } from './ai-answer-scope';
 import {
   answerFingerprint,
   buildCapabilityAnswer,
@@ -2173,9 +2174,21 @@ ${
       }
     }
 
+    const useScope =
+      input.intent === 'faq' ||
+      ((isKnowledgeDefinitionQuery(input.text) ||
+        isRoleCapabilityQuery(input.text) ||
+        isBusinessRoleResponsibilityQuery(input.text)) &&
+        input.intent !== 'howto');
     const parts: string[] = [];
-    if (input.chunks[0]) parts.push(input.chunks[0].content);
-    if (input.proposedAction) {
+    if (input.chunks[0]) {
+      parts.push(
+        useScope
+          ? scopeKnowledgeAnswer(input.text, input.chunks[0].content)
+          : input.chunks[0].content,
+      );
+    }
+    if (input.proposedAction && !useScope) {
       parts.push(
         `Aksi disarankan: ${input.proposedAction.label}. Buka ${input.proposedAction.href}`,
       );
