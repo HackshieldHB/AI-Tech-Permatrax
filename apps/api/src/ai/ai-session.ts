@@ -91,6 +91,10 @@ export type ConversationSessionState = {
    */
   permitBudgetContextActive: boolean;
   resolvedPermitProjectType: 'ftth' | 'fttt' | 'fttb' | 'tower' | null;
+  /** Active knowledge concept for FAQ referents (BAKP, HLD/LLD, PU, …). */
+  knowledgeObject: string | null;
+  previousKnowledgeObject: string | null;
+  knowledgeRelation: string | null;
   /** Intent within active module — preserved across follow-ups */
   activeIntent: ActiveIntent;
   /** Merged recovery / filter constraints */
@@ -132,6 +136,9 @@ export const EMPTY_SESSION: ConversationSessionState = {
   pendingPermitProjectType: false,
   permitBudgetContextActive: false,
   resolvedPermitProjectType: null,
+  knowledgeObject: null,
+  previousKnowledgeObject: null,
+  knowledgeRelation: null,
   activeIntent: 'none',
   constraints: { ...EMPTY_CONSTRAINTS, extra: [] },
   lastDataQuery: null,

@@ -10,6 +10,12 @@ import { AiOllamaService } from './ai-ollama.service';
 import { AiToolsService, type ToolTrace } from './ai-tools.service';
 import { scopeKnowledgeAnswer } from './ai-answer-scope';
 import {
+  inferKnowledgeSession,
+  isKnowledgeQaCandidate,
+  isPermitClusterFtttScopePremise,
+  resolveKnowledgeQa,
+} from './ai-knowledge-qa';
+import {
   answerFingerprint,
   buildCapabilityAnswer,
   buildClarificationPrompt,
@@ -210,7 +216,8 @@ export class AiService {
       dbSession.activeObject ||
       (dbSession.pendingCandidates?.length ?? 0) > 0 ||
       dbSession.pendingPermitProjectType ||
-      dbSession.permitBudgetContextActive
+      dbSession.permitBudgetContextActive ||
+      dbSession.knowledgeObject
         ? dbSession
         : historySession;
     session.constraints = hydrateConstraintsFromFrame(
@@ -309,6 +316,7 @@ export class AiService {
     }
 
     // PAI-CSM-002: Conversation State follow-ups are always data — never Guide
+    const knowledgeTurn = isKnowledgeQaCandidate(text, session, lastAssistant);
     const stateFollowUp =
       !!session.activeTopic &&
       !!(
@@ -321,6 +329,7 @@ export class AiService {
       isConversationStateFollowUp(text);
     if (
       stateFollowUp &&
+      !knowledgeTurn &&
       !isProceduralGuidanceQuery(text) &&
       !session.pendingPermitProjectType &&
       !session.permitBudgetContextActive &&
@@ -388,6 +397,7 @@ export class AiService {
     if (
       !liveObjectLookup &&
       !businessDiagnostic &&
+      !knowledgeTurn &&
       (stateFollowUp || (explicitCode && !/\bcari\b/i.test(text))) &&
       !isModuleDataRankingQuery(text) &&
       !isFinanceContextFilterQuery(text) &&
@@ -549,6 +559,7 @@ export class AiService {
     // BHV-001/005: after correction/recovery, keep lane until explicit topic switch
     if (
       (session.correctionApplied || session.pendingRecovery) &&
+      !knowledgeTurn &&
       !sessionCtx.topicSwitched &&
       !conversational.has(rawIntent) &&
       (intent === 'faq' || intent === 'howto')
@@ -640,6 +651,22 @@ export class AiService {
           opts.reasoningNote !== undefined
             ? opts.reasoningNote
             : (opts.patch?.lastReasoningNote ?? nextState.lastReasoningNote),
+        knowledgeObject:
+          opts.patch?.knowledgeObject !== undefined
+            ? opts.patch.knowledgeObject
+            : (opts.intent ?? intent) === 'faq' || (opts.intent ?? intent) === 'howto'
+              ? inferKnowledgeSession(text, nextState).knowledgeObject
+              : nextState.knowledgeObject,
+        previousKnowledgeObject:
+          opts.patch?.previousKnowledgeObject !== undefined
+            ? opts.patch.previousKnowledgeObject
+            : (opts.intent ?? intent) === 'faq' || (opts.intent ?? intent) === 'howto'
+              ? inferKnowledgeSession(text, nextState).previousKnowledgeObject
+              : nextState.previousKnowledgeObject,
+        knowledgeRelation:
+          opts.patch?.knowledgeRelation !== undefined
+            ? opts.patch.knowledgeRelation
+            : nextState.knowledgeRelation,
         frame: nextState.frame,
       };
       state.frame = commitConversationFrame(
@@ -808,8 +835,30 @@ export class AiService {
       session.pendingPermitProjectType ||
       session.permitBudgetContextActive ||
       /tergantung project type/i.test(lastAssistant || '');
+    if (isPermitClusterFtttScopePremise(text) || isPermitClusterFtttScopePremise(effectiveText)) {
+      const hit = resolveKnowledgeQa({ text, session, lastAssistant });
+      if (hit) {
+        return reply(hit.answer, {
+          intent: 'faq',
+          sticker: '📘',
+          strategy: 'none',
+          responseStrategy: 'none',
+          patch: {
+            knowledgeObject: hit.knowledgeObject,
+            previousKnowledgeObject: hit.previousKnowledgeObject,
+            knowledgeRelation: hit.knowledgeRelation,
+            pendingPermitProjectType: false,
+            permitBudgetContextActive: false,
+            activeObject: nextState.activeObject,
+            activeReference: nextState.activeReference,
+          },
+        });
+      }
+    }
     if (awaitingPermitType && permitTypeNow) {
       if (
+        !knowledgeTurn &&
+        !isPermitClusterFtttScopePremise(text) &&
         !isKnowledgeDefinitionQuery(text) &&
         !isRoleCapabilityQuery(text) &&
         !isBusinessRoleResponsibilityQuery(text)
@@ -817,11 +866,36 @@ export class AiService {
         return answerPermitBudgetByType(permitTypeNow);
       }
     }
-    if (isPermitBudgetProcessQuery(text) || isPermitBudgetProcessQuery(effectiveText)) {
+    if (
+      (isPermitBudgetProcessQuery(text) || isPermitBudgetProcessQuery(effectiveText)) &&
+      !knowledgeTurn
+    ) {
       if (!permitTypeNow) {
         return askPermitProjectType();
       }
       return answerPermitBudgetByType(permitTypeNow);
+    }
+
+    const knowledgeHit = resolveKnowledgeQa({
+      text,
+      session,
+      lastAssistant,
+    });
+    if (knowledgeHit) {
+      return reply(knowledgeHit.answer, {
+        intent: 'faq',
+        sticker: '📘',
+        strategy: 'none',
+        responseStrategy: 'none',
+        patch: {
+          knowledgeObject: knowledgeHit.knowledgeObject,
+          previousKnowledgeObject: knowledgeHit.previousKnowledgeObject,
+          knowledgeRelation: knowledgeHit.knowledgeRelation,
+          pendingPermitProjectType: false,
+          activeObject: nextState.activeObject,
+          activeReference: nextState.activeReference,
+        },
+      });
     }
 
     if (

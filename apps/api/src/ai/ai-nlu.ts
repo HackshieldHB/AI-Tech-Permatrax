@@ -481,9 +481,11 @@ export function isBusinessRoleResponsibilityQuery(text: string): boolean {
   ) {
     return true;
   }
-  if (
+    if (
     /(siapa).*(pic|penanggung jawab).*(perizinan|pu|izin|cluster|bakp)/.test(m) ||
-    /(pic).*(perizinan|pu).*(siapa|bertanggung)/.test(m)
+    /(pic).*(perizinan|pu).*(siapa|bertanggung)/.test(m) ||
+    /(perizinan|izin|\bpu\b).*(siapa).*(pic|penanggung)/.test(m) ||
+    (/(siapa).*(pic)(-nya| nya)?/.test(m) && /(perizinan|\bpu\b|izin|cluster)/.test(m))
   ) {
     return true;
   }
@@ -495,7 +497,8 @@ export function isUnsupportedKnowledgeCausalQuery(text: string): boolean {
   const m = normalizeId(text);
   return (
     /(otomatis).*(bisa dibuat|bisa dibuat kan|langsung)/.test(m) ||
-    /(kalau|jika|apabila).*(selesai|sudah).*(berarti|otomatis)/.test(m)
+    /(kalau|jika|apabila).*(selesai|sudah).*(berarti|otomatis)/.test(m) ||
+    /(\bsip\b).*(otomatis|langsung).*(hld|lld|bakp)/.test(m)
   );
 }
 
@@ -825,8 +828,12 @@ export function isPermitBudgetProcessQuery(text: string): boolean {
     isProceduralGuidanceQuery(text) ||
     /(proses|diajukan|membayar|bagaimana|gimana|lewat mana)/.test(m);
   if (!procedural) return false;
+  const budgetish =
+    /(budget|anggaran|\bdana\b|biaya|nominal|ajukan|ajuin|pengajuan|membayar|bayar|pencairan|skom|cash\s*op|finance project)/.test(
+      m,
+    );
   if (/(perizinan|\bizin\b|\bpu\b|membayar perizinan|bayar.*perizinan)/.test(m)) {
-    return true;
+    return budgetish;
   }
   return /(ajukan|ajuin|ngajuin|pengajuan).*(budget|anggaran)/.test(m);
 }
@@ -1127,8 +1134,16 @@ export function classifyPaIntent(text: string): PaIntent {
   if (isGreetingOnly(raw)) return 'greeting';
   if (isMetaReasoningInquiry(raw)) return 'meta';
   if (isErrorRecovery(raw)) return 'recovery';
-  if (isUserCorrection(raw) || /\[user_correction\]/i.test(raw))
-    return 'correction';
+  if (isUserCorrection(raw) || /\[user_correction\]/i.test(raw)) {
+    if (
+      !(
+        /(bakp|hld|lld|apd|abd|permit\s*cluster)/.test(m) ||
+        (/\badmin\b/.test(m) && /(validasi|upload|unggah|berarti|kan|setahu)/.test(m))
+      )
+    ) {
+      return 'correction';
+    }
+  }
   if (isCapabilityInquiry(raw)) return 'capability';
   if (isFinanceFilterClearQuery(raw) || isFinanceFilterRemoveQuery(raw)) {
     return 'data';
@@ -1212,6 +1227,13 @@ export function isKnowledgeDefinitionQuery(text: string): boolean {
   const m = normalizeId(text);
   if (isProceduralGuidanceQuery(text)) return false;
   if (isRoleCapabilityQuery(text) || isBusinessRoleResponsibilityQuery(text)) {
+    return true;
+  }
+  if (
+    /permit\s*-?\s*cluster/.test(m) &&
+    /\bfttt\b/.test(m) &&
+    /(juga|\bdipakai\b|\buntuk\b|\bkan\b|\bya\b|berarti)/.test(m)
+  ) {
     return true;
   }
   return (

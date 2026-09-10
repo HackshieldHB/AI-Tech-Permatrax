@@ -87,8 +87,14 @@ function scopeWhoAnswer(query: string, content: string): string | null {
     /(bedanya|perbedaan)/.test(m) &&
     /(admin|pm|finance).*(admin|pm|finance)/.test(m);
   if (comparesRoles) return null;
+  if (/validasi/.test(m) && /bakp/.test(m) && /(upload|unggah)/.test(m)) {
+    return 'Admin bertanggung jawab mengunggah/melengkapi dokumen BAKP, sedangkan validasi BAKP dilakukan oleh PM.';
+  }
   if (/validasi/.test(m) && /bakp/.test(m)) {
     return 'Validasi BAKP dilakukan oleh PM.';
+  }
+  if (/(upload|unggah)/.test(m) && /bakp/.test(m)) {
+    return 'Admin bertanggung jawab mengunggah/melengkapi BAKP.';
   }
   const pic = splitSentences(content).find((s) =>
     /pic|penanggung jawab|pm project/i.test(s),

@@ -31,6 +31,7 @@ import {
   isGenericCashOperationHowTo,
   needsPermittingProjectType,
   detectPermitProjectType,
+  isPermitBudgetProcessQuery,
   isAttributeFollowUp,
   isBusinessDiagnosticQuery,
   shouldApplySessionFinanceFilters,
@@ -610,6 +611,146 @@ describe('PermaTrax AI chatbot (logic)', () => {
     expect(t25.answer).not.toMatch(/Cash Operation, Stok, Visit, atau PR/i);
     expect(t25.answer).not.toMatch(/non-arsip/i);
     expect(t25.answer).not.toMatch(/Saya tidak akan mengarang/i);
+  });
+
+  it('KNW-011/012/013/014: premise, multi-target, referents, permit routing', async () => {
+    const prisma = makePrisma();
+    const { ai } = makeServices(prisma);
+    expect(
+      isPermitBudgetProcessQuery(
+        'Kalau aku mau lihat proses izin untuk pembangunan jaringan FTTH dari awal sampai selesai, aku harus lihat proses apa?',
+      ),
+    ).toBe(false);
+    expect(
+      isPermitBudgetProcessQuery(
+        'Kalau aku mau membayar perizinan PU dan dananya perlu diajukan terlebih dahulu, maka harus melalui proses apa dan bagaimana?',
+      ),
+    ).toBe(true);
+
+    const t26 = await ai.chat(user, 'Permit Cluster itu dipakai untuk FTTT juga kan?');
+    expect(t26.answer).toMatch(/Tidak/i);
+    expect(t26.answer).toMatch(/FTTH/i);
+    expect(t26.answer).not.toMatch(/SKOM_BUDGET|Cash Operation, Stok/i);
+    const puBudget = await ai.chat(
+      user,
+      'Kalau aku mau membayar perizinan PU dan dananya perlu diajukan terlebih dahulu, maka harus melalui proses apa dan bagaimana?',
+    );
+    const t26AfterBudget = await ai.chat(
+      user,
+      'Permit Cluster itu dipakai untuk FTTT juga kan?',
+      puBudget.conversationId,
+    );
+    expect(t26AfterBudget.answer).toMatch(/Tidak/i);
+    expect(t26AfterBudget.answer).toMatch(/khusus|FTTH/i);
+    expect(t26AfterBudget.answer).not.toMatch(/belum ada di knowledge|SKOM_BUDGET/i);
+    const ftttSop = await ai.chat(
+      user,
+      'Kalau aku mau membayar perizinan PU dan dananya perlu diajukan terlebih dahulu, maka harus melalui proses apa dan bagaimana?',
+    );
+    const ftttFollow = await ai.chat(user, 'Kalau FTTT?', ftttSop.conversationId);
+    expect(ftttFollow.answer).toMatch(/dialokasikan|sudah tercatat|tidak terdapat proses pengajuan/i);
+
+    const t27 = await ai.chat(
+      user,
+      'Kalau Admin yang upload BAKP, berarti Admin juga yang validasi BAKP ya?',
+    );
+    expect(t27.answer).toMatch(/Tidak/i);
+    expect(t27.answer).toMatch(/Admin/i);
+    expect(t27.answer).toMatch(/PM/i);
+    expect(t27.answer).not.toMatch(/sebut nama\/kode project/i);
+
+    const t28 = await ai.chat(
+      user,
+      'Berarti LLD itu rancangan awal, terus HLD yang dipakai untuk implementasi ya?',
+    );
+    expect(t28.answer).toMatch(/Tidak/i);
+    expect(t28.answer).toMatch(/HLD/i);
+    expect(t28.answer).toMatch(/LLD/i);
+    expect(t28.answer).toMatch(/rancangan awal/i);
+    expect(t28.answer).toMatch(/implementasi/i);
+    expect(t28.answer).not.toMatch(/database PermaTrax/i);
+
+    const t29 = await ai.chat(
+      user,
+      'Kalau aku mau lihat proses izin untuk pembangunan jaringan FTTH dari awal sampai selesai, aku harus lihat proses apa?',
+    );
+    expect(t29.answer).toMatch(/Permit Cluster/i);
+    expect(t29.answer).not.toMatch(/SKOM_BUDGET/i);
+    expect(t29.answer).not.toMatch(/Fund Disbursement/i);
+
+    const t30 = await ai.chat(
+      user,
+      'Dalam proses BAKP, siapa yang upload dokumennya dan siapa yang melakukan validasi?',
+    );
+    expect(t30.answer).toMatch(/Admin/i);
+    expect(t30.answer).toMatch(/unggah|unggah|upload|melengkapi/i);
+    expect(t30.answer).toMatch(/PM/i);
+    expect(t30.answer).toMatch(/validasi/i);
+
+    const t31a = await ai.chat(user, 'Apa bedanya HLD dan LLD?');
+    const t31b = await ai.chat(
+      user,
+      'Kalau yang dipakai sebagai acuan implementasi yang mana?',
+      t31a.conversationId,
+    );
+    expect(t31b.answer).toMatch(/LLD/i);
+    expect(t31b.answer).toMatch(/ABD|blueprint|implementasi/i);
+    expect(t31b.answer).not.toMatch(/belum ada di knowledge/i);
+    const t31c = await ai.chat(
+      user,
+      'Kalau yang satunya berarti masih bisa direvisi?',
+      t31a.conversationId,
+    );
+    expect(t31c.answer).toMatch(/HLD|APD/i);
+    expect(t31c.answer).toMatch(/revisi|rancangan awal/i);
+
+    const t32a = await ai.chat(user, 'Siapa yang validasi BAKP?');
+    expect(t32a.answer).toMatch(/PM/i);
+    const t32b = await ai.chat(user, 'Kalau yang upload?', t32a.conversationId);
+    expect(t32b.answer).toMatch(/Admin/i);
+    expect(t32b.answer).not.toMatch(/belum ada di knowledge/i);
+    const t32c = await ai.chat(
+      user,
+      'Sekarang kalau perizinan PU, siapa PIC-nya?',
+      t32a.conversationId,
+    );
+    expect(t32c.answer).toMatch(/PM Project|PM/i);
+    expect(t32c.answer).not.toMatch(/Tidak ketemu PIC/i);
+    expect(t32c.toolTraces.some((t) => t.name === 'lookup_project_pic')).toBe(false);
+    const t32d = await ai.chat(
+      user,
+      'Kalau yang upload BAKP tadi siapa?',
+      t32a.conversationId,
+    );
+    expect(t32d.answer).toMatch(/Admin/i);
+    expect(t32d.answer).not.toMatch(/Tidak ketemu PIC|kode project\/cluster/i);
+
+    const t33 = await ai.chat(
+      user,
+      'Kalau SIP sudah selesai, berarti HLD otomatis bisa dibuat kan?',
+    );
+    expect(t33.answer).toMatch(/belum|tidak dapat memastikan|belum tersedia/i);
+    expect(t33.answer).not.toMatch(/Cash Operation, Stok, Visit, atau PR/i);
+
+    const t34a = await ai.chat(user, 'Siapa yang melakukan validasi BAKP?');
+    const t34b = await ai.chat(
+      user,
+      'Tapi setahuku Admin deh. Berarti Admin kan?',
+      t34a.conversationId,
+    );
+    expect(t34b.answer).toMatch(/PM/i);
+    expect(t34b.answer).toMatch(/Admin/i);
+    expect(t34b.answer).not.toMatch(/Permit Cluster datanya terlihat berbeda|non-ARCHIVED/i);
+
+    const t35 = await ai.chat(
+      user,
+      'Aku lagi handle FTTH. Untuk proses izin aku harus pakai apa, siapa PIC perizinan PU-nya, dan kalau sudah masuk BAKP siapa yang validasi?',
+    );
+    expect(t35.answer).toMatch(/Permit Cluster/i);
+    expect(t35.answer).toMatch(/PM Project|PM/i);
+    expect(t35.answer).toMatch(/validasi BAKP|validasi/i);
+    expect(t35.answer).not.toMatch(/SKOM_BUDGET/i);
+    expect(t35.answer).not.toMatch(/Cash Operation/i);
   });
 
   it('navigation daftar dokumen points to sidebar path', async () => {
