@@ -8,7 +8,10 @@ import {
   detectFinanceMode,
   detectRankingMetric,
   detectRankingDirection,
-  detectExplicitTopN,
+  detectRequestedRankingN,
+  hasActiveStatusNegation,
+  isStatusBreakdownQuery,
+  isStockQuantityRankingQuery,
   hasExplicitRankingMetric,
   extractHierarchyConstraint,
   extractOwnerName,
@@ -92,16 +95,17 @@ export class AiToolsService {
 
     if (
       /(purchase request|\bpr\b|pembelian)/.test(m) &&
-      /(berapa|jumlah|pending|status|saya)/.test(m)
+      /(berapa|jumlah|pending|status|saya|masih)/.test(m)
     ) {
       tools.push('my_purchase_requests');
     }
 
     if (
-      (/(stok|stock|barang)/.test(m) &&
+      (/(stoknya|\bstok\b|\bstock\b|barang)/.test(m) &&
         /(berapa|cari|cek|qty|jumlah|total|paling|terendah|terkecil|terbesar|sedikit|banyak)/.test(
           m,
         )) ||
+      isStockQuantityRankingQuery(message) ||
       /(barang|stok|stock).*(paling sedikit|paling kecil|paling banyak|terendah)/.test(
         m,
       ) ||
@@ -199,7 +203,7 @@ export class AiToolsService {
       case 'my_visit_requests':
         return this.myVisitRequests(user);
       case 'my_purchase_requests':
-        return this.myPurchaseRequests(user);
+        return this.myPurchaseRequests(user, message);
       case 'search_stock':
         return this.searchStock(user, message);
       case 'count_suppliers':
@@ -358,10 +362,14 @@ export class AiToolsService {
       mode !== 'top_budget' &&
       mode !== 'smallest' &&
       mode !== 'status_count' &&
+      mode !== 'status_breakdown' &&
       mode !== 'metric_aggregate' &&
       mode !== 'filtered_list'
     ) {
       mode = 'project_count';
+    }
+    if (isStatusBreakdownQuery(bareMessage)) {
+      mode = 'status_breakdown';
     }
     const metrics = detectFinanceMetrics(bareMessage);
     const metric = metrics[0] ?? detectFinanceMetric(bareMessage);
@@ -370,7 +378,7 @@ export class AiToolsService {
     const rankingMetric = detectRankingMetric(
       hasExplicitRankingMetric(bareMessage) ? bareMessage : message,
     );
-    const explicitN = detectExplicitTopN(bareMessage);
+    const explicitN = detectRequestedRankingN(bareMessage);
     const taggedLimit = message.match(/\[LIMIT_(\d{1,2})\]/i);
     const topN =
       explicitN ??
@@ -398,15 +406,20 @@ export class AiToolsService {
       /\[scope_archived\]/i.test(message) ||
       (/\b(archived|arsip)\b/.test(normalizeId(bareMessage)) &&
         (mode === 'status_count' || mode === 'filtered_list'));
+    const negatedActive = hasActiveStatusNegation(bareMessage);
     const forceActive =
       (/\[scope_active\]/i.test(message) &&
         mode !== 'project_count' &&
-        mode !== 'metric_aggregate') ||
+        mode !== 'metric_aggregate' &&
+        mode !== 'status_breakdown' &&
+        !negatedActive) ||
       (/\baktif\b|\bactive\b/.test(normalizeId(bareMessage)) &&
+        !negatedActive &&
         !broaderScope &&
         !forceClosed &&
         !forceArchived &&
         mode !== 'status_count' &&
+        mode !== 'status_breakdown' &&
         mode !== 'project_count');
 
     const hierarchyLevel = extractHierarchyConstraint(message);
@@ -416,7 +429,9 @@ export class AiToolsService {
     };
     if (forceArchived || metric === 'status_archived') statusWhere = 'ARCHIVED';
     else if (forceClosed || metric === 'status_closed') statusWhere = 'CLOSED';
-    else if (
+    else if (metric === 'status_not_active') {
+      statusWhere = { in: ['CLOSED', 'ARCHIVED'] };
+    } else if (
       !broaderScope &&
       (forceActive ||
         metric === 'status_active' ||
@@ -464,6 +479,39 @@ export class AiToolsService {
     }
 
     if (mode === 'status_count') {
+      if (metric === 'status_not_active') {
+        const whereNotActive: Prisma.FinanceProjectWhereInput = {
+          ...baseWhere,
+          status: { in: ['CLOSED', 'ARCHIVED'] },
+          ...(hierarchyLevel ? { hierarchyLevel } : {}),
+        };
+        const [closed, archived, count] = await Promise.all([
+          this.prisma.financeProject.count({
+            where: { ...whereNotActive, status: 'CLOSED' },
+          }),
+          this.prisma.financeProject.count({
+            where: { ...whereNotActive, status: 'ARCHIVED' },
+          }),
+          this.prisma.financeProject.count({ where: whereNotActive }),
+        ]);
+        return {
+          name: 'finance_analytics',
+          ok: true,
+          summary: [
+            `Finance Project yang tidak ACTIVE – ${count} Project`,
+            `• CLOSED – ${closed} Project`,
+            `• ARCHIVED – ${archived} Project`,
+            `Data per ${fmtDateId()}.`,
+          ].join('\n'),
+          data: {
+            status: 'NOT_ACTIVE',
+            count,
+            closed,
+            archived,
+            mode: 'status_count',
+          },
+        };
+      }
       const statusLabel =
         metric === 'status_closed'
           ? 'CLOSED'
@@ -484,6 +532,44 @@ export class AiToolsService {
           ? `${statusLabel} ${hierarchyLevel} – ${count} Project`
           : `${statusLabel} Project – ${count} Project`,
         data: { status: statusLabel, count, mode: 'status_count' },
+      };
+    }
+
+    if (mode === 'status_breakdown') {
+      const groups = await this.prisma.financeProject.groupBy({
+        by: ['status'],
+        where: this.canSeeAllFinance(user.role)
+          ? {}
+          : { createdById: user.userId },
+        _count: { _all: true },
+      });
+      const countOf = (status: string) => {
+        const row = groups.find((g) => String(g.status) === status);
+        const c = row?._count as { _all?: number } | number | undefined;
+        if (typeof c === 'number') return c;
+        return c?._all ?? 0;
+      };
+      const active = countOf('ACTIVE');
+      const closed = countOf('CLOSED');
+      const archived = countOf('ARCHIVED');
+      const total = active + closed + archived;
+      return {
+        name: 'finance_analytics',
+        ok: true,
+        summary: [
+          `Jumlah Finance Project per status (total ${total})`,
+          `• ACTIVE – ${active} Project`,
+          `• CLOSED – ${closed} Project`,
+          `• ARCHIVED – ${archived} Project`,
+          `Data per ${fmtDateId()}.`,
+        ].join('\n'),
+        data: {
+          mode: 'status_breakdown',
+          ACTIVE: active,
+          CLOSED: closed,
+          ARCHIVED: archived,
+          total,
+        },
       };
     }
 
@@ -518,13 +604,9 @@ export class AiToolsService {
       const exactCode = (needle || message).match(
         /\b((?:SITE|SEG|FIN)-\d{4}-\d+)\b/i,
       )?.[1];
-      const isCari =
-        /\bcari\b/i.test(normalizeId(bareMessage)) ||
-        /\bcari\b/i.test(normalizeId(message));
-      const isDetailLookup = /^detail\b/i.test(bareMessage.trim());
-      // Initial "Cari SEG-…" may include children. Detail / exact-code
-      // follow-ups must resolve the object itself (PAI-FNC-005).
-      const exactObjectOnly = !!exactCode && (isDetailLookup || !isCari);
+      // Exact unique code is the object itself (PAI-DIQ-003). Related children
+      // are not treated as ambiguity.
+      const exactObjectOnly = !!exactCode;
       if (exactCode && exactObjectOnly) {
         const exactRows = await this.prisma.financeProject.findMany({
           where: {
@@ -1106,7 +1188,10 @@ export class AiToolsService {
       overbudget: 'Over Budget',
     };
     const dirLabel = dir === 'desc' ? 'terbesar' : 'terkecil';
-    const title = `Top ${n} Finance Project — ${metricLabel[rankingMetric]} ${dirLabel}${hierLabel}`;
+    const title =
+      n === 1
+        ? `Finance Project dengan ${metricLabel[rankingMetric]} paling ${dirLabel}${hierLabel}`
+        : `Top ${n} Finance Project — ${metricLabel[rankingMetric]} ${dirLabel}${hierLabel}`;
     const lines = top.map((item, i) => {
       const val =
         rankingMetric === 'realization'
@@ -1694,13 +1779,21 @@ export class AiToolsService {
     };
   }
 
-  private async myPurchaseRequests(user: AuthUser): Promise<ToolTrace> {
+  private async myPurchaseRequests(
+    user: AuthUser,
+    message = '',
+  ): Promise<ToolTrace> {
+    const m = normalizeId(message);
+    const pendingOnly = /\bpending\b/.test(m);
+    const statuses = pendingOnly
+      ? (['PENDING'] as const)
+      : (['PENDING', 'IN_REVIEW', 'APPROVED', 'ORDERED'] as const);
     const where: Prisma.PurchaseRequestWhereInput =
       user.role === 'FINANCE' || user.role === 'PURCHASING' || user.role === 'GENERAL_MANAGER'
-        ? { status: { in: ['PENDING', 'IN_REVIEW', 'APPROVED', 'ORDERED'] } }
+        ? { status: { in: [...statuses] } }
         : {
             requestedBy: user.userId,
-            status: { in: ['PENDING', 'IN_REVIEW', 'APPROVED', 'ORDERED'] },
+            status: { in: [...statuses] },
           };
     const count = await this.prisma.purchaseRequest.count({ where });
     const recent = await this.prisma.purchaseRequest.findMany({
@@ -1709,13 +1802,14 @@ export class AiToolsService {
       orderBy: { createdAt: 'desc' },
       take: 5,
     });
+    const scopeLabel = pendingOnly ? 'pending' : 'aktif';
     return {
       name: 'my_purchase_requests',
       ok: true,
       summary:
         count === 0
-          ? 'Tidak ada purchase request aktif di scope Anda.'
-          : `${count} purchase request aktif. Contoh: ${recent
+          ? `Tidak ada purchase request ${scopeLabel} di scope Anda.`
+          : `${count} purchase request ${scopeLabel}. Contoh: ${recent
               .map((r) => `${r.requestNumber} (${r.status})`)
               .join(', ')}.`,
       data: recent.map((r) => ({
@@ -1732,6 +1826,10 @@ export class AiToolsService {
         m,
       );
     const highest = /(paling banyak|paling besar|tertinggi|terbesar)/.test(m);
+    const rankN = Math.max(
+      1,
+      Math.min(50, detectRequestedRankingN(message) ?? (lowest || highest ? 10 : 8)),
+    );
 
     const stop = new Set([
       'stok',
@@ -1780,7 +1878,7 @@ export class AiToolsService {
         minStockQty: true,
         category: true,
       },
-      take: lowest || highest ? 10 : 8,
+      take: lowest || highest ? rankN : 8,
       orderBy: lowest
         ? { currentQty: 'asc' }
         : highest
@@ -1796,12 +1894,26 @@ export class AiToolsService {
       };
     }
 
+    const top = items.slice(0, rankN);
+    if ((highest || lowest) && rankN === 1 && top[0]) {
+      const i = top[0];
+      const phrase = lowest ? 'paling sedikit' : 'paling banyak';
+      return {
+        name: 'search_stock',
+        ok: true,
+        summary: [
+          `${i.name} memiliki stok ${phrase}, yaitu ${i.currentQty} ${i.unit}.`,
+          `Data per ${fmtDateId()}.`,
+        ].join('\n'),
+        data: top,
+      };
+    }
     const title = lowest
       ? 'Stok paling sedikit (currentQty terendah)'
       : highest
         ? 'Stok paling banyak (currentQty tertinggi)'
         : 'Stok';
-    const lines = items.map(
+    const lines = top.map(
       (i, idx) =>
         `${idx + 1}. ${i.code} — ${i.name}: ${i.currentQty} ${i.unit}` +
         (i.minStockQty != null ? ` (min ${i.minStockQty})` : ''),
@@ -1811,7 +1923,7 @@ export class AiToolsService {
       name: 'search_stock',
       ok: true,
       summary: [title, ...lines, `Data per ${fmtDateId()}.`].join('\n'),
-      data: items,
+      data: top,
     };
   }
 

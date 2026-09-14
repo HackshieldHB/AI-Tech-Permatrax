@@ -326,7 +326,8 @@ export function detectTopic(text: string): SessionTopic | null {
   const m = normalizeId(text);
   if (/procurement|purchase request|\bpr\b|pembelian|order barang|surat jalan/.test(m))
     return 'procurement';
-  if (/(stok|stock)\b/.test(m) && !/finance|budget/.test(m)) return 'stock';
+  if (/(stoknya|\bstok\b|\bstock\b)/.test(m) && !/finance|budget/.test(m))
+    return 'stock';
   if (/cash\s*op|cash operation|pengajuan dana|approval dana|reimbursement|cash advance/.test(m))
     return 'cash';
   if (/visit request|kunjungan|clean list/.test(m)) return 'visit';
@@ -1226,6 +1227,7 @@ export function classifyPaIntent(text: string): PaIntent {
 export function isKnowledgeDefinitionQuery(text: string): boolean {
   const m = normalizeId(text);
   if (isProceduralGuidanceQuery(text)) return false;
+  if (isModuleDataRankingQuery(text)) return false;
   if (isRoleCapabilityQuery(text) || isBusinessRoleResponsibilityQuery(text)) {
     return true;
   }
@@ -1286,6 +1288,7 @@ export function isFinanceFilterOrAggregateQuery(text: string): boolean {
 /** "berapa project tersedia" / count inventory — not a named search. */
 export function isProjectCountQuery(text: string): boolean {
   const m = normalizeId(primaryUtterance(text));
+  if (isStatusBreakdownQuery(text)) return false;
   // Budget-amount questions are not inventory counts
   if (/(berapa|total|jumlah|nominal).*(budget|anggaran|duit|nilai)/.test(m)) {
     return false;
@@ -1501,6 +1504,9 @@ export function isFinanceBudgetQuery(text: string): boolean {
   const m = normalizeId(text);
   if (isProceduralGuidanceQuery(text)) return false;
   if (isKnowledgeDefinitionQuery(text)) return false;
+  if (isModuleDataRankingQuery(text) || isStockQuantityRankingQuery(text)) {
+    return false;
+  }
   if (isProjectCountQuery(text)) return true;
   if (isFinanceFilterOrAggregateQuery(text)) return true;
   if (/(finance\s*project|proyek\s*finance|project\s*finance|fp\b)/.test(m)) {
@@ -1562,6 +1568,7 @@ export function isFinanceBudgetQuery(text: string): boolean {
 /** Single-metric / status aggregate (PAI-FNC-001/002). */
 export type FinanceMetric =
   | 'status_active'
+  | 'status_not_active'
   | 'status_closed'
   | 'status_archived'
   | 'overbudget_count'
@@ -1591,10 +1598,70 @@ export type FinanceMode =
   | 'status_count'
   | 'metric_aggregate'
   | 'project_count'
+  | 'status_breakdown'
   | 'ranking'
   | 'filtered_list';
 
-/** Explicit Top-N, or null when the user did not name a count (PAI-FNC-004). */
+/** Explicit negation of ACTIVE / aktif (PAI-DIQ-001). */
+export function hasActiveStatusNegation(text: string): boolean {
+  const m = normalizeId(text);
+  return /(tidak|bukan|selain|kecuali|non)[-\s]+(active|aktif)/.test(m);
+}
+
+/** Group-by status count (PAI-DIQ-004). */
+export function isStatusBreakdownQuery(text: string): boolean {
+  const m = normalizeId(primaryUtterance(text));
+  return (
+    /(masing-masing|tiap|setiap|per)\s+status/.test(m) ||
+    /(jumlah|berapa|count).*(per|tiap|setiap|masing-masing)\s+status/.test(m) ||
+    /(status).*(masing-masing|tiap status|setiap status|per status)/.test(m)
+  );
+}
+
+/** Stock/material quantity ranking (PAI-DIQ-004 DIQ-010). */
+export function isStockQuantityRankingQuery(text: string): boolean {
+  const m = normalizeId(text);
+  if (isProceduralGuidanceQuery(text) || isKnowledgeDefinitionQuery(text)) {
+    return false;
+  }
+  const stockish = /(stoknya|\bstok\b|\bstock\b|barang)/.test(m);
+  const rankish =
+    /(paling banyak|paling sedikit|paling besar|paling kecil|tertinggi|terendah|terbesar|terkecil)/.test(
+      m,
+    );
+  return (
+    stockish &&
+    rankish &&
+    !/(finance|budget|anggaran|project|proyek)/.test(m)
+  );
+}
+
+/**
+ * Ranking cardinality: explicit N, or 1 for singular max/min (PAI-DIQ-002).
+ */
+export function detectRequestedRankingN(text: string): number | null {
+  const explicit = detectExplicitTopN(text);
+  if (explicit != null) return explicit;
+  const m = normalizeId(primaryUtterance(text));
+  if (/\btop\s*\d+\b/.test(m)) return null;
+  const singular =
+    /\bmana\b/.test(m) ||
+    (/\bapa\b/.test(m) && /(stok|stock|barang|material)/.test(m)) ||
+    /(yang punya|yang memiliki|yang budgetnya|budgetnya paling)/.test(m);
+  if (
+    singular &&
+    /(paling besar|paling tinggi|paling banyak|terbesar|tertinggi)/.test(m)
+  ) {
+    return 1;
+  }
+  if (
+    singular &&
+    /(paling kecil|paling rendah|paling sedikit|terkecil|terendah)/.test(m)
+  ) {
+    return 1;
+  }
+  return null;
+}
 export function detectExplicitTopN(text: string): number | null {
   const t = normalizeId(primaryUtterance(text))
     .replace(/\u00a0/g, ' ')
@@ -1603,7 +1670,9 @@ export function detectExplicitTopN(text: string): number | null {
     /\btop[\s-]*(\d{1,2})\b/,
     /\b(\d{1,2})\s+yang\s+(?:terbesar|terkecil|teratas|terendah|paling)/,
     /\b(\d{1,2})\s+(?:project\s+)?(?:dengan\s+)?(?:total\s+)?(?:budget|anggaran|realisasi|sisa|material|jasa)?\s*(terbesar|terkecil|teratas|terendah|paling)/,
-    /\b(?:sekarang|tampilkan|ambil|lihat)\s+(\d{1,2})\s+(?:yang\s+)?(?:budget|anggaran|realisasi|sisa|material|jasa|project|proyek)/,
+    /\b(?:sekarang|tampilkan|ambil|lihat)\s+(\d{1,2})\s+(?:yang\s+)?(?:budget|anggaran|realisasi|sisa|material|jasa|finance|project|proyek)/,
+    /\btampilkan\s+(\d{1,2})\b/,
+    /\b(\d{1,2})\s+(?:finance\s+)?(?:project|proyek)\b/,
     /\b(?:jadikan|ambil|pakai|pake|limit)\s+(?:top[\s-]*)?(\d{1,2})\b/,
     /\b(?:sekarang|hanya)\s+(\d{1,2})\s*(?:saja)?$/,
     /\b(\d{1,2})\s+(?:budget|anggaran|realisasi|material|sisa)/,
@@ -1619,7 +1688,7 @@ export function detectExplicitTopN(text: string): number | null {
 
 /** Top-N limit from ranking wording. Default 10 when unspecified. */
 export function detectTopNLimit(text: string): number {
-  return detectExplicitTopN(text) ?? 10;
+  return detectRequestedRankingN(text) ?? 10;
 }
 
 /**
@@ -1673,6 +1742,11 @@ export function detectFinanceMetrics(text: string): FinanceMetric[] {
     push('status_closed');
   }
   if (
+    hasActiveStatusNegation(text) &&
+    /(berapa|jumlah|ada|count|project|proyek)/.test(m)
+  ) {
+    push('status_not_active');
+  } else if (
     (/\b(active|aktif)\b/.test(m) &&
       /(berapa|jumlah|ada|count|project|proyek)|^active\??$|^aktif\??$/.test(
         m,
@@ -1778,7 +1852,8 @@ export function detectRankingMetric(text: string): FinanceRankingMetric {
   if (/(realisasi|spent|terpakai)/.test(m)) return 'realization';
   const tagged = fromTag();
   if (tagged && !hasExplicitRankingMetric(primaryUtterance(text))) return tagged;
-  if (/(\bbudget\b|\banggaran\b)/.test(m) && !tagged) return 'totalBudget';
+  if (/(budgetnya|\bbudget\b|\banggaran\b)/.test(m) && !tagged)
+    return 'totalBudget';
   if (tagged) return tagged;
   if (/(over\s*budget|overbudget)/.test(src)) return 'overbudget';
   if (/(sisa\s*budget|remaining(\s*budget)?)/.test(src)) return 'remaining';
@@ -1971,6 +2046,8 @@ export function extractHierarchyConstraint(
 
 export function detectFinanceMode(text: string): FinanceMode {
   const m = normalizeId(primaryUtterance(text));
+
+  if (isStatusBreakdownQuery(text)) return 'status_breakdown';
 
   // PAI-FNC-004: ranking with dynamic metric (before generic overbudget/summary)
   const wantsRank =

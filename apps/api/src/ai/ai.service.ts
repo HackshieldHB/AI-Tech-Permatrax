@@ -60,6 +60,7 @@ import {
   isRoleCapabilityQuery,
   isBusinessRoleResponsibilityQuery,
   isUnsupportedKnowledgeCausalQuery,
+  isStockQuantityRankingQuery,
   isProjectCountQuery,
   isStandaloneFinanceAggregateQuery,
   isUnsupportedDataQuery,
@@ -1713,6 +1714,7 @@ export class AiService {
     if (
       useTools &&
       session.activeTopic === 'finance' &&
+      !isStockQuantityRankingQuery(text) &&
       !toolNames.includes('finance_analytics') &&
       (/budget|project|proyek|berapa|jumlah|total|terbesar|terkecil|over|material|jasa|realisasi|sisa|active|closed|archived|site|segment|\bcari\b|\btop\s*\d+|(?:site|seg|fin)-\d{4}/i.test(
         effectiveText,
@@ -1723,6 +1725,11 @@ export class AiService {
         isFinanceFilterOrAggregateQuery(effectiveText))
     ) {
       toolNames.unshift('finance_analytics');
+    }
+
+    // Stock quantity ranking must not be swallowed by a locked finance topic
+    if (useTools && isStockQuantityRankingQuery(text)) {
+      toolNames = ['search_stock'];
     }
 
     // Locked stock + ranking/data intent → search_stock (not howto KB)

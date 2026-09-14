@@ -12,6 +12,7 @@ import {
   detectRankingDirection,
   detectTopNLimit,
   detectExplicitTopN,
+  detectRequestedRankingN,
   classifyPaIntent,
   extractProjectNeedle,
   extractHierarchyConstraint,
@@ -217,6 +218,11 @@ describe('PermaTrax AI chatbot (logic)', () => {
       },
       financeProject: {
         count: jest.fn().mockResolvedValue(18),
+        groupBy: jest.fn().mockResolvedValue([
+          { status: 'ACTIVE', _count: { _all: 99 } },
+          { status: 'CLOSED', _count: { _all: 1 } },
+          { status: 'ARCHIVED', _count: { _all: 1 } },
+        ]),
         aggregate: jest.fn().mockResolvedValue({
           _sum: {
             totalBudget: 12540000000,
@@ -3336,17 +3342,15 @@ describe('PermaTrax AI chatbot (logic)', () => {
     const start = await ai.chat(user, 'Aku mau bahas Finance Project.');
     const search = await ai.chat(user, 'Cari SEG-2026-005', start.conversationId);
     expect(search.answer).toMatch(/SEG-2026-005/);
-    expect(search.answer).toMatch(/FIN-2026-005/);
-    const picked = await ai.chat(user, 'Yang SEGMENT', start.conversationId);
-    expect(picked.answer).toMatch(/SEG-2026-005/);
-    expect(picked.answer).not.toMatch(/FIN-2026-005/);
-    expect(picked.answer).not.toMatch(/SEG-2026-011/);
+    expect(search.answer).not.toMatch(/FIN-2026-005/);
+    expect(search.answer).not.toMatch(/pilih salah satu/i);
     const again = await ai.chat(
       user,
       'Yang SEGMENT dengan kode SEG-2026-005',
       start.conversationId,
     );
     expect(again.answer).toMatch(/SEG-2026-005/);
+    expect(again.answer).not.toMatch(/FIN-2026-005/);
     expect(again.answer).not.toMatch(/pilih salah satu/i);
   });
 
@@ -3413,11 +3417,8 @@ describe('PermaTrax AI chatbot (logic)', () => {
     const start = await ai.chat(user, 'Aku mau bahas Finance Project.');
     const search = await ai.chat(user, 'Cari SEG-2026-005', start.conversationId);
     expect(search.answer).toMatch(/SEG-2026-005/);
-    expect(search.answer).toMatch(/FIN-2026-005/);
-    const byType = await ai.chat(user, 'Yang SEGMENT.', start.conversationId);
-    expect(byType.answer).toMatch(/SEG-2026-005/);
-    expect(byType.answer).not.toMatch(/FIN-2026-005/);
-    expect(byType.answer).not.toMatch(/pilih salah satu/i);
+    expect(search.answer).not.toMatch(/FIN-2026-005/);
+    expect(search.answer).not.toMatch(/pilih salah satu/i);
     const conv2 = await ai.chat(user, 'Aku mau bahas Finance Project.');
     await ai.chat(user, 'Cari SEG-2026-005', conv2.conversationId);
     const byCode = await ai.chat(user, 'SEG-2026-005', conv2.conversationId);
@@ -3678,7 +3679,7 @@ describe('PermaTrax AI chatbot (logic)', () => {
     ]);
     const { ai } = makeServices(prisma);
     const start = await ai.chat(user, 'Aku mau bahas Finance Project.');
-    await ai.chat(user, 'Cari SEG-2026-005', start.conversationId);
+    await ai.chat(user, 'Cari PST-PYB', start.conversationId);
     const res = await ai.chat(user, 'Yang STANDALONE', start.conversationId);
     expect(res.answer).toMatch(/tidak ada yang cocok|STANDALONE/i);
     expect(res.answer).not.toMatch(/User Guide/i);
@@ -3905,7 +3906,9 @@ describe('PermaTrax AI chatbot (logic)', () => {
     const { ai } = makeServices(prisma);
     const start = await ai.chat(user, 'Aku mau bahas Finance Project.');
     const search = await ai.chat(user, 'Cari SEG-2026-005', start.conversationId);
-    expect(search.answer).toMatch(/pilih salah satu/i);
+    expect(search.answer).toMatch(/SEG-2026-005/);
+    expect(search.answer).not.toMatch(/pilih salah satu/i);
+    expect(search.answer).not.toMatch(/FIN-2026-005/);
     const picked = await ai.chat(
       user,
       'Sekarang cari FIN-2026-005',
@@ -4234,5 +4237,240 @@ describe('PermaTrax AI chatbot (logic)', () => {
     expect(whyTemplatePreservesFacts(pack, 'Why1: ok Why2: ok Why3: unknown')).toBe(
       false,
     );
+  });
+
+  it('DIQ-001: tidak ACTIVE is not ACTIVE count', () => {
+    expect(detectFinanceMetrics('Ada berapa Finance Project yang tidak ACTIVE?')).toEqual(
+      ['status_not_active'],
+    );
+    expect(
+      detectFinanceMode('Ada berapa Finance Project yang tidak ACTIVE?'),
+    ).toBe('status_count');
+    expect(
+      extractConstraintsFromText('Ada berapa Finance Project yang tidak ACTIVE?')
+        .status,
+    ).not.toBe('ACTIVE');
+  });
+
+  it('DIQ-001: tidak ACTIVE live count labels CLOSED/ARCHIVED, not ACTIVE', async () => {
+    const prisma = makePrisma();
+    (prisma as any).financeProject.count = jest.fn(async ({ where }: any) => {
+      if (where?.status === 'CLOSED') return 4;
+      if (where?.status === 'ARCHIVED') return 2;
+      if (where?.status?.in) return 6;
+      if (where?.status === 'ACTIVE') return 99;
+      return 0;
+    });
+    const { ai } = makeServices(prisma);
+    const start = await ai.chat(user, 'Aku mau bahas Finance Project.');
+    const res = await ai.chat(
+      user,
+      'Ada berapa Finance Project yang tidak ACTIVE?',
+      start.conversationId,
+    );
+    expect(res.answer).toMatch(/tidak ACTIVE/i);
+    expect(res.answer).toMatch(/CLOSED/i);
+    expect(res.answer).toMatch(/6/);
+    expect(res.answer).not.toMatch(/ACTIVE Project\s*[–-]\s*99/i);
+  });
+
+  it('DIQ-002: ranking cardinality Top 1 / Top 5 / ACTIVE Top 1', () => {
+    expect(
+      detectRequestedRankingN(
+        'Finance Project mana yang punya budget paling besar?',
+      ),
+    ).toBe(1);
+    expect(
+      detectExplicitTopN(
+        'Tampilkan 5 Finance Project dengan budget terbesar.',
+      ),
+    ).toBe(5);
+    expect(detectTopNLimit('Tampilkan 5 Finance Project dengan budget terbesar.')).toBe(
+      5,
+    );
+    expect(detectTopNLimit('Realisasi terbesar')).toBe(10);
+    expect(
+      detectRequestedRankingN(
+        'Dari Finance Project yang ACTIVE, mana yang budgetnya paling besar?',
+      ),
+    ).toBe(1);
+  });
+
+  it('DIQ-002: singular budget max is Top 1 not Top 10', async () => {
+    const prisma = makePrisma();
+    const rows = Array.from({ length: 12 }, (_, i) => ({
+      code: `SEG-2026-${String(i + 1).padStart(3, '0')}`,
+      name: `P${i + 1}`,
+      totalBudget: (12 - i) * 100000000,
+      materialBudget: 1,
+      jasaBudget: 1,
+      materialSpent: 0,
+      jasaSpent: 0,
+      status: i === 0 ? 'ACTIVE' : 'CLOSED',
+      hierarchyLevel: 'SEGMENT',
+      isOverbudget: false,
+    }));
+    (prisma as any).financeProject.findMany = jest.fn(async () => rows);
+    const { ai } = makeServices(prisma);
+    const start = await ai.chat(user, 'Aku mau bahas Finance Project.');
+    const one = await ai.chat(
+      user,
+      'Finance Project mana yang punya budget paling besar?',
+      start.conversationId,
+    );
+    expect(one.answer).not.toMatch(/Top 10/i);
+    expect(one.answer).toMatch(/SEG-2026-001/);
+    expect(one.answer).not.toMatch(/SEG-2026-011/);
+    const five = await ai.chat(
+      user,
+      'Tampilkan 5 Finance Project dengan budget terbesar.',
+      start.conversationId,
+    );
+    expect(five.answer).toMatch(/Top 5/i);
+    expect(five.answer).not.toMatch(/Top 10/i);
+    expect(five.answer).toMatch(/SEG-2026-005/);
+    expect(five.answer).not.toMatch(/SEG-2026-006/);
+    const active = await ai.chat(
+      user,
+      'Dari Finance Project yang ACTIVE, mana yang budgetnya paling besar?',
+      start.conversationId,
+    );
+    expect(active.answer).not.toMatch(/Top 10/i);
+    expect(active.answer).toMatch(/SEG-2026-001/);
+  });
+
+  it('DIQ-003: exact code Cari SEG-2026-005 does not expand children', async () => {
+    const prisma = makePrisma();
+    (prisma as any).financeProject.findMany = jest.fn(async (args: any) => {
+      const codeEq = args?.where?.code?.equals;
+      if (codeEq && String(codeEq).toUpperCase() === 'SEG-2026-005') {
+        return [
+          {
+            code: 'SEG-2026-005',
+            name: 'Segment - PST-PYB',
+            totalBudget: 1000000000,
+            materialBudget: 0,
+            jasaBudget: 0,
+            materialSpent: 0,
+            jasaSpent: 0,
+            status: 'ACTIVE',
+            hierarchyLevel: 'SEGMENT',
+            isOverbudget: false,
+            poCustomerNumber: null,
+            parent: null,
+            description: 'parent',
+          },
+        ];
+      }
+      return [
+        {
+          code: 'FIN-2026-005',
+          name: 'Child',
+          totalBudget: 1,
+          materialBudget: 0,
+          jasaBudget: 0,
+          materialSpent: 0,
+          jasaSpent: 0,
+          status: 'ACTIVE',
+          hierarchyLevel: 'SITE',
+          isOverbudget: false,
+          poCustomerNumber: null,
+          parent: { code: 'SEG-2026-005', name: 'Segment - PST-PYB' },
+        },
+      ];
+    });
+    const { ai } = makeServices(prisma);
+    const start = await ai.chat(user, 'Aku mau bahas Finance Project.');
+    const res = await ai.chat(user, 'Cari Finance Project SEG-2026-005', start.conversationId);
+    expect(res.answer).toMatch(/SEG-2026-005/);
+    expect(res.answer).not.toMatch(/FIN-2026-005/);
+    expect(res.answer).not.toMatch(/pilih salah satu/i);
+  });
+
+  it('DIQ-004: status breakdown is groupBy, not total inventory', () => {
+    expect(
+      detectFinanceMode(
+        'Berapa jumlah Finance Project untuk masing-masing status?',
+      ),
+    ).toBe('status_breakdown');
+    expect(
+      isProjectCountQuery(
+        'Berapa jumlah Finance Project untuk masing-masing status?',
+      ),
+    ).toBe(false);
+  });
+
+  it('DIQ-004: masing-masing status returns ACTIVE/CLOSED/ARCHIVED counts', async () => {
+    const prisma = makePrisma();
+    const { ai } = makeServices(prisma);
+    const start = await ai.chat(user, 'Aku mau bahas Finance Project.');
+    const res = await ai.chat(
+      user,
+      'Berapa jumlah Finance Project untuk masing-masing status?',
+      start.conversationId,
+    );
+    expect(res.answer).toMatch(/ACTIVE/i);
+    expect(res.answer).toMatch(/CLOSED/i);
+    expect(res.answer).toMatch(/ARCHIVED/i);
+    expect(res.answer).toMatch(/99/);
+    expect(res.answer).not.toMatch(/Total Project – 101/i);
+  });
+
+  it('DIQ-004: PR pending keeps PENDING scope and label', async () => {
+    const prisma = makePrisma();
+    (prisma as any).purchaseRequest.count = jest.fn(async ({ where }: any) => {
+      const st = where?.status?.in;
+      if (Array.isArray(st) && st.length === 1 && st[0] === 'PENDING') return 8;
+      return 20;
+    });
+    (prisma as any).purchaseRequest.findMany = jest.fn(async ({ where }: any) => {
+      const st = where?.status?.in;
+      expect(st).toEqual(['PENDING']);
+      return [
+        { requestNumber: 'PR-1', status: 'PENDING', totalAmount: 1 },
+        { requestNumber: 'PR-2', status: 'PENDING', totalAmount: 1 },
+      ];
+    });
+    const { ai } = makeServices(prisma);
+    const res = await ai.chat(
+      user,
+      'Ada berapa Purchase Request yang masih pending?',
+    );
+    expect(res.answer).toMatch(/8 purchase request pending/i);
+    expect(res.answer).toMatch(/PENDING/);
+    expect(res.answer).not.toMatch(/purchase request aktif/i);
+  });
+
+  it('DIQ-004: material stoknya paling banyak is live Top-1 stock', async () => {
+    const prisma = makePrisma();
+    (prisma as any).stockItem.findMany = jest.fn(async () => [
+      {
+        code: 'MAT-1',
+        name: 'Kabel FO',
+        currentQty: 900,
+        unit: 'meter',
+        minStockQty: 10,
+        category: 'material',
+      },
+      {
+        code: 'MAT-2',
+        name: 'Connector',
+        currentQty: 12,
+        unit: 'pcs',
+        minStockQty: 1,
+        category: 'material',
+      },
+    ]);
+    const { ai } = makeServices(prisma);
+    const start = await ai.chat(user, 'Aku mau bahas Finance Project.');
+    const res = await ai.chat(
+      user,
+      'Material apa yang stoknya paling banyak?',
+      start.conversationId,
+    );
+    expect(res.answer).toMatch(/Kabel FO/i);
+    expect(res.answer).toMatch(/900/);
+    expect(res.answer).not.toMatch(/Guide|Apa itu Finance/i);
+    expect(res.answer).not.toMatch(/Connector/);
   });
 });
