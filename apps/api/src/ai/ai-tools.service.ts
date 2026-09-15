@@ -343,9 +343,16 @@ export class AiToolsService {
 
     // Strip constraint/recovery tags for NLU so session tags don't hijack mode
     const bareMessage = message
-      .replace(/\s*\[(SCOPE_|HIERARCHY_|BROADER_|USER_|METRIC|LIMIT_|DIR_).*?\]/gi, ' ')
+      .replace(/\s*\[(SCOPE_|HIERARCHY_|BROADER_|USER_|METRIC|LIMIT_|DIR_|RESULT_SET:).*?\]/gi, ' ')
       .replace(/\s+/g, ' ')
       .trim();
+    const resultSetMatch = message.match(/\[RESULT_SET:([^\]]+)\]/i);
+    const resultSetCodes = resultSetMatch
+      ? resultSetMatch[1]
+          .split(',')
+          .map((c) => c.trim().toUpperCase())
+          .filter((c) => /^(SITE|SEG|FIN)-\d{4}-\d+$/.test(c))
+      : [];
     let mode = detectFinanceMode(bareMessage);
     if (
       (mode === 'metric_aggregate' || mode === 'summary') &&
@@ -382,7 +389,11 @@ export class AiToolsService {
     const taggedLimit = message.match(/\[LIMIT_(\d{1,2})\]/i);
     const topN =
       explicitN ??
-      (taggedLimit ? Math.min(50, Math.max(1, Number(taggedLimit[1]))) : 10);
+      (resultSetCodes.length
+        ? resultSetCodes.length
+        : taggedLimit
+          ? Math.min(50, Math.max(1, Number(taggedLimit[1])))
+          : 10);
     const taggedDir: 'asc' | 'desc' | null = /\[DIR_ASC\]/i.test(message)
       ? 'asc'
       : /\[DIR_DESC\]/i.test(message)
@@ -447,6 +458,16 @@ export class AiToolsService {
       status: statusWhere,
       ...(hierarchyLevel ? { hierarchyLevel } : {}),
     };
+    if (resultSetCodes.length) {
+      baseWhere.code = { in: resultSetCodes };
+    }
+    const compareCodes = [
+      ...new Set(
+        [...bareMessage.matchAll(/\b((?:SITE|SEG|FIN)-\d{4}-\d+)\b/gi)].map((x) =>
+          x[1].toUpperCase(),
+        ),
+      ),
+    ];
 
     if (/\[broader_retry\]/i.test(message)) {
       return this.financeBroaderRetry(user, {
@@ -457,6 +478,13 @@ export class AiToolsService {
 
     if (!this.canSeeAllFinance(user.role)) {
       baseWhere.createdById = user.userId;
+    }
+
+    if (
+      compareCodes.length >= 2 &&
+      /(banding|dibanding|lebih besar|lebih kecil)/.test(normalizeId(bareMessage))
+    ) {
+      return this.compareFinanceBudgets(user, compareCodes[0], compareCodes[1]);
     }
 
     if (mode === 'by_owner') {
@@ -528,7 +556,9 @@ export class AiToolsService {
       return {
         name: 'finance_analytics',
         ok: true,
-        summary: hierarchyLevel
+        summary: resultSetCodes.length
+          ? `${count} project ${statusLabel} dari ${resultSetCodes.length} project tadi`
+          : hierarchyLevel
           ? `${statusLabel} ${hierarchyLevel} – ${count} Project`
           : `${statusLabel} Project – ${count} Project`,
         data: { status: statusLabel, count, mode: 'status_count' },
@@ -721,6 +751,9 @@ export class AiToolsService {
         dir,
         hierarchyLevel,
         topN,
+        !(
+          /satu saja|ambil satu|hanya satu/.test(normalizeId(bareMessage))
+        ) && (topN === 1 || /mana yang/.test(normalizeId(bareMessage))),
       );
     }
 
@@ -1079,6 +1112,48 @@ export class AiToolsService {
     };
   }
 
+  private async compareFinanceBudgets(
+    user: AuthUser,
+    codeA: string,
+    codeB: string,
+  ): Promise<ToolTrace> {
+    const rows = await this.prisma.financeProject.findMany({
+      where: {
+        status: { not: 'ARCHIVED' },
+        code: { in: [codeA, codeB] },
+        ...(this.canSeeAllFinance(user.role) ? {} : { createdById: user.userId }),
+      },
+      select: {
+        code: true,
+        name: true,
+        totalBudget: true,
+        status: true,
+      },
+    });
+    const a = rows.find((r) => r.code.toUpperCase() === codeA.toUpperCase());
+    const b = rows.find((r) => r.code.toUpperCase() === codeB.toUpperCase());
+    if (!a || !b) {
+      return {
+        name: 'finance_analytics',
+        ok: true,
+        summary: `Tidak lengkap untuk membandingkan ${codeA} dan ${codeB}.`,
+      };
+    }
+    const va = Number(a.totalBudget);
+    const vb = Number(b.totalBudget);
+    const winner = va === vb ? null : va > vb ? a : b;
+    const loser = winner ? (winner === a ? b : a) : null;
+    const summary = winner
+      ? `${winner.code} memiliki budget lebih besar, yaitu ${fmtIdr(Number(winner.totalBudget))} dibandingkan ${loser!.code} sebesar ${fmtIdr(Number(loser!.totalBudget))}.`
+      : `${a.code} dan ${b.code} memiliki Total Budget yang sama, yaitu ${fmtIdr(va)}.`;
+    return {
+      name: 'finance_analytics',
+      ok: true,
+      summary: [summary, `Data per ${fmtDateId()}.`].join('\n'),
+      data: { mode: 'compare', a, b },
+    };
+  }
+
   /** PAI-FNC-004: dynamic ranking by metric + direction + Top N. */
   private async financeRankingList(
     baseWhere: Prisma.FinanceProjectWhereInput,
@@ -1086,6 +1161,7 @@ export class AiToolsService {
     dir: 'asc' | 'desc',
     hierarchyLevel: 'SITE' | 'SEGMENT' | 'STANDALONE' | null,
     limit = 10,
+    tieAware = false,
   ): Promise<ToolTrace> {
     const where: Prisma.FinanceProjectWhereInput = {
       ...baseWhere,
@@ -1177,7 +1253,14 @@ export class AiToolsService {
       dir === 'desc' ? b.sortValue - a.sortValue : a.sortValue - b.sortValue,
     );
     const n = Math.max(1, Math.min(50, limit || 10));
-    const top = scored.slice(0, n);
+    let top = scored.slice(0, n);
+    if (tieAware && scored.length) {
+      const extreme = scored[0].sortValue;
+      const ties = scored.filter(
+        (s) => Math.abs(Number(s.sortValue) - Number(extreme)) < 0.5,
+      );
+      if (ties.length > 1) top = ties;
+    }
     const hierLabel = hierarchyLevel ? ` (${hierarchyLevel} saja)` : '';
     const metricLabel: Record<FinanceRankingMetric, string> = {
       totalBudget: 'Total Budget',
@@ -1188,8 +1271,10 @@ export class AiToolsService {
       overbudget: 'Over Budget',
     };
     const dirLabel = dir === 'desc' ? 'terbesar' : 'terkecil';
-    const title =
-      n === 1
+    const tied = tieAware && top.length > 1;
+    const title = tied
+      ? `Ada ${top.length} project dengan ${metricLabel[rankingMetric]} paling ${dirLabel} yang sama, yaitu ${fmtIdr(top[0].sortValue)}${hierLabel}`
+      : n === 1
         ? `Finance Project dengan ${metricLabel[rankingMetric]} paling ${dirLabel}${hierLabel}`
         : `Top ${n} Finance Project — ${metricLabel[rankingMetric]} ${dirLabel}${hierLabel}`;
     const lines = top.map((item, i) => {

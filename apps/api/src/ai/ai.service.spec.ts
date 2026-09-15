@@ -4473,4 +4473,234 @@ describe('PermaTrax AI chatbot (logic)', () => {
     expect(res.answer).not.toMatch(/Guide|Apa itu Finance/i);
     expect(res.answer).not.toMatch(/Connector/);
   });
+
+  it('DIQ-012: lima tadi ACTIVE count stays on Top-5 set', async () => {
+    const prisma = makePrisma();
+    const top5 = [
+      { code: 'FIN-2026-002', name: 'A', totalBudget: 5100, materialBudget: 0, jasaBudget: 0, materialSpent: 0, jasaSpent: 0, status: 'ACTIVE', hierarchyLevel: 'SITE', isOverbudget: false },
+      { code: 'SEG-2026-002', name: 'B', totalBudget: 4000, materialBudget: 0, jasaBudget: 0, materialSpent: 0, jasaSpent: 0, status: 'ACTIVE', hierarchyLevel: 'SEGMENT', isOverbudget: false },
+      { code: 'FIN-2026-005', name: 'C', totalBudget: 3000, materialBudget: 0, jasaBudget: 0, materialSpent: 0, jasaSpent: 0, status: 'ACTIVE', hierarchyLevel: 'SITE', isOverbudget: false },
+      { code: 'FIN-2026-006', name: 'D', totalBudget: 1110, materialBudget: 0, jasaBudget: 0, materialSpent: 0, jasaSpent: 0, status: 'ACTIVE', hierarchyLevel: 'SITE', isOverbudget: false },
+      { code: 'FIN-2026-001', name: 'E', totalBudget: 1000, materialBudget: 0, jasaBudget: 0, materialSpent: 0, jasaSpent: 0, status: 'ACTIVE', hierarchyLevel: 'SITE', isOverbudget: false },
+    ];
+    (prisma as any).financeProject.findMany = jest.fn(async ({ where }: any) => {
+      const codes = where?.code?.in;
+      if (Array.isArray(codes)) return top5.filter((r) => codes.includes(r.code));
+      return top5;
+    });
+    (prisma as any).financeProject.count = jest.fn(async ({ where }: any) => {
+      const codes = where?.code?.in;
+      if (Array.isArray(codes) && where?.status === 'ACTIVE') return 5;
+      if (where?.status === 'ACTIVE') return 99;
+      return 5;
+    });
+    const { ai } = makeServices(prisma);
+    const start = await ai.chat(user, 'Aku mau bahas Finance Project.');
+    await ai.chat(
+      user,
+      'Tampilkan 5 Finance Project dengan budget terbesar.',
+      start.conversationId,
+    );
+    const res = await ai.chat(
+      user,
+      'Kalau dari lima tadi yang statusnya ACTIVE saja ada berapa?',
+      start.conversationId,
+    );
+    expect(res.answer).toMatch(/5 project ACTIVE dari 5/i);
+    expect(res.answer).not.toMatch(/Status lengkap belum ada/i);
+    expect(res.answer).not.toMatch(/ACTIVE Project\s*[–-]\s*99/i);
+  });
+
+  it('DIQ-014: re-rank lima tadi by realization stays in original members', async () => {
+    const prisma = makePrisma();
+    const rows = [
+      { code: 'FIN-2026-002', name: 'A', totalBudget: 5100, materialBudget: 0, jasaBudget: 0, materialSpent: 10, jasaSpent: 0, status: 'ACTIVE', hierarchyLevel: 'SITE', isOverbudget: false },
+      { code: 'SEG-2026-002', name: 'B', totalBudget: 4000, materialBudget: 0, jasaBudget: 0, materialSpent: 20, jasaSpent: 0, status: 'ACTIVE', hierarchyLevel: 'SEGMENT', isOverbudget: false },
+      { code: 'FIN-2026-005', name: 'C', totalBudget: 3000, materialBudget: 0, jasaBudget: 0, materialSpent: 30, jasaSpent: 0, status: 'ACTIVE', hierarchyLevel: 'SITE', isOverbudget: false },
+      { code: 'FIN-2026-006', name: 'D', totalBudget: 1110, materialBudget: 0, jasaBudget: 0, materialSpent: 40, jasaSpent: 0, status: 'ACTIVE', hierarchyLevel: 'SITE', isOverbudget: false },
+      { code: 'FIN-2026-001', name: 'E', totalBudget: 1000, materialBudget: 0, jasaBudget: 0, materialSpent: 50, jasaSpent: 0, status: 'ACTIVE', hierarchyLevel: 'SITE', isOverbudget: false },
+      { code: 'SEG-2026-038', name: 'X', totalBudget: 9, materialBudget: 0, jasaBudget: 0, materialSpent: 900, jasaSpent: 0, status: 'ACTIVE', hierarchyLevel: 'SEGMENT', isOverbudget: false },
+    ];
+    (prisma as any).financeProject.findMany = jest.fn(async ({ where }: any) => {
+      const codes = where?.code?.in;
+      if (Array.isArray(codes)) return rows.filter((r) => codes.includes(r.code));
+      return rows.slice(0, 5);
+    });
+    const { ai } = makeServices(prisma);
+    const start = await ai.chat(user, 'Aku mau bahas Finance Project.');
+    await ai.chat(
+      user,
+      'Tampilkan 5 Finance Project dengan budget terbesar.',
+      start.conversationId,
+    );
+    const res = await ai.chat(
+      user,
+      'Urutkan lima project tadi berdasarkan realisasi terbesar.',
+      start.conversationId,
+    );
+    expect(res.answer).toMatch(/FIN-2026-001/);
+    expect(res.answer).not.toMatch(/SEG-2026-038/);
+  });
+
+  it('DIQ-015/016: min realization is tie-aware inside previous set', async () => {
+    const prisma = makePrisma();
+    const rows = [
+      { code: 'FIN-2026-002', name: 'A', totalBudget: 5, materialBudget: 0, jasaBudget: 0, materialSpent: 0, jasaSpent: 0, status: 'ACTIVE', hierarchyLevel: 'SITE', isOverbudget: false },
+      { code: 'SEG-2026-002', name: 'B', totalBudget: 4, materialBudget: 0, jasaBudget: 0, materialSpent: 0, jasaSpent: 0, status: 'ACTIVE', hierarchyLevel: 'SEGMENT', isOverbudget: false },
+      { code: 'FIN-2026-005', name: 'C', totalBudget: 3, materialBudget: 0, jasaBudget: 0, materialSpent: 0, jasaSpent: 0, status: 'ACTIVE', hierarchyLevel: 'SITE', isOverbudget: false },
+      { code: 'FIN-2026-006', name: 'D', totalBudget: 2, materialBudget: 0, jasaBudget: 0, materialSpent: 0, jasaSpent: 0, status: 'ACTIVE', hierarchyLevel: 'SITE', isOverbudget: false },
+      { code: 'FIN-2026-001', name: 'E', totalBudget: 1, materialBudget: 0, jasaBudget: 0, materialSpent: 9, jasaSpent: 0, status: 'ACTIVE', hierarchyLevel: 'SITE', isOverbudget: false },
+      { code: 'SEG-2026-011', name: 'Out', totalBudget: 1, materialBudget: 0, jasaBudget: 0, materialSpent: 0, jasaSpent: 0, status: 'ACTIVE', hierarchyLevel: 'SEGMENT', isOverbudget: false },
+    ];
+    (prisma as any).financeProject.findMany = jest.fn(async ({ where }: any) => {
+      const codes = where?.code?.in;
+      if (Array.isArray(codes)) return rows.filter((r) => codes.includes(r.code));
+      return rows.slice(0, 5);
+    });
+    const { ai } = makeServices(prisma);
+    const start = await ai.chat(user, 'Aku mau bahas Finance Project.');
+    await ai.chat(
+      user,
+      'Tampilkan 5 Finance Project ACTIVE dengan budget terbesar.',
+      start.conversationId,
+    );
+    const res = await ai.chat(
+      user,
+      'Dari project itu, mana yang realisasinya paling kecil?',
+      start.conversationId,
+    );
+    expect(res.answer).toMatch(/4 project/i);
+    expect(res.answer).toMatch(/FIN-2026-002/);
+    expect(res.answer).toMatch(/SEG-2026-002/);
+    expect(res.answer).not.toMatch(/SEG-2026-011/);
+  });
+
+  it('DIQ-013: ordinal PIC lookup completes after resolving object', async () => {
+    const prisma = makePrisma();
+    const rows = [
+      { code: 'FIN-2026-002', name: 'A', totalBudget: 5, materialBudget: 0, jasaBudget: 0, materialSpent: 1, jasaSpent: 0, status: 'ACTIVE', hierarchyLevel: 'SITE', isOverbudget: false, createdBy: { name: 'Owner A', email: 'a@x', role: 'PM_FTTH' } },
+      { code: 'SEG-2026-002', name: 'S', totalBudget: 4, materialBudget: 0, jasaBudget: 0, materialSpent: 1, jasaSpent: 0, status: 'ACTIVE', hierarchyLevel: 'SEGMENT', isOverbudget: false, createdBy: { name: 'Owner Seg', email: 's@x', role: 'PM_FTTH' } },
+    ];
+    (prisma as any).financeProject.findMany = jest.fn(async ({ where }: any) => {
+      const eq = where?.code?.equals || where?.OR?.[0]?.code?.contains;
+      if (eq && String(eq).toUpperCase().includes('SEG-2026-002')) {
+        return [rows[1]];
+      }
+      return rows;
+    });
+    const { ai } = makeServices(prisma);
+    const start = await ai.chat(user, 'Aku mau bahas Finance Project.');
+    await ai.chat(user, 'Tampilkan 5 Finance Project dengan budget terbesar.', start.conversationId);
+    const res = await ai.chat(
+      user,
+      'Project kedua tadi PIC-nya siapa?',
+      start.conversationId,
+    );
+    expect(res.answer).toMatch(/Owner Seg|PIC/i);
+    expect(res.answer).not.toMatch(/Silakan tanya atributnya/i);
+  });
+
+  it('DIQ-017: Berapa budgetnya uses Active Object, not global aggregate', async () => {
+    const prisma = makePrisma();
+    (prisma as any).financeProject.findMany = jest.fn(async (args: any) => {
+      const eq = args?.where?.code?.equals;
+      if (eq && String(eq).toUpperCase() === 'SEG-2026-005') {
+        return [{
+          code: 'SEG-2026-005',
+          name: 'Segment - PST-PYB',
+          description: 'x',
+          totalBudget: 1000000000,
+          materialBudget: 0,
+          jasaBudget: 0,
+          materialSpent: 0,
+          jasaSpent: 0,
+          status: 'ACTIVE',
+          hierarchyLevel: 'SEGMENT',
+          isOverbudget: false,
+          poCustomerNumber: null,
+          parent: null,
+        }];
+      }
+      return [];
+    });
+    const { ai } = makeServices(prisma);
+    const start = await ai.chat(user, 'Aku mau bahas Finance Project.');
+    await ai.chat(user, 'Cari Finance Project SEG-2026-005.', start.conversationId);
+    const res = await ai.chat(user, 'Berapa budgetnya?', start.conversationId);
+    expect(res.answer).toMatch(/1\.000\.000\.000|1000000000|Rp/);
+    expect(res.answer).not.toMatch(/101 project/i);
+    expect(res.answer).toMatch(/SEG-2026-005/);
+  });
+
+  it('DIQ-018: compare current object vs SEG yang tadi', async () => {
+    const prisma = makePrisma();
+    (prisma as any).financeProject.findMany = jest.fn(async (args: any) => {
+      const eq = args?.where?.code?.equals;
+      const inn = args?.where?.code?.in;
+      const all = [
+        { code: 'SEG-2026-005', name: 'Seg', totalBudget: 1000000000, materialBudget: 0, jasaBudget: 0, materialSpent: 0, jasaSpent: 0, status: 'ACTIVE', hierarchyLevel: 'SEGMENT', isOverbudget: false, poCustomerNumber: null, parent: null, description: 's' },
+        { code: 'FIN-2026-005', name: 'Fin', totalBudget: 3000000000, materialBudget: 0, jasaBudget: 0, materialSpent: 0, jasaSpent: 0, status: 'ACTIVE', hierarchyLevel: 'SITE', isOverbudget: false, poCustomerNumber: null, parent: null, description: 'f' },
+      ];
+      if (eq) return all.filter((r) => r.code === String(eq).toUpperCase());
+      if (inn) return all.filter((r) => inn.includes(r.code));
+      return all;
+    });
+    const { ai } = makeServices(prisma);
+    const start = await ai.chat(user, 'Aku mau bahas Finance Project.');
+    await ai.chat(user, 'Cari Finance Project SEG-2026-005.', start.conversationId);
+    await ai.chat(user, 'Sekarang cari FIN-2026-005.', start.conversationId);
+    const res = await ai.chat(
+      user,
+      'Kalau dibandingkan dengan SEG yang tadi, mana yang budgetnya lebih besar?',
+      start.conversationId,
+    );
+    expect(res.answer).toMatch(/FIN-2026-005/);
+    expect(res.answer).toMatch(/lebih besar/i);
+    expect(res.answer).toMatch(/SEG-2026-005/);
+  });
+
+  it('DIQ-020: stock ranking after PR does not replay pending PR', async () => {
+    const prisma = makePrisma();
+    (prisma as any).purchaseRequest.count = jest.fn().mockResolvedValue(8);
+    (prisma as any).purchaseRequest.findMany = jest.fn().mockResolvedValue([
+      { requestNumber: 'PR-2026-0008', status: 'PENDING', totalAmount: 1 },
+    ]);
+    (prisma as any).stockItem.findMany = jest.fn().mockResolvedValue([
+      { code: 'ATB', name: 'ATB Cable', currentQty: 100, unit: 'roll', minStockQty: 1, category: 'material' },
+    ]);
+    const { ai } = makeServices(prisma);
+    const start = await ai.chat(user, 'Aku mau bahas Finance Project.');
+    await ai.chat(user, 'Tampilkan 3 Finance Project dengan budget terbesar.', start.conversationId);
+    await ai.chat(user, 'Sekarang ada berapa Purchase Request yang pending?', start.conversationId);
+    const res = await ai.chat(
+      user,
+      'Kalau material dengan stok paling banyak apa?',
+      start.conversationId,
+    );
+    expect(res.answer).toMatch(/ATB Cable/i);
+    expect(res.answer).not.toMatch(/purchase request pending/i);
+  });
+
+  it('DIQ-019: ACTIVE SITE Top 3 composition still works', async () => {
+    const prisma = makePrisma();
+    (prisma as any).financeProject.findMany = jest.fn(async ({ where }: any) => {
+      expect(where?.status).toBe('ACTIVE');
+      expect(where?.hierarchyLevel).toBe('SITE');
+      return [
+        { code: 'FIN-2026-002', name: 'A', totalBudget: 5100, materialBudget: 0, jasaBudget: 0, materialSpent: 0, jasaSpent: 0, status: 'ACTIVE', hierarchyLevel: 'SITE', isOverbudget: false },
+        { code: 'FIN-2026-005', name: 'C', totalBudget: 3000, materialBudget: 0, jasaBudget: 0, materialSpent: 0, jasaSpent: 0, status: 'ACTIVE', hierarchyLevel: 'SITE', isOverbudget: false },
+        { code: 'FIN-2026-006', name: 'D', totalBudget: 1110, materialBudget: 0, jasaBudget: 0, materialSpent: 0, jasaSpent: 0, status: 'ACTIVE', hierarchyLevel: 'SITE', isOverbudget: false },
+      ];
+    });
+    const { ai } = makeServices(prisma);
+    const start = await ai.chat(user, 'Aku mau bahas Finance Project.');
+    const res = await ai.chat(
+      user,
+      'Dari Finance Project yang ACTIVE dan tipe SITE, tampilkan 3 project dengan budget terbesar.',
+      start.conversationId,
+    );
+    expect(res.answer).toMatch(/Top 3/i);
+    expect(res.answer).toMatch(/FIN-2026-002/);
+    expect(res.answer).toMatch(/SITE/i);
+  });
 });

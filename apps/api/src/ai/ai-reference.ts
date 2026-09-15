@@ -13,6 +13,7 @@ export type ConversationAttribute =
   | 'qty'
   | 'name'
   | 'requestor'
+  | 'pic'
   | null;
 
 export type ResolvedReference = {
@@ -213,6 +214,36 @@ export function pickPendingFinanceCandidate(
 }
 
 /** Count numbered rows in a ranked/list answer. */
+export function extractRankedFinanceMembers(
+  answer: string | null | undefined,
+): Array<{ code: string; name?: string; status?: string; hierarchyLevel?: string }> {
+  if (!answer) return [];
+  const out: Array<{
+    code: string;
+    name?: string;
+    status?: string;
+    hierarchyLevel?: string;
+  }> = [];
+  for (const raw of answer.split(/\n/)) {
+    const line = raw.trim();
+    const m = line.match(
+      /^\d+\.\s*((?:SITE|SEG|FIN)-\d{4}-\d+)\s+(.+?)(?:\s+[—-]\s+|$)/i,
+    );
+    if (!m) continue;
+    const rest = line.slice(m[0].length);
+    const status = /\b(ACTIVE|CLOSED|ARCHIVED)\b/i.exec(line)?.[1]?.toUpperCase();
+    const hier = /\[(SITE|SEGMENT|STANDALONE)\]/i.exec(line)?.[1]?.toUpperCase();
+    out.push({
+      code: m[1].toUpperCase(),
+      name: m[2].trim(),
+      status,
+      hierarchyLevel: hier,
+    });
+    void rest;
+  }
+  return out;
+}
+
 export function countRankedItems(answer: string | null | undefined): number {
   if (!answer) return 0;
   let max = 0;
@@ -267,12 +298,18 @@ export function detectRequestedAttribute(text: string): ConversationAttribute {
     (/(jumlah(nya)?|qty|stoknya|stocknya)/.test(m) && m.length <= 40)
   )
     return 'qty';
-  // Bare "budgetnya" — not "budget project" / "ajuin budget"
+  if (/\bpic(-nya|nya)?\b/.test(m) && /(siapa|who|nama)/.test(m)) return 'pic';
+  // Bare "budgetnya" / "berapa budgetnya" — not "budget project ACTIVE"
   if (
     /^(budget(nya)?|nominal(nya)?|nilainya)[.!]?\s*$/.test(m) ||
-    (/^(budget(nya)?|nominal(nya)?)\b/.test(m) &&
-      m.length <= 24 &&
-      !/(project|proyek|ajuin|ajukan|cara|perizinan)/.test(m))
+    /^(berapa|brapa)\s+(budget(nya)?|nominal(nya)?)\??$/.test(m) ||
+    /(yang ini).*(budget(nya)?)/.test(m) ||
+    (/(budget(nya)?|nominal(nya)?)\b/.test(m) &&
+      /(berapa|yang ini|ini\b)/.test(m) &&
+      m.length <= 72 &&
+      !/(semua|seluruh|keseluruhan|aktif|active|project yang|proyek yang|terbesar|terkecil)/.test(
+        m,
+      ))
   )
     return 'budget';
   if (
@@ -340,6 +377,12 @@ export function isAttributeFollowUp(text: string): boolean {
 
 export function isActiveReferenceDetailQuery(text: string): boolean {
   const m = normalizeId(text);
+  if (/(berapa|jumlah|ada berapa)/.test(m) && /(tadi|lima|daftar|status)/.test(m)) {
+    return false;
+  }
+  if (/\bpic(-nya|nya)?\b/.test(m) && /(siapa|who)/.test(m)) {
+    return false;
+  }
   const hasRef =
     isOrdinalReference(text) ||
     /\b(yang tadi|tadi|tersebut|yang sebelumnya|yang barusan|itu)\b/.test(m) ||
@@ -438,6 +481,7 @@ export function attributeNeedsLiveLookup(
     // Hierarchy tags [SITE]/[SEGMENT] are NOT project status
     return !/\[(active|closed|archived)\]/.test(line) && !/status\s*:/.test(line);
   }
+  if (attr === 'pic') return true;
   if (attr === 'budget') {
     return !/(rp|budget)/.test(line);
   }

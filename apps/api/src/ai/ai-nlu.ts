@@ -328,6 +328,13 @@ export function detectTopic(text: string): SessionTopic | null {
     return 'procurement';
   if (/(stoknya|\bstok\b|\bstock\b)/.test(m) && !/finance|budget/.test(m))
     return 'stock';
+  if (
+    /\bmaterial\b/.test(m) &&
+    /(paling banyak|paling sedikit|stok|stock)/.test(m) &&
+    !/(finance|budget|anggaran|project|proyek)/.test(m)
+  ) {
+    return 'stock';
+  }
   if (/cash\s*op|cash operation|pengajuan dana|approval dana|reimbursement|cash advance/.test(m))
     return 'cash';
   if (/visit request|kunjungan|clean list/.test(m)) return 'visit';
@@ -579,6 +586,19 @@ export function resolveSessionContext(input: {
     input.persistedTopic ||
     inferActiveTopic(input.priorUsers, input.lastAssistant);
   const ref = hasConversationalReference(msg);
+
+  // Explicit Stock / PR / Cash entity in this turn overrides inherited domain
+  // even when the utterance starts with “Kalau …” (PAI-DIQ-009).
+  if (isStockQuantityRankingQuery(msg) && historyTopic !== 'stock') {
+    return {
+      effectiveText: msg,
+      activeTopic: 'stock',
+      activeObject: null,
+      needsTopicClarify: false,
+      topicSwitched: true,
+    };
+  }
+
   const prior =
     input.priorUsers.find((u) => !isFollowUpShort(u) && !isUserCorrection(u)) ??
     input.priorUsers[0];
@@ -588,7 +608,7 @@ export function resolveSessionContext(input: {
   // Explicit new topic without pronoun → switch (e.g. Finance → Procurement)
   if (msgTopic && historyTopic && msgTopic !== historyTopic && !ref) {
     return {
-      effectiveText: expandWithContext(msg, input.priorUsers, input.lastAssistant),
+      effectiveText: msg,
       activeTopic: msgTopic,
       activeObject: null,
       needsTopicClarify: false,
@@ -628,6 +648,16 @@ export function resolveSessionContext(input: {
 
     const topic = historyTopic || msgTopic || 'finance';
     const norm = normalizeId(msg);
+
+    if (isResultSetScopedFollowUp(msg) || isObjectComparisonQuery(msg)) {
+      return {
+        effectiveText: msg,
+        activeTopic: topic,
+        activeObject: entity,
+        needsTopicClarify: false,
+        topicSwitched: false,
+      };
+    }
 
     if (entity && /budget|anggaran|nominal|berapa|status|detail/.test(norm)) {
       return {
@@ -1439,6 +1469,9 @@ export function isResultSetNarrowingQuery(text: string): boolean {
  */
 export function isStandaloneFinanceAggregateQuery(text: string): boolean {
   if (hasConversationalReference(text)) return false;
+  if (isResultSetScopedFollowUp(text)) return false;
+  if (isActiveObjectAttributeQuery(text)) return false;
+  if (isObjectComparisonQuery(text)) return false;
   if (isFinanceContextFilterQuery(text) || isFinanceFilterOnlyQuery(text)) {
     return false;
   }
@@ -1602,7 +1635,66 @@ export type FinanceMode =
   | 'ranking'
   | 'filtered_list';
 
-/** Explicit negation of ACTIVE / aktif (PAI-DIQ-001). */
+/** Keep the previous ranked members unless the user starts a new population. */
+export function shouldReuseActiveResultSet(text: string): boolean {
+  const m = normalizeId(primaryUtterance(text));
+  if (/(semua|seluruh)\s+(project|proyek)/.test(m)) return false;
+  if (isResultSetScopedFollowUp(text)) return true;
+  if (
+    detectExplicitTopN(text) != null &&
+    /(tampilkan|top)\b/.test(m) &&
+    !/(tadi|itu)/.test(m)
+  ) {
+    return false;
+  }
+  if (
+    isModuleDataRankingQuery(text) &&
+    /(tadi|itu|dari project|paling kecil|paling besar|paling rendah|mana yang|cuma satu|hanya satu)/.test(
+      m,
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
+export function isResultSetScopedFollowUp(text: string): boolean {
+  const m = normalizeId(primaryUtterance(text));
+  if (isOrdinalReference(text) && !/(berapa|jumlah|urut|paling|terkecil|terbesar)/.test(m)) {
+    return false;
+  }
+  return (
+    /(lima tadi|lima project tadi|lima proyek tadi)/.test(m) ||
+    /(dari (lima|5) (project|proyek)?\s*tadi)/.test(m) ||
+    /(urutkan).*(tadi|itu|lima)/.test(m) ||
+    /(dari project itu|dari proyek itu|project-project tadi|dari daftar( itu| tadi)?)/.test(
+      m,
+    ) ||
+    /(dari yang tadi).*(status|active|aktif|berapa|realisasi)/.test(m)
+  );
+}
+
+/** Attribute of the current Active Object, not a global aggregate (PAI-DIQ-006). */
+export function isActiveObjectAttributeQuery(text: string): boolean {
+  const m = normalizeId(primaryUtterance(text));
+  if (isResultSetScopedFollowUp(text)) return false;
+  if (isModuleDataRankingQuery(text)) return false;
+  if (/(semua|seluruh|keseluruhan)\s+(project|proyek)/.test(m)) return false;
+  return (
+    /\byang ini\b/.test(m) ||
+    /(berapa).*(budgetnya|statusnya|realisasinya|nominalnya)/.test(m) ||
+    /(budgetnya|statusnya|realisasinya|nominalnya).*(berapa)/.test(m) ||
+    /^(budgetnya|statusnya|realisasinya)\??$/.test(m)
+  );
+}
+
+/** Compare current object vs a previously referenced object (PAI-DIQ-006). */
+export function isObjectComparisonQuery(text: string): boolean {
+  const m = normalizeId(primaryUtterance(text));
+  return (
+    /(bandingkan|dibandingkan|dibanding|lebih besar|lebih kecil)/.test(m) &&
+    /(tadi|itu|budget|yang ini|seg|fin|site)/.test(m)
+  );
+}
 export function hasActiveStatusNegation(text: string): boolean {
   const m = normalizeId(text);
   return /(tidak|bukan|selain|kecuali|non)[-\s]+(active|aktif)/.test(m);
@@ -2047,6 +2139,7 @@ export function extractHierarchyConstraint(
 export function detectFinanceMode(text: string): FinanceMode {
   const m = normalizeId(primaryUtterance(text));
 
+  if (isObjectComparisonQuery(text)) return 'search';
   if (isStatusBreakdownQuery(text)) return 'status_breakdown';
 
   // PAI-FNC-004: ranking with dynamic metric (before generic overbudget/summary)
@@ -2413,6 +2506,7 @@ export {
   hasConversationalReference,
   buildActiveDatasetKey,
   countRankedItems,
+  extractRankedFinanceMembers,
 } from './ai-reference';
 
 export {

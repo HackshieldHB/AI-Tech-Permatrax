@@ -61,11 +61,17 @@ import {
   isBusinessRoleResponsibilityQuery,
   isUnsupportedKnowledgeCausalQuery,
   isStockQuantityRankingQuery,
+  isResultSetScopedFollowUp,
+  shouldReuseActiveResultSet,
+  isActiveObjectAttributeQuery,
+  isObjectComparisonQuery,
+  extractRankedFinanceMembers,
   isProjectCountQuery,
   isStandaloneFinanceAggregateQuery,
   isUnsupportedDataQuery,
   detectFinanceMetrics,
   detectFinanceMode,
+  normalizeId,
   shouldApplySessionFinanceFilters,
   needsScopeClarification,
   refineRecoveryQuery,
@@ -277,12 +283,16 @@ export class AiService {
         ...session,
         activeTopic: sessionCtx.activeTopic,
         activeObject: null,
+        previousObject: session.previousObject,
+        activeResultSet: null,
         activeReference: null,
         activeDataset: null,
         activeDatasetAnswer: null,
         activeAttribute: null,
+        lastDataQuery: null,
         correctionApplied: false,
         pendingRecovery: false,
+        constraints: { ...EMPTY_CONSTRAINTS, extra: [] },
       };
     } else if (sessionCtx.activeTopic) {
       session = {
@@ -399,6 +409,8 @@ export class AiService {
       !liveObjectLookup &&
       !businessDiagnostic &&
       !knowledgeTurn &&
+      !isResultSetScopedFollowUp(text) &&
+      !/(visit|requestor|requester|pemohon|kunjungan)/.test(normalizeId(text)) &&
       (stateFollowUp || (explicitCode && !/\bcari\b/i.test(text))) &&
       !isModuleDataRankingQuery(text) &&
       !isFinanceContextFilterQuery(text) &&
@@ -427,13 +439,27 @@ export class AiService {
           ? `Detail ${requestedAttr.replace(/_/g, ' ')} project ${explicitCode}`
           : `Detail budget project ${explicitCode}`;
       } else if (resolved) {
-        const needsLive = attributeNeedsLiveLookup(requestedAttr, resolved);
-        if (needsLive && resolved.code) {
-          liveObjectLookup = `Detail ${
-            requestedAttr ? requestedAttr.replace(/_/g, ' ') : 'budget'
-          } project ${resolved.code}`;
+        if (isPicOrRequestorQuery(text) && resolved.code) {
+          liveObjectLookup = `Siapa PIC project ${resolved.code}?`;
           session = {
             ...session,
+            previousObject: session.activeObject,
+            activeObject: resolved.label,
+            activeReference: resolved.detailLine,
+            activeAttribute: 'pic',
+          };
+        } else {
+        const needsLive = attributeNeedsLiveLookup(requestedAttr, resolved);
+        if (needsLive && resolved.code) {
+          liveObjectLookup =
+            requestedAttr === 'pic'
+              ? `Siapa PIC project ${resolved.code}?`
+              : `Detail ${
+                  requestedAttr ? requestedAttr.replace(/_/g, ' ') : 'budget'
+                } project ${resolved.code}`;
+          session = {
+            ...session,
+            previousObject: session.activeObject,
             activeObject: resolved.label,
             activeReference: resolved.detailLine,
             activeAttribute: requestedAttr,
@@ -451,6 +477,7 @@ export class AiService {
           if (referenceDetail) {
             session = {
               ...session,
+              previousObject: session.activeObject,
               activeObject: resolved.label,
               activeReference: resolved.detailLine,
               activeAttribute: requestedAttr,
@@ -459,11 +486,13 @@ export class AiService {
             liveObjectLookup = `Detail budget project ${resolved.code}`;
             session = {
               ...session,
+              previousObject: session.activeObject,
               activeObject: resolved.label,
               activeReference: resolved.detailLine,
               activeAttribute: requestedAttr,
             };
           }
+        }
         }
       }
     }
@@ -471,7 +500,56 @@ export class AiService {
     if (
       !referenceDetail &&
       !liveObjectLookup &&
+      isActiveObjectAttributeQuery(text) &&
+      extractSessionProjectCode(session)
+    ) {
+      const code = extractSessionProjectCode(session)!;
+      liveObjectLookup =
+        requestedAttr === 'status'
+          ? `Detail status project ${code}`
+          : `Total budget project ${code} berapa?`;
+      intent = 'data';
+    }
+
+    if (
+      !referenceDetail &&
+      !liveObjectLookup &&
+      isObjectComparisonQuery(text)
+    ) {
+      const current =
+        extractSessionProjectCode(session) ||
+        extractExplicitEntityCode(session.activeObject || '');
+      const mentioned = extractExplicitEntityCode(text);
+      const prevCode = extractExplicitEntityCode(session.previousObject || '');
+      const wantSeg = /(seg yang tadi|segment yang tadi|\bseg\b.*tadi)/.test(
+        normalizeId(text),
+      );
+      const other =
+        mentioned &&
+        current &&
+        mentioned.toUpperCase() !== current.toUpperCase()
+          ? mentioned
+          : wantSeg && prevCode?.startsWith('SEG')
+            ? prevCode
+            : wantSeg && current?.startsWith('SEG')
+              ? current
+              : prevCode && current && prevCode !== current
+                ? prevCode
+                : null;
+      if (current && other && current !== other) {
+        liveObjectLookup = `Bandingkan budget ${current} dengan ${other}`;
+        intent = 'comparison';
+      } else if (current && prevCode && current !== prevCode) {
+        liveObjectLookup = `Bandingkan budget ${current} dengan ${prevCode}`;
+        intent = 'comparison';
+      }
+    }
+
+    if (
+      !referenceDetail &&
+      !liveObjectLookup &&
       !pendingFilterAttempt &&
+      !isResultSetScopedFollowUp(text) &&
       isResultSetNarrowingQuery(text) &&
       (session.activeDatasetAnswer || lastAssistant)
     ) {
@@ -599,6 +677,14 @@ export class AiService {
         opts.patch?.activeObject !== undefined
           ? opts.patch.activeObject
           : extractEntityFromAnswer(answer) || nextState.activeObject;
+      const entityCode = extractExplicitEntityCode(entity || '');
+      const prevCode = extractExplicitEntityCode(nextState.activeObject || '');
+      const previousObject =
+        opts.patch?.previousObject !== undefined
+          ? opts.patch.previousObject
+          : entityCode && prevCode && entityCode !== prevCode
+            ? nextState.activeObject
+            : nextState.previousObject;
       const refFromAnswer = extractActiveReferenceFromAnswer(answer);
       const isRankedList = /^\s*\d+\.\s+/m.test(answer) && (answer.match(/^\s*\d+\.\s+/gm) || []).length >= 2;
       const isCandidateSet =
@@ -611,6 +697,13 @@ export class AiService {
         ...opts.patch,
         activeTopic: opts.patch?.activeTopic ?? nextState.activeTopic,
         activeObject: entity,
+        previousObject,
+        activeResultSet:
+          opts.patch?.activeResultSet !== undefined
+            ? opts.patch.activeResultSet
+            : isRankedList
+              ? extractRankedFinanceMembers(answer)
+              : nextState.activeResultSet,
         activeReference:
           opts.patch?.activeReference !== undefined
             ? opts.patch.activeReference
@@ -1062,14 +1155,23 @@ export class AiService {
     if (
       isPicOrRequestorQuery(text) &&
       !isUnsupportedDataQuery(text) &&
-      extractExplicitEntityCode(text)
+      !/(requestor|requester|pemohon|visit)/.test(normalizeId(text))
     ) {
-      const picTools = this.tools.detectToolIntent(text);
+      const picCode =
+        extractExplicitEntityCode(text) || extractSessionProjectCode(session);
+      if (!picCode) {
+        // fall through to tools / unsupported
+      } else {
+      const picTools = this.tools.detectToolIntent(
+        `Siapa PIC ${picCode}?`,
+      );
       const names =
-        picTools.length > 0
-          ? picTools
-          : ['lookup_project_pic'];
-      const toolTraces = await this.tools.runTools(names, user, text);
+        picTools.length > 0 ? picTools : ['lookup_project_pic'];
+      const toolTraces = await this.tools.runTools(
+        names,
+        user,
+        `Siapa PIC project ${picCode}?`,
+      );
       const ok = toolTraces.filter((t) => t.ok && t.summary);
       if (ok.length) {
         return reply(ok.map((t) => t.summary).join('\n\n'), {
@@ -1085,6 +1187,7 @@ export class AiService {
             activeTopic: session.activeTopic || sessionCtx.activeTopic,
           },
         });
+      }
       }
     }
 
@@ -1765,11 +1868,13 @@ export class AiService {
         );
       }
       if (applyRankingInherit) {
-        toolMessage = appendInheritedRankingLimitTag(
-          toolMessage,
-          session.constraints,
-          text,
-        );
+        if (!shouldReuseActiveResultSet(text)) {
+          toolMessage = appendInheritedRankingLimitTag(
+            toolMessage,
+            session.constraints,
+            text,
+          );
+        }
         toolMessage = appendInheritedRankingMetricTag(
           toolMessage,
           session.constraints,
@@ -1781,6 +1886,22 @@ export class AiService {
           text,
         );
       }
+    }
+
+    const resultMembers =
+      session.activeResultSet && session.activeResultSet.length > 0
+        ? session.activeResultSet
+        : extractRankedFinanceMembers(
+            session.activeDatasetAnswer || lastAssistant,
+          );
+    if (
+      toolNames.includes('finance_analytics') &&
+      (isResultSetScopedFollowUp(text) || shouldReuseActiveResultSet(text)) &&
+      resultMembers.length > 0
+    ) {
+      toolMessage = `${toolMessage} [RESULT_SET:${resultMembers
+        .map((m) => m.code)
+        .join(',')}]`;
     }
 
     const toolTraces =
@@ -2036,11 +2157,18 @@ export class AiService {
         'rankingMetric' in (d as object) &&
         'dir' in (d as object)
       ) {
-        return d as {
+        const rec = d as {
           rankingMetric: string;
           dir: 'asc' | 'desc';
           limit?: number;
+          rows?: Array<{
+            code: string;
+            name?: string;
+            status?: string;
+            hierarchyLevel?: string;
+          }>;
         };
+        return rec;
       }
       return null;
     })();
@@ -2108,13 +2236,27 @@ export class AiService {
       patch: {
         activeTopic: session.activeTopic || sessionCtx.activeTopic,
         pendingCandidates: rankingToolData ? null : searchCandidates,
+        activeResultSet: rankingToolData?.rows?.length
+          ? rankingToolData.rows.map((r) => ({
+              code: r.code,
+              name: r.name,
+              status: r.status,
+              hierarchyLevel: r.hierarchyLevel,
+            }))
+          : session.activeResultSet,
+        previousObject:
+          Array.isArray(searchRows) &&
+          searchRows.length === 1 &&
+          session.activeObject
+            ? session.activeObject
+            : session.previousObject,
         constraints: rankingConstraints,
         activeObject:
           searchCandidates && searchCandidates.length > 1
             ? null
-            : liveObjectLookup || explicitCode
-              ? session.activeObject || extractEntityFromAnswer(answer)
-              : extractEntityFromAnswer(answer) || session.activeObject,
+            : extractEntityFromAnswer(answer) ||
+              explicitCode ||
+              session.activeObject,
         activeReference:
           session.activeReference ||
           extractActiveReferenceFromAnswer(answer)?.detailLine ||

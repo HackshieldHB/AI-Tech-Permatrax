@@ -56,10 +56,21 @@ export type ActiveConstraintSet = {
   extra?: string[];
 };
 
+export type ActiveResultMember = {
+  code: string;
+  name?: string;
+  hierarchyLevel?: string;
+  status?: string;
+};
+
 export type ConversationSessionState = {
   activeTopic: SessionTopic | null;
   /** Last project / entity under discussion */
   activeObject: string | null;
+  /** Previous Active Object (for “SEG yang tadi” / compare). */
+  previousObject: string | null;
+  /** Last ranked/list population — independent of Active Object (PAI-DIQ-008). */
+  activeResultSet: ActiveResultMember[] | null;
   /**
    * Active Reference snapshot — focused ranked object so attribute follow-ups
    * resolve without re-listing all rows.
@@ -128,6 +139,8 @@ export const EMPTY_CONSTRAINTS: ActiveConstraintSet = {
 export const EMPTY_SESSION: ConversationSessionState = {
   activeTopic: null,
   activeObject: null,
+  previousObject: null,
+  activeResultSet: null,
   activeReference: null,
   activeDataset: null,
   activeDatasetAnswer: null,
@@ -166,6 +179,8 @@ export function normalizeSessionState(
       extra: [...(raw?.constraints?.extra || [])],
     },
     pendingCandidates: raw?.pendingCandidates ?? null,
+    activeResultSet: raw?.activeResultSet ?? null,
+    previousObject: raw?.previousObject ?? null,
     frame: normalizeConversationFrame(raw?.frame ?? base.frame),
   };
 }
