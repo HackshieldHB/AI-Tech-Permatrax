@@ -2,6 +2,8 @@
 
 import type { SessionTopic, UnknownKind } from './ai-nlu';
 import { detectTopic, extractEntityFromAnswer, topicLabel } from './ai-nlu';
+import { extractExplicitEntityCode } from './ai-reference';
+import { normalizeId } from './ai-text';
 import {
   EMPTY_FRAME,
   normalizeConversationFrame,
@@ -63,14 +65,152 @@ export type ActiveResultMember = {
   status?: string;
 };
 
+/** One analytically meaningful result set (PAI-DIQ-005/008 history). */
+export type ResultSetSnapshot = {
+  members: ActiveResultMember[];
+  cardinality: number;
+};
+
+const CARDINALITY_WORDS: Record<string, number> = {
+  satu: 1,
+  dua: 2,
+  tiga: 3,
+  empat: 4,
+  lima: 5,
+  enam: 6,
+  tujuh: 7,
+  delapan: 8,
+  sembilan: 9,
+  sepuluh: 10,
+};
+
+function memberKey(members: ActiveResultMember[] | null | undefined): string {
+  return (members || []).map((m) => m.code.toUpperCase()).join('|');
+}
+
+export function rememberObjectCode(
+  history: string[] | null | undefined,
+  code: string | null | undefined,
+  cap = 8,
+): string[] {
+  const u = extractExplicitEntityCode(code || '') || (code || '').toUpperCase();
+  if (!u || !/^(SITE|SEG|FIN)-\d{4}-\d+$/.test(u)) {
+    return [...(history || [])];
+  }
+  return [u, ...(history || []).filter((c) => c !== u)].slice(0, cap);
+}
+
+export function pushResultSetHistory(
+  history: ResultSetSnapshot[] | null | undefined,
+  members: ActiveResultMember[] | null | undefined,
+  cap = 5,
+): ResultSetSnapshot[] {
+  if (!members?.length) return [...(history || [])];
+  const snap: ResultSetSnapshot = {
+    members: members.map((m) => ({ ...m })),
+    cardinality: members.length,
+  };
+  const key = memberKey(snap.members);
+  return [
+    snap,
+    ...(history || []).filter((h) => memberKey(h.members) !== key),
+  ].slice(0, cap);
+}
+
+/** lima tadi / 5 tadi / daftar sebelumnya → matching historical set. */
+export function extractResultSetCardinalityHint(
+  text: string,
+): number | 'previous' | null {
+  const m = normalizeId(text);
+  if (
+    /(daftar|hasil).*(sebelumnya|yang pertama|pertama tadi)/.test(m) ||
+    /(result set|daftar) (awal|asli)/.test(m)
+  ) {
+    return 'previous';
+  }
+  const word = m.match(
+    /\b(satu|dua|tiga|empat|lima|enam|tujuh|delapan|sembilan|sepuluh)\s+(tadi|itu|project|proyek)/,
+  );
+  if (word) return CARDINALITY_WORDS[word[1]];
+  const digit = m.match(
+    /\b(?:dari\s+)?(\d+)\s+(?:project|proyek)?\s*(tadi|itu)\b/,
+  );
+  if (digit) return Number(digit[1]);
+  return null;
+}
+
+export function selectResultSetMembers(
+  text: string,
+  active: ActiveResultMember[] | null | undefined,
+  history: ResultSetSnapshot[] | null | undefined,
+): ActiveResultMember[] {
+  const hint = extractResultSetCardinalityHint(text);
+  const pool: ResultSetSnapshot[] = [
+    ...(active?.length
+      ? [{ members: active, cardinality: active.length }]
+      : []),
+    ...(history || []),
+  ];
+  if (hint === 'previous') {
+    return history?.[0]?.members || active || [];
+  }
+  if (typeof hint === 'number') {
+    const match = pool.find((s) => s.cardinality === hint);
+    if (match?.members?.length) return match.members;
+  }
+  return active?.length ? active : [];
+}
+
+/** SEG yang tadi / project sebelumnya → known object, never a fuzzy type search. */
+export function resolveReferencedObjectCode(
+  text: string,
+  session: {
+    activeObject?: string | null;
+    previousObject?: string | null;
+    objectHistory?: string[] | null;
+  },
+): string | null {
+  const mentioned = extractExplicitEntityCode(text);
+  if (mentioned) return mentioned;
+  const m = normalizeId(text);
+  const prefix = /\bseg(ment)?\b/.test(m)
+    ? 'SEG'
+    : /\bfin\b/.test(m)
+      ? 'FIN'
+      : /\bsite\b/.test(m) && !/website/.test(m)
+        ? 'SITE'
+        : null;
+  const current = extractExplicitEntityCode(session.activeObject || '');
+  const codes = [
+    extractExplicitEntityCode(session.previousObject || ''),
+    ...(session.objectHistory || []),
+    current,
+  ].filter((c, i, arr): c is string => !!c && arr.indexOf(c) === i);
+  if (prefix) {
+    return (
+      codes.find((c) => c.startsWith(prefix) && c !== current) ||
+      codes.find((c) => c.startsWith(prefix)) ||
+      null
+    );
+  }
+  if (/(sebelumnya|yang tadi|barusan|yang pertama)/.test(m)) {
+    return codes.find((c) => c !== current) || null;
+  }
+  return null;
+}
+
 export type ConversationSessionState = {
   activeTopic: SessionTopic | null;
   /** Last project / entity under discussion */
   activeObject: string | null;
   /** Previous Active Object (for “SEG yang tadi” / compare). */
   previousObject: string | null;
+  /** Recent resolved object codes (PAI-DIQ-006/008). */
+  objectHistory: string[];
   /** Last ranked/list population — independent of Active Object (PAI-DIQ-008). */
   activeResultSet: ActiveResultMember[] | null;
+  /** Prior result sets so “lima tadi” can recover a parent set (PAI-DIQ-005). */
+  resultSetHistory: ResultSetSnapshot[];
   /**
    * Active Reference snapshot — focused ranked object so attribute follow-ups
    * resolve without re-listing all rows.
@@ -140,7 +280,9 @@ export const EMPTY_SESSION: ConversationSessionState = {
   activeTopic: null,
   activeObject: null,
   previousObject: null,
+  objectHistory: [],
   activeResultSet: null,
+  resultSetHistory: [],
   activeReference: null,
   activeDataset: null,
   activeDatasetAnswer: null,
@@ -180,7 +322,11 @@ export function normalizeSessionState(
     },
     pendingCandidates: raw?.pendingCandidates ?? null,
     activeResultSet: raw?.activeResultSet ?? null,
+    resultSetHistory: Array.isArray(raw?.resultSetHistory)
+      ? raw!.resultSetHistory
+      : [],
     previousObject: raw?.previousObject ?? null,
+    objectHistory: Array.isArray(raw?.objectHistory) ? raw!.objectHistory : [],
     frame: normalizeConversationFrame(raw?.frame ?? base.frame),
   };
 }

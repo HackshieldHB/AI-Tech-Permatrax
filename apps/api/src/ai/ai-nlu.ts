@@ -1664,7 +1664,7 @@ export function isResultSetScopedFollowUp(text: string): boolean {
   }
   return (
     /(lima tadi|lima project tadi|lima proyek tadi)/.test(m) ||
-    /(dari (lima|5) (project|proyek)?\s*tadi)/.test(m) ||
+    /(dari (lima|5) (project|proyek)?\s*(tadi|itu))/.test(m) ||
     /(urutkan).*(tadi|itu|lima)/.test(m) ||
     /(dari project itu|dari proyek itu|project-project tadi|dari daftar( itu| tadi)?)/.test(
       m,
@@ -1988,6 +1988,15 @@ const WEAK_NEEDLES = new Set([
 export function extractProjectNeedle(text: string): string | null {
   const m = normalizeId(text);
 
+  // PAI-DIQ-006: "SEG yang tadi" is previous-object recovery, not a type search
+  if (
+    /\b(seg|fin|site|segment)\b/.test(m) &&
+    /(tadi|sebelumnya|barusan)/.test(m) &&
+    !/\b((?:SITE|SEG|FIN)-\d{4}-\d+)\b/i.test(text)
+  ) {
+    return null;
+  }
+
   // PAI-FNC-004: ranking utterances are never named-project searches
   if (
     /(top\s*\d*|terbesar|terkecil|ranking|paling besar|paling kecil)/.test(m) &&
@@ -2260,6 +2269,13 @@ export function extractOwnerName(text: string): string | null {
 }
 
 export function extractSearchNeedle(text: string): string | null {
+  if (
+    /\b(seg|fin|site|segment)\b/.test(normalizeId(text)) &&
+    /(tadi|sebelumnya|barusan)/.test(normalizeId(text)) &&
+    !/\b((?:SITE|SEG|FIN)-\d{4}-\d+)\b/i.test(text)
+  ) {
+    return null;
+  }
   const code = text.match(/\b((?:SITE|SEG|FIN)-\d{4}-\d+)\b/i);
   if (code) return code[1];
   const quoted = text.match(/["“](.+?)["”]/);

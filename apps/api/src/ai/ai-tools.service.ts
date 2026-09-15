@@ -486,6 +486,18 @@ export class AiToolsService {
     ) {
       return this.compareFinanceBudgets(user, compareCodes[0], compareCodes[1]);
     }
+    if (
+      compareCodes.length < 2 &&
+      /(banding|dibanding)/.test(normalizeId(bareMessage)) &&
+      /(tadi|sebelumnya|barusan|yang ini)/.test(normalizeId(bareMessage))
+    ) {
+      return {
+        name: 'finance_analytics',
+        ok: true,
+        summary:
+          'Tidak lengkap untuk membandingkan. Sebutkan kedua kode project, atau rujuk object yang tadi.',
+      };
+    }
 
     if (mode === 'by_owner') {
       const owner = extractOwnerName(message);

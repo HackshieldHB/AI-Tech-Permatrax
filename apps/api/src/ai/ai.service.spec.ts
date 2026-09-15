@@ -4474,23 +4474,30 @@ describe('PermaTrax AI chatbot (logic)', () => {
     expect(res.answer).not.toMatch(/Connector/);
   });
 
-  it('DIQ-012: lima tadi ACTIVE count stays on Top-5 set', async () => {
+  it('DIQ-012: lima tadi recovers the original Top-5 after a 1-row max', async () => {
     const prisma = makePrisma();
     const top5 = [
       { code: 'FIN-2026-002', name: 'A', totalBudget: 5100, materialBudget: 0, jasaBudget: 0, materialSpent: 0, jasaSpent: 0, status: 'ACTIVE', hierarchyLevel: 'SITE', isOverbudget: false },
-      { code: 'SEG-2026-002', name: 'B', totalBudget: 4000, materialBudget: 0, jasaBudget: 0, materialSpent: 0, jasaSpent: 0, status: 'ACTIVE', hierarchyLevel: 'SEGMENT', isOverbudget: false },
-      { code: 'FIN-2026-005', name: 'C', totalBudget: 3000, materialBudget: 0, jasaBudget: 0, materialSpent: 0, jasaSpent: 0, status: 'ACTIVE', hierarchyLevel: 'SITE', isOverbudget: false },
-      { code: 'FIN-2026-006', name: 'D', totalBudget: 1110, materialBudget: 0, jasaBudget: 0, materialSpent: 0, jasaSpent: 0, status: 'ACTIVE', hierarchyLevel: 'SITE', isOverbudget: false },
-      { code: 'FIN-2026-001', name: 'E', totalBudget: 1000, materialBudget: 0, jasaBudget: 0, materialSpent: 0, jasaSpent: 0, status: 'ACTIVE', hierarchyLevel: 'SITE', isOverbudget: false },
+      { code: 'SEG-2026-002', name: 'B', totalBudget: 4000, materialBudget: 0, jasaBudget: 0, materialSpent: 1, jasaSpent: 0, status: 'ACTIVE', hierarchyLevel: 'SEGMENT', isOverbudget: false },
+      { code: 'FIN-2026-005', name: 'C', totalBudget: 3000, materialBudget: 0, jasaBudget: 0, materialSpent: 2, jasaSpent: 0, status: 'ACTIVE', hierarchyLevel: 'SITE', isOverbudget: false },
+      { code: 'FIN-2026-006', name: 'D', totalBudget: 1110, materialBudget: 0, jasaBudget: 0, materialSpent: 3, jasaSpent: 0, status: 'ACTIVE', hierarchyLevel: 'SITE', isOverbudget: false },
+      { code: 'FIN-2026-001', name: 'E', totalBudget: 1000, materialBudget: 0, jasaBudget: 0, materialSpent: 90, jasaSpent: 0, status: 'ACTIVE', hierarchyLevel: 'SITE', isOverbudget: false },
     ];
-    (prisma as any).financeProject.findMany = jest.fn(async ({ where }: any) => {
+    (prisma as any).financeProject.findMany = jest.fn(async ({ where, take, orderBy }: any) => {
       const codes = where?.code?.in;
-      if (Array.isArray(codes)) return top5.filter((r) => codes.includes(r.code));
-      return top5;
+      const rows = Array.isArray(codes)
+        ? top5.filter((r) => codes.includes(r.code))
+        : top5;
+      if (orderBy?.materialSpent === 'desc' || orderBy?.jasaSpent === 'desc') {
+        return [...rows].sort((a, b) => (b.materialSpent + b.jasaSpent) - (a.materialSpent + a.jasaSpent)).slice(0, take || rows.length);
+      }
+      return rows.slice(0, take || rows.length);
     });
     (prisma as any).financeProject.count = jest.fn(async ({ where }: any) => {
       const codes = where?.code?.in;
-      if (Array.isArray(codes) && where?.status === 'ACTIVE') return 5;
+      if (Array.isArray(codes) && where?.status === 'ACTIVE') {
+        return top5.filter((r) => codes.includes(r.code) && r.status === 'ACTIVE').length;
+      }
       if (where?.status === 'ACTIVE') return 99;
       return 5;
     });
@@ -4501,13 +4508,18 @@ describe('PermaTrax AI chatbot (logic)', () => {
       'Tampilkan 5 Finance Project dengan budget terbesar.',
       start.conversationId,
     );
+    await ai.chat(
+      user,
+      'Dari lima project itu, mana yang realisasinya paling besar?',
+      start.conversationId,
+    );
     const res = await ai.chat(
       user,
       'Kalau dari lima tadi yang statusnya ACTIVE saja ada berapa?',
       start.conversationId,
     );
     expect(res.answer).toMatch(/5 project ACTIVE dari 5/i);
-    expect(res.answer).not.toMatch(/Status lengkap belum ada/i);
+    expect(res.answer).not.toMatch(/1 project ACTIVE dari 1/i);
     expect(res.answer).not.toMatch(/ACTIVE Project\s*[–-]\s*99/i);
   });
 
@@ -4648,7 +4660,9 @@ describe('PermaTrax AI chatbot (logic)', () => {
     const { ai } = makeServices(prisma);
     const start = await ai.chat(user, 'Aku mau bahas Finance Project.');
     await ai.chat(user, 'Cari Finance Project SEG-2026-005.', start.conversationId);
+    await ai.chat(user, 'Berapa budgetnya?', start.conversationId);
     await ai.chat(user, 'Sekarang cari FIN-2026-005.', start.conversationId);
+    await ai.chat(user, 'Kalau yang ini budgetnya berapa?', start.conversationId);
     const res = await ai.chat(
       user,
       'Kalau dibandingkan dengan SEG yang tadi, mana yang budgetnya lebih besar?',

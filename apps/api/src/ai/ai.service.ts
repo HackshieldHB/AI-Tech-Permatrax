@@ -119,8 +119,13 @@ import {
   mergeConstraints,
   hasActiveRankingState,
   normalizeSessionState,
+  pushResultSetHistory,
+  rememberObjectCode,
+  resolveReferencedObjectCode,
+  selectResultSetMembers,
   sessionTopicHint,
   type ActiveIntent,
+  type ActiveResultMember,
   type ConversationSessionState,
   type ResponseStrategy,
   type RetrievalStrategy,
@@ -284,7 +289,9 @@ export class AiService {
         activeTopic: sessionCtx.activeTopic,
         activeObject: null,
         previousObject: session.previousObject,
+        objectHistory: session.objectHistory || [],
         activeResultSet: null,
+        resultSetHistory: [],
         activeReference: null,
         activeDataset: null,
         activeDatasetAnswer: null,
@@ -520,27 +527,20 @@ export class AiService {
         extractSessionProjectCode(session) ||
         extractExplicitEntityCode(session.activeObject || '');
       const mentioned = extractExplicitEntityCode(text);
+      const recovered = resolveReferencedObjectCode(text, session);
       const prevCode = extractExplicitEntityCode(session.previousObject || '');
-      const wantSeg = /(seg yang tadi|segment yang tadi|\bseg\b.*tadi)/.test(
-        normalizeId(text),
-      );
       const other =
         mentioned &&
         current &&
         mentioned.toUpperCase() !== current.toUpperCase()
           ? mentioned
-          : wantSeg && prevCode?.startsWith('SEG')
-            ? prevCode
-            : wantSeg && current?.startsWith('SEG')
-              ? current
-              : prevCode && current && prevCode !== current
-                ? prevCode
-                : null;
+          : recovered && recovered !== current
+            ? recovered
+            : prevCode && current && prevCode !== current
+              ? prevCode
+              : null;
       if (current && other && current !== other) {
         liveObjectLookup = `Bandingkan budget ${current} dengan ${other}`;
-        intent = 'comparison';
-      } else if (current && prevCode && current !== prevCode) {
-        liveObjectLookup = `Bandingkan budget ${current} dengan ${prevCode}`;
         intent = 'comparison';
       }
     }
@@ -679,16 +679,47 @@ export class AiService {
           : extractEntityFromAnswer(answer) || nextState.activeObject;
       const entityCode = extractExplicitEntityCode(entity || '');
       const prevCode = extractExplicitEntityCode(nextState.activeObject || '');
-      const previousObject =
+      let previousObject =
         opts.patch?.previousObject !== undefined
           ? opts.patch.previousObject
           : entityCode && prevCode && entityCode !== prevCode
             ? nextState.activeObject
             : nextState.previousObject;
+      const previousCode = extractExplicitEntityCode(previousObject || '');
+      if (previousCode && entityCode && previousCode === entityCode) {
+        previousObject = nextState.previousObject;
+      }
+      const objectHistory = rememberObjectCode(
+        rememberObjectCode(
+          opts.patch?.objectHistory ?? nextState.objectHistory,
+          prevCode && entityCode && prevCode !== entityCode
+            ? nextState.activeObject
+            : nextState.previousObject,
+        ),
+        entityCode,
+      );
       const refFromAnswer = extractActiveReferenceFromAnswer(answer);
       const isRankedList = /^\s*\d+\.\s+/m.test(answer) && (answer.match(/^\s*\d+\.\s+/gm) || []).length >= 2;
       const isCandidateSet =
         /pilih salah satu|ditemukan \d+\s+project/i.test(answer);
+      const nextResultSet: ActiveResultMember[] | null =
+        opts.patch?.activeResultSet !== undefined
+          ? opts.patch.activeResultSet
+          : isRankedList
+            ? extractRankedFinanceMembers(answer)
+            : nextState.activeResultSet;
+      const displacedSet =
+        nextState.activeResultSet?.length &&
+        (nextResultSet || []).map((m) => m.code).join('|') !==
+          nextState.activeResultSet.map((m) => m.code).join('|')
+          ? nextState.activeResultSet
+          : null;
+      const resultSetHistory =
+        opts.patch?.resultSetHistory !== undefined
+          ? opts.patch.resultSetHistory
+          : displacedSet
+            ? pushResultSetHistory(nextState.resultSetHistory, displacedSet)
+            : nextState.resultSetHistory;
       const responseStrategy =
         opts.responseStrategy ??
         mapResponseStrategy(opts.intent ?? intent, opts.strategy, opts.refusal);
@@ -698,12 +729,9 @@ export class AiService {
         activeTopic: opts.patch?.activeTopic ?? nextState.activeTopic,
         activeObject: entity,
         previousObject,
-        activeResultSet:
-          opts.patch?.activeResultSet !== undefined
-            ? opts.patch.activeResultSet
-            : isRankedList
-              ? extractRankedFinanceMembers(answer)
-              : nextState.activeResultSet,
+        objectHistory,
+        activeResultSet: nextResultSet,
+        resultSetHistory,
         activeReference:
           opts.patch?.activeReference !== undefined
             ? opts.patch.activeReference
@@ -1888,12 +1916,20 @@ export class AiService {
       }
     }
 
-    const resultMembers =
-      session.activeResultSet && session.activeResultSet.length > 0
-        ? session.activeResultSet
-        : extractRankedFinanceMembers(
-            session.activeDatasetAnswer || lastAssistant,
-          );
+    const resultMembers = (() => {
+      const selected = selectResultSetMembers(
+        text,
+        session.activeResultSet,
+        session.resultSetHistory,
+      );
+      if (selected.length) return selected;
+      if (session.activeResultSet && session.activeResultSet.length > 0) {
+        return session.activeResultSet;
+      }
+      return extractRankedFinanceMembers(
+        session.activeDatasetAnswer || lastAssistant,
+      );
+    })();
     if (
       toolNames.includes('finance_analytics') &&
       (isResultSetScopedFollowUp(text) || shouldReuseActiveResultSet(text)) &&
@@ -2244,12 +2280,19 @@ export class AiService {
               hierarchyLevel: r.hierarchyLevel,
             }))
           : session.activeResultSet,
-        previousObject:
-          Array.isArray(searchRows) &&
-          searchRows.length === 1 &&
-          session.activeObject
-            ? session.activeObject
-            : session.previousObject,
+        previousObject: (() => {
+          if (!Array.isArray(searchRows) || searchRows.length !== 1) {
+            return session.previousObject;
+          }
+          const newCode = extractExplicitEntityCode(
+            String((searchRows[0] as { code?: string }).code || ''),
+          );
+          const curCode = extractExplicitEntityCode(session.activeObject || '');
+          if (newCode && curCode && newCode !== curCode) {
+            return session.activeObject;
+          }
+          return session.previousObject;
+        })(),
         constraints: rankingConstraints,
         activeObject:
           searchCandidates && searchCandidates.length > 1
