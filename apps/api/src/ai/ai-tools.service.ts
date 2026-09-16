@@ -1193,7 +1193,9 @@ export class AiToolsService {
     const winner = va === vb ? null : va > vb ? a : b;
     const loser = winner ? (winner === a ? b : a) : null;
     const summary = winner
-      ? `${winner.code} memiliki ${label} lebih besar, yaitu ${fmtIdr(valueOf(winner))} dibandingkan ${loser!.code} sebesar ${fmtIdr(valueOf(loser!))}.`
+      ? metric === 'totalBudget'
+        ? `${winner.code} memiliki ${label} lebih besar, yaitu ${fmtIdr(valueOf(winner))} dibandingkan ${loser!.code} sebesar ${fmtIdr(valueOf(loser!))}.`
+        : `${label} ${winner.code} lebih besar, yaitu ${fmtIdr(valueOf(winner))} dibandingkan ${loser!.code} sebesar ${fmtIdr(valueOf(loser!))}.`
       : `${label} ${a.code} dan ${b.code} sama, yaitu ${fmtIdr(va)}.`;
     return {
       name: 'finance_analytics',

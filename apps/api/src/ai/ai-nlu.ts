@@ -4,6 +4,7 @@ import { normalizeId } from './ai-text';
 import {
   extractEntityFromAnswer,
   extractExplicitEntityCode,
+  extractExplicitEntityCodes,
   hasConversationalReference,
   isActiveReferenceDetailQuery,
   isAttributeFollowUp,
@@ -1726,6 +1727,37 @@ export function isComparisonMetricFollowUp(text: string): boolean {
   );
 }
 
+export function isExplicitGlobalFinancePopulation(text: string): boolean {
+  const m = normalizeId(primaryUtterance(text));
+  return /(semua|seluruh)\s+(finance\s+)?(project|proyek)/.test(m);
+}
+
+/**
+ * Short metric/attribute follow-up that must inherit Active Comparison Scope
+ * when one exists (PAI-DIQ-008 RT-09 / RT-12). Does not itself disable ranking.
+ */
+export function isShortComparisonMetricFollowUp(text: string): boolean {
+  const m = normalizeId(primaryUtterance(text));
+  if (!m) return false;
+  if (isExplicitGlobalFinancePopulation(text)) return false;
+  if (isResultSetScopedFollowUp(text)) return false;
+  if (detectExplicitTopN(text) != null) return false;
+  if (
+    /(paling besar|paling kecil|terbesar|terkecil|top\s*\d*|ranking|tampilkan|berdasarkan|dilihat dari|lihat dari)/.test(
+      m,
+    )
+  ) {
+    return false;
+  }
+  if (extractExplicitEntityCodes(text).length >= 2) return false;
+  const glue = /\b(kalau|kalo|sekarang|terus|lalu)\b/.test(m);
+  const metricBit =
+    /(material(\s+budget)?(nya)?|jasa(\s+budget)?(nya)?|sisa(\s+budget)?(nya)?|realisasi(nya)?|budgetnya|anggarannya)/.test(
+      m,
+    );
+  return glue && metricBit;
+}
+
 export type ComparisonMetric =
   | 'totalBudget'
   | 'realization'
@@ -2565,6 +2597,7 @@ export {
   filterPendingFinanceCandidates,
   extractReferenceOrdinal,
   extractExplicitEntityCode,
+  extractExplicitEntityCodes,
   extractSessionProjectCode,
   detectRequestedAttribute,
   isOrdinalReference,

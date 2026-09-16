@@ -4651,7 +4651,7 @@ describe('PermaTrax AI chatbot (logic)', () => {
       const inn = args?.where?.code?.in;
       const all = [
         { code: 'SEG-2026-005', name: 'Seg', totalBudget: 1000000000, materialBudget: 0, jasaBudget: 0, materialSpent: 0, jasaSpent: 0, status: 'ACTIVE', hierarchyLevel: 'SEGMENT', isOverbudget: false, poCustomerNumber: null, parent: null, description: 's' },
-        { code: 'FIN-2026-005', name: 'Fin', totalBudget: 3000000000, materialBudget: 0, jasaBudget: 0, materialSpent: 0, jasaSpent: 0, status: 'ACTIVE', hierarchyLevel: 'SITE', isOverbudget: false, poCustomerNumber: null, parent: null, description: 'f' },
+        { code: 'FIN-2026-005', name: 'Fin', totalBudget: 3000000000, materialBudget: 1000000000, jasaBudget: 0, materialSpent: 0, jasaSpent: 0, status: 'ACTIVE', hierarchyLevel: 'SITE', isOverbudget: false, poCustomerNumber: null, parent: null, description: 'f' },
       ];
       if (eq) return all.filter((r) => r.code === String(eq).toUpperCase());
       if (inn) return all.filter((r) => inn.includes(r.code));
@@ -4681,6 +4681,57 @@ describe('PermaTrax AI chatbot (logic)', () => {
     expect(follow.answer).toMatch(/SEG-2026-005/);
     expect(follow.answer).toMatch(/sama/i);
     expect(follow.answer).not.toMatch(/paling terbesar|Top 10|Ada 10 project/i);
+    const material = await ai.chat(
+      user,
+      'Kalau dari material budgetnya?',
+      start.conversationId,
+    );
+    expect(material.answer).toMatch(/Material Budget/i);
+    expect(material.answer).toMatch(/FIN-2026-005/);
+    expect(material.answer).toMatch(/SEG-2026-005/);
+    expect(material.answer).toMatch(/lebih besar/i);
+    expect(material.answer).not.toMatch(/Top 10|paling terbesar/i);
+  });
+
+  it('DIQ-008 RT-11: two explicit codes override leftover ranking object', async () => {
+    const prisma = makePrisma();
+    const rows = [
+      { code: 'FIN-2026-001', name: 'Old', totalBudget: 1000000000, materialBudget: 0, jasaBudget: 0, materialSpent: 90, jasaSpent: 0, status: 'ACTIVE', hierarchyLevel: 'SITE', isOverbudget: false, poCustomerNumber: null, parent: null, description: 'o' },
+      { code: 'FIN-2026-005', name: 'Fin5', totalBudget: 3000000000, materialBudget: 1000000000, jasaBudget: 0, materialSpent: 1, jasaSpent: 0, status: 'ACTIVE', hierarchyLevel: 'SITE', isOverbudget: false, poCustomerNumber: null, parent: null, description: 'f' },
+      { code: 'FIN-2026-006', name: 'Fin6', totalBudget: 1110000000, materialBudget: 0, jasaBudget: 0, materialSpent: 2, jasaSpent: 0, status: 'ACTIVE', hierarchyLevel: 'SITE', isOverbudget: false, poCustomerNumber: null, parent: null, description: 'g' },
+    ];
+    (prisma as any).financeProject.findMany = jest.fn(async (args: any) => {
+      const eq = args?.where?.code?.equals;
+      const inn = args?.where?.code?.in;
+      if (eq) return rows.filter((r) => r.code === String(eq).toUpperCase());
+      if (inn) return rows.filter((r) => inn.includes(r.code));
+      return rows;
+    });
+    const { ai } = makeServices(prisma);
+    const start = await ai.chat(user, 'Aku mau bahas Finance Project.');
+    await ai.chat(
+      user,
+      'Kalau dari semua Finance Project, mana yang realisasinya paling besar?',
+      start.conversationId,
+    );
+    const cmp = await ai.chat(
+      user,
+      'Sekarang bandingkan budget FIN-2026-005 dengan FIN-2026-006.',
+      start.conversationId,
+    );
+    expect(cmp.answer).toMatch(/FIN-2026-005/);
+    expect(cmp.answer).toMatch(/FIN-2026-006/);
+    expect(cmp.answer).not.toMatch(/FIN-2026-001/);
+    const realisasi = await ai.chat(
+      user,
+      'Kalau realisasinya?',
+      start.conversationId,
+    );
+    expect(realisasi.answer).toMatch(/Realisasi/i);
+    expect(realisasi.answer).toMatch(/FIN-2026-005/);
+    expect(realisasi.answer).toMatch(/FIN-2026-006/);
+    expect(realisasi.answer).not.toMatch(/FIN-2026-001/);
+    expect(realisasi.answer).not.toMatch(/Top 10|paling terbesar/i);
   });
 
   it('DIQ-020: stock ranking after PR does not replay pending PR', async () => {

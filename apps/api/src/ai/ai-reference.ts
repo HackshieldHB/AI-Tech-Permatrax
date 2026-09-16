@@ -64,11 +64,24 @@ export function extractSessionProjectCode(session: {
 
 /** Explicit project/stock code in the user utterance. */
 export function extractExplicitEntityCode(text: string): string | null {
-  const finance = text.match(/\b((?:SITE|SEG|FIN)-\d{4}-\d+)\b/i);
-  if (finance) return finance[1].toUpperCase();
+  const finance = extractExplicitEntityCodes(text)[0];
+  if (finance) return finance;
   const stock = text.match(/\b([A-Z]{2,}-?\d{2,}[A-Z0-9._-]*)\b/);
   if (stock && !/^(TOP|RP|IDR)\b/i.test(stock[1])) return stock[1];
   return null;
+}
+
+/** All SITE/SEG/FIN codes in the current turn, in order of appearance. */
+export function extractExplicitEntityCodes(text: string): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const m of text.matchAll(/\b((?:SITE|SEG|FIN)-\d{4}-\d+)\b/gi)) {
+    const code = m[1].toUpperCase();
+    if (seen.has(code)) continue;
+    seen.add(code);
+    out.push(code);
+  }
+  return out;
 }
 
 export function extractActiveReferenceFromAnswer(

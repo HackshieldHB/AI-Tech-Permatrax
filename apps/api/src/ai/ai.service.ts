@@ -37,6 +37,7 @@ import {
   filterPendingFinanceCandidates,
   extractEntityFromAnswer,
   extractExplicitEntityCode,
+  extractExplicitEntityCodes,
   extractSessionProjectCode,
   hasConversationalReference,
   isActiveReferenceDetailQuery,
@@ -66,6 +67,8 @@ import {
   isActiveObjectAttributeQuery,
   isObjectComparisonQuery,
   isComparisonMetricFollowUp,
+  isShortComparisonMetricFollowUp,
+  isExplicitGlobalFinancePopulation,
   detectComparisonMetric,
   comparisonMetricWord,
   extractRankedFinanceMembers,
@@ -415,6 +418,11 @@ export class AiService {
     }
     const businessDiagnostic =
       isBusinessDiagnosticQuery(text) && !isMetaReasoningInquiry(text);
+    const inheritCompare =
+      !!session.comparisonScope &&
+      !isExplicitGlobalFinancePopulation(text) &&
+      (isComparisonMetricFollowUp(text) ||
+        isShortComparisonMetricFollowUp(text));
 
     if (
       !liveObjectLookup &&
@@ -423,6 +431,7 @@ export class AiService {
       !isResultSetScopedFollowUp(text) &&
       !isObjectComparisonQuery(text) &&
       !isComparisonMetricFollowUp(text) &&
+      !inheritCompare &&
       !/(visit|requestor|requester|pemohon|kunjungan)/.test(normalizeId(text)) &&
       (stateFollowUp || (explicitCode && !/\bcari\b/i.test(text))) &&
       !isModuleDataRankingQuery(text) &&
@@ -513,6 +522,7 @@ export class AiService {
     if (
       !referenceDetail &&
       !liveObjectLookup &&
+      !inheritCompare &&
       isActiveObjectAttributeQuery(text) &&
       extractSessionProjectCode(session)
     ) {
@@ -528,12 +538,14 @@ export class AiService {
       !referenceDetail &&
       !liveObjectLookup &&
       (isObjectComparisonQuery(text) ||
-        (session.comparisonScope && isComparisonMetricFollowUp(text)))
+        inheritCompare ||
+        (extractExplicitEntityCodes(text).length >= 2 &&
+          /(bandingkan|dibandingkan|dibanding)/.test(normalizeId(text))))
     ) {
+      const codes = extractExplicitEntityCodes(text);
       const current =
         extractSessionProjectCode(session) ||
         extractExplicitEntityCode(session.activeObject || '');
-      const mentioned = extractExplicitEntityCode(text);
       const recovered = resolveReferencedObjectCode(text, session);
       const prevCode = extractExplicitEntityCode(session.previousObject || '');
       const scope = session.comparisonScope;
@@ -541,24 +553,19 @@ export class AiService {
         detectComparisonMetric(text) || scope?.metric || 'totalBudget';
       const metricWord = comparisonMetricWord(metric);
       const other =
-        mentioned &&
-        current &&
-        mentioned.toUpperCase() !== current.toUpperCase()
-          ? mentioned
-          : recovered && recovered !== current
-            ? recovered
-            : prevCode && current && prevCode !== current
-              ? prevCode
-              : null;
-      const pair =
-        scope &&
-        (!mentioned ||
-          mentioned === scope.objectA ||
-          mentioned === scope.objectB)
-          ? { a: scope.objectA, b: scope.objectB }
-          : current && other && current !== other
-            ? { a: current, b: other }
+        recovered && recovered !== current
+          ? recovered
+          : prevCode && current && prevCode !== current
+            ? prevCode
             : null;
+      const pair =
+        codes.length >= 2
+          ? { a: codes[0], b: codes[1] }
+          : inheritCompare && scope
+            ? { a: scope.objectA, b: scope.objectB }
+            : current && other && current !== other
+              ? { a: current, b: other }
+              : null;
       if (pair) {
         liveObjectLookup = `Bandingkan ${metricWord} ${pair.a} dengan ${pair.b}`;
         intent = 'comparison';
@@ -569,6 +576,12 @@ export class AiService {
             objectB: pair.b,
             metric,
           },
+          ...(codes.length >= 2
+            ? {
+                activeObject: pair.a,
+                previousObject: pair.b,
+              }
+            : {}),
         };
       }
     }
