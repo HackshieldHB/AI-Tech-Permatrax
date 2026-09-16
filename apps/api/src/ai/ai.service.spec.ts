@@ -4671,6 +4671,16 @@ describe('PermaTrax AI chatbot (logic)', () => {
     expect(res.answer).toMatch(/FIN-2026-005/);
     expect(res.answer).toMatch(/lebih besar/i);
     expect(res.answer).toMatch(/SEG-2026-005/);
+    const follow = await ai.chat(
+      user,
+      'Kalau sekarang dibandingkan dari sisi realisasi, mana yang lebih besar?',
+      start.conversationId,
+    );
+    expect(follow.answer).toMatch(/Realisasi/i);
+    expect(follow.answer).toMatch(/FIN-2026-005/);
+    expect(follow.answer).toMatch(/SEG-2026-005/);
+    expect(follow.answer).toMatch(/sama/i);
+    expect(follow.answer).not.toMatch(/paling terbesar|Top 10|Ada 10 project/i);
   });
 
   it('DIQ-020: stock ranking after PR does not replay pending PR', async () => {

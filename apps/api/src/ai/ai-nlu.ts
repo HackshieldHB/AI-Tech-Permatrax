@@ -958,6 +958,9 @@ export function isRankingPatchFollowUp(text: string): boolean {
   const m = normalizeId(primaryUtterance(text));
   if (!m) return false;
   if (isProceduralGuidanceQuery(text)) return false;
+  if (isObjectComparisonQuery(text) || isComparisonMetricFollowUp(text)) {
+    return false;
+  }
   if (isResultSetNarrowingQuery(text)) return false;
   if (isFinanceFilterClearQuery(text) || isFinanceFilterRemoveQuery(text)) {
     return false;
@@ -1008,6 +1011,9 @@ export function isRankingPatchFollowUp(text: string): boolean {
 /** Data ranking / live lookup inside a module (not howto). */
 export function isModuleDataRankingQuery(text: string): boolean {
   if (isProceduralGuidanceQuery(text)) return false;
+  if (isObjectComparisonQuery(text) || isComparisonMetricFollowUp(text)) {
+    return false;
+  }
   const m = normalizeId(text);
   return (
     /(paling sedikit|paling kecil|terendah|terkecil|lowest|min stock|hampir habis)/.test(
@@ -1690,10 +1696,59 @@ export function isActiveObjectAttributeQuery(text: string): boolean {
 /** Compare current object vs a previously referenced object (PAI-DIQ-006). */
 export function isObjectComparisonQuery(text: string): boolean {
   const m = normalizeId(primaryUtterance(text));
+  if (detectExplicitTopN(text) != null && /(tampilkan|top)\b/.test(m)) {
+    return false;
+  }
+  if (/(semua|seluruh)\s+(project|proyek)/.test(m)) return false;
+  const compareVerb = /(bandingkan|dibandingkan|dibanding)/.test(m);
+  const compareAdj = /(lebih besar|lebih kecil)/.test(m);
+  if (!compareVerb && !compareAdj) return false;
   return (
-    /(bandingkan|dibandingkan|dibanding|lebih besar|lebih kecil)/.test(m) &&
-    /(tadi|itu|budget|yang ini|seg|fin|site)/.test(m)
+    /(tadi|itu|budget|yang ini|seg|fin|site|realisasi|sisa|material|sisi|sekarang|kedua|keduanya)/.test(
+      m,
+    )
   );
+}
+
+/** Metric-only follow-up on an existing two-object compare (PAI-DIQ-008 RT-04). */
+export function isComparisonMetricFollowUp(text: string): boolean {
+  const m = normalizeId(primaryUtterance(text));
+  if (detectExplicitTopN(text) != null && /(tampilkan|top)\b/.test(m)) {
+    return false;
+  }
+  if (/(semua|seluruh)\s+(project|proyek)/.test(m)) return false;
+  if (/(tampilkan|list|daftar)\s+\d+/.test(m)) return false;
+  return (
+    /(bandingkan|dibandingkan|dibanding)/.test(m) &&
+    /(realisasi|budget|anggaran|sisa|material|jasa|sisi|lebih besar|lebih kecil|sekarang)/.test(
+      m,
+    )
+  );
+}
+
+export type ComparisonMetric =
+  | 'totalBudget'
+  | 'realization'
+  | 'remaining'
+  | 'materialBudget'
+  | 'jasaBudget';
+
+export function detectComparisonMetric(text: string): ComparisonMetric | null {
+  const m = normalizeId(primaryUtterance(text));
+  if (/(realisasi|spent|terpakai)/.test(m)) return 'realization';
+  if (/(sisa|remaining)/.test(m)) return 'remaining';
+  if (/\bmaterial\b/.test(m)) return 'materialBudget';
+  if (/\b(jasa|service)\b/.test(m)) return 'jasaBudget';
+  if (/(budget|anggaran)/.test(m)) return 'totalBudget';
+  return null;
+}
+
+export function comparisonMetricWord(metric: ComparisonMetric): string {
+  if (metric === 'realization') return 'realisasi';
+  if (metric === 'remaining') return 'sisa';
+  if (metric === 'materialBudget') return 'material';
+  if (metric === 'jasaBudget') return 'jasa';
+  return 'budget';
 }
 export function hasActiveStatusNegation(text: string): boolean {
   const m = normalizeId(text);

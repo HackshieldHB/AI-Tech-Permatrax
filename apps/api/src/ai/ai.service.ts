@@ -65,6 +65,9 @@ import {
   shouldReuseActiveResultSet,
   isActiveObjectAttributeQuery,
   isObjectComparisonQuery,
+  isComparisonMetricFollowUp,
+  detectComparisonMetric,
+  comparisonMetricWord,
   extractRankedFinanceMembers,
   isProjectCountQuery,
   isStandaloneFinanceAggregateQuery,
@@ -292,6 +295,7 @@ export class AiService {
         objectHistory: session.objectHistory || [],
         activeResultSet: null,
         resultSetHistory: [],
+        comparisonScope: null,
         activeReference: null,
         activeDataset: null,
         activeDatasetAnswer: null,
@@ -417,6 +421,8 @@ export class AiService {
       !businessDiagnostic &&
       !knowledgeTurn &&
       !isResultSetScopedFollowUp(text) &&
+      !isObjectComparisonQuery(text) &&
+      !isComparisonMetricFollowUp(text) &&
       !/(visit|requestor|requester|pemohon|kunjungan)/.test(normalizeId(text)) &&
       (stateFollowUp || (explicitCode && !/\bcari\b/i.test(text))) &&
       !isModuleDataRankingQuery(text) &&
@@ -521,7 +527,8 @@ export class AiService {
     if (
       !referenceDetail &&
       !liveObjectLookup &&
-      isObjectComparisonQuery(text)
+      (isObjectComparisonQuery(text) ||
+        (session.comparisonScope && isComparisonMetricFollowUp(text)))
     ) {
       const current =
         extractSessionProjectCode(session) ||
@@ -529,6 +536,10 @@ export class AiService {
       const mentioned = extractExplicitEntityCode(text);
       const recovered = resolveReferencedObjectCode(text, session);
       const prevCode = extractExplicitEntityCode(session.previousObject || '');
+      const scope = session.comparisonScope;
+      const metric =
+        detectComparisonMetric(text) || scope?.metric || 'totalBudget';
+      const metricWord = comparisonMetricWord(metric);
       const other =
         mentioned &&
         current &&
@@ -539,9 +550,26 @@ export class AiService {
             : prevCode && current && prevCode !== current
               ? prevCode
               : null;
-      if (current && other && current !== other) {
-        liveObjectLookup = `Bandingkan budget ${current} dengan ${other}`;
+      const pair =
+        scope &&
+        (!mentioned ||
+          mentioned === scope.objectA ||
+          mentioned === scope.objectB)
+          ? { a: scope.objectA, b: scope.objectB }
+          : current && other && current !== other
+            ? { a: current, b: other }
+            : null;
+      if (pair) {
+        liveObjectLookup = `Bandingkan ${metricWord} ${pair.a} dengan ${pair.b}`;
         intent = 'comparison';
+        session = {
+          ...session,
+          comparisonScope: {
+            objectA: pair.a,
+            objectB: pair.b,
+            metric,
+          },
+        };
       }
     }
 
@@ -2320,6 +2348,34 @@ export class AiService {
         correctionApplied: false,
         pendingRecovery: false,
         lastFailureKind: null,
+        comparisonScope: (() => {
+          const t = toolTraces.find(
+            (x) => x.name === 'finance_analytics' && x.ok,
+          );
+          const d = t?.data as
+            | {
+                mode?: string;
+                metric?:
+                  | 'totalBudget'
+                  | 'realization'
+                  | 'remaining'
+                  | 'materialBudget'
+                  | 'jasaBudget';
+                a?: { code?: string };
+                b?: { code?: string };
+              }
+            | undefined;
+          if (d?.mode === 'compare' && d.a?.code && d.b?.code) {
+            return {
+              objectA: String(d.a.code).toUpperCase(),
+              objectB: String(d.b.code).toUpperCase(),
+              metric:
+                d.metric || session.comparisonScope?.metric || 'totalBudget',
+            };
+          }
+          if (rankingToolData) return null;
+          return session.comparisonScope;
+        })(),
       },
     });
   }

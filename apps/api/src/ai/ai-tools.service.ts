@@ -9,6 +9,7 @@ import {
   detectRankingMetric,
   detectRankingDirection,
   detectRequestedRankingN,
+  detectComparisonMetric,
   hasActiveStatusNegation,
   isStatusBreakdownQuery,
   isStockQuantityRankingQuery,
@@ -484,7 +485,12 @@ export class AiToolsService {
       compareCodes.length >= 2 &&
       /(banding|dibanding|lebih besar|lebih kecil)/.test(normalizeId(bareMessage))
     ) {
-      return this.compareFinanceBudgets(user, compareCodes[0], compareCodes[1]);
+      return this.compareFinanceMetrics(
+        user,
+        compareCodes[0],
+        compareCodes[1],
+        detectComparisonMetric(bareMessage) || 'totalBudget',
+      );
     }
     if (
       compareCodes.length < 2 &&
@@ -1124,10 +1130,16 @@ export class AiToolsService {
     };
   }
 
-  private async compareFinanceBudgets(
+  private async compareFinanceMetrics(
     user: AuthUser,
     codeA: string,
     codeB: string,
+    metric:
+      | 'totalBudget'
+      | 'realization'
+      | 'remaining'
+      | 'materialBudget'
+      | 'jasaBudget' = 'totalBudget',
   ): Promise<ToolTrace> {
     const rows = await this.prisma.financeProject.findMany({
       where: {
@@ -1139,6 +1151,10 @@ export class AiToolsService {
         code: true,
         name: true,
         totalBudget: true,
+        materialBudget: true,
+        jasaBudget: true,
+        materialSpent: true,
+        jasaSpent: true,
         status: true,
       },
     });
@@ -1151,18 +1167,39 @@ export class AiToolsService {
         summary: `Tidak lengkap untuk membandingkan ${codeA} dan ${codeB}.`,
       };
     }
-    const va = Number(a.totalBudget);
-    const vb = Number(b.totalBudget);
+    const valueOf = (
+      row: typeof a,
+    ): number => {
+      const realized =
+        Number(row.materialSpent) + Number(row.jasaSpent);
+      if (metric === 'realization') return realized;
+      if (metric === 'remaining') return Number(row.totalBudget) - realized;
+      if (metric === 'materialBudget') return Number(row.materialBudget);
+      if (metric === 'jasaBudget') return Number(row.jasaBudget);
+      return Number(row.totalBudget);
+    };
+    const label =
+      metric === 'realization'
+        ? 'Realisasi'
+        : metric === 'remaining'
+          ? 'Sisa Budget'
+          : metric === 'materialBudget'
+            ? 'Material Budget'
+            : metric === 'jasaBudget'
+              ? 'Jasa Budget'
+              : 'budget';
+    const va = valueOf(a);
+    const vb = valueOf(b);
     const winner = va === vb ? null : va > vb ? a : b;
     const loser = winner ? (winner === a ? b : a) : null;
     const summary = winner
-      ? `${winner.code} memiliki budget lebih besar, yaitu ${fmtIdr(Number(winner.totalBudget))} dibandingkan ${loser!.code} sebesar ${fmtIdr(Number(loser!.totalBudget))}.`
-      : `${a.code} dan ${b.code} memiliki Total Budget yang sama, yaitu ${fmtIdr(va)}.`;
+      ? `${winner.code} memiliki ${label} lebih besar, yaitu ${fmtIdr(valueOf(winner))} dibandingkan ${loser!.code} sebesar ${fmtIdr(valueOf(loser!))}.`
+      : `${label} ${a.code} dan ${b.code} sama, yaitu ${fmtIdr(va)}.`;
     return {
       name: 'finance_analytics',
       ok: true,
       summary: [summary, `Data per ${fmtDateId()}.`].join('\n'),
-      data: { mode: 'compare', a, b },
+      data: { mode: 'compare', metric, a, b },
     };
   }
 

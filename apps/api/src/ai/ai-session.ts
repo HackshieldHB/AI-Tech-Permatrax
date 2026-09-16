@@ -199,6 +199,18 @@ export function resolveReferencedObjectCode(
   return null;
 }
 
+/** Two-object compare lock so metric follow-ups do not become global ranking. */
+export type ActiveComparisonScope = {
+  objectA: string;
+  objectB: string;
+  metric:
+    | 'totalBudget'
+    | 'realization'
+    | 'remaining'
+    | 'materialBudget'
+    | 'jasaBudget';
+};
+
 export type ConversationSessionState = {
   activeTopic: SessionTopic | null;
   /** Last project / entity under discussion */
@@ -211,6 +223,8 @@ export type ConversationSessionState = {
   activeResultSet: ActiveResultMember[] | null;
   /** Prior result sets so “lima tadi” can recover a parent set (PAI-DIQ-005). */
   resultSetHistory: ResultSetSnapshot[];
+  /** Pair currently being compared (PAI-DIQ-008 RT-04). */
+  comparisonScope: ActiveComparisonScope | null;
   /**
    * Active Reference snapshot — focused ranked object so attribute follow-ups
    * resolve without re-listing all rows.
@@ -283,6 +297,7 @@ export const EMPTY_SESSION: ConversationSessionState = {
   objectHistory: [],
   activeResultSet: null,
   resultSetHistory: [],
+  comparisonScope: null,
   activeReference: null,
   activeDataset: null,
   activeDatasetAnswer: null,
@@ -325,6 +340,7 @@ export function normalizeSessionState(
     resultSetHistory: Array.isArray(raw?.resultSetHistory)
       ? raw!.resultSetHistory
       : [],
+    comparisonScope: raw?.comparisonScope ?? null,
     previousObject: raw?.previousObject ?? null,
     objectHistory: Array.isArray(raw?.objectHistory) ? raw!.objectHistory : [],
     frame: normalizeConversationFrame(raw?.frame ?? base.frame),
