@@ -91,9 +91,11 @@ export function isFinanceInterpretationQuery(text: string): boolean {
   }
   if (isExplicitRankingUtterance(text)) return false;
   const hasMetric =
-    /(budget|anggaran|realisasi|material|jasa|sisa|persentase|selisih)/.test(m);
+    /(budget|anggaran|realisasi|material|jasa|sisa|persentase|persen|selisih)/.test(
+      m,
+    );
   const asksCondition =
-    /(bagaimana|gimana|kondisi|hubungan|interpretasi|bandingkan|dibanding|mana yang|lebih besar|selisih)/.test(
+    /(bagaimana|gimana|kondisi|hubungan|interpretasi|bandingkan|dibanding|mana yang|lebih besar|selisih|berapa persen|terhadap)/.test(
       m,
     );
   return hasMetric && (asksCondition || isObjectScopedReference(text));
@@ -162,7 +164,9 @@ function detectAnalyticalRequestOn(text: string): AnalyticalRequest | null {
   }
 
   const wantsRatio =
-    /(persentase|percent|%|rasio|ratio|terhadap budget)/.test(m);
+    /(persentase|percent|persen|\b%\b|rasio|ratio|terhadap (total )?budget)/.test(
+      m,
+    );
   const wantsDiff = /(selisih|beda(nya)?|perbedaan|difference)/.test(m);
   const wantsCompare =
     /(bandingkan|dibanding|versus|\bvs\b|mana yang (lebih|besar)|lebih besar)/.test(
@@ -194,8 +198,11 @@ function detectAnalyticalRequestOn(text: string): AnalyticalRequest | null {
   }
 
   const codes = extractFinanceCodes(text);
-  if (wantsRatio && (wantsCompare || codes.length >= 2)) {
-    return { kind: 'ratio_compare', metrics: metrics.length ? metrics : ['realization', 'budget'] };
+  if (wantsRatio) {
+    return {
+      kind: 'ratio_compare',
+      metrics: metrics.length ? metrics : ['realization', 'budget'],
+    };
   }
   if (
     wantsCompare &&
@@ -205,8 +212,15 @@ function detectAnalyticalRequestOn(text: string): AnalyticalRequest | null {
   ) {
     return { kind: 'intra_compare', metrics: ['material', 'jasa'] };
   }
-  if (wantsCompare && metrics.includes('budget') && metrics.includes('realization')) {
-    return { kind: 'multi_metric_compare', metrics: ['budget', 'realization'] };
+  if (
+    wantsCompare &&
+    metrics.includes('budget') &&
+    (metrics.includes('realization') || metrics.includes('remaining'))
+  ) {
+    return {
+      kind: 'multi_metric_compare',
+      metrics: metrics.length ? metrics : ['budget', 'realization'],
+    };
   }
   if (wantsCompare && codes.length >= 2) {
     return { kind: 'absolute_compare', metrics: metrics.length ? metrics : ['realization'] };
@@ -250,7 +264,7 @@ export function buildDescribeAnswer(p: FinanceOperand): string {
   const rem = remainingOf(p);
   const pct = realizationPct(p);
   return [
-    `Interpretasi object-scoped untuk ${labelOf(p)} (bukan ranking global):`,
+    `Berdasarkan data ${labelOf(p)}:`,
     `• Total Budget = ${fmtIdr(Number(p.totalBudget))}`,
     `• Realisasi = ${fmtIdr(real)} (${pctLabel(pct)} dari budget)`,
     `• Sisa = ${fmtIdr(rem)}`,
@@ -263,8 +277,18 @@ export function buildDescribeAnswer(p: FinanceOperand): string {
 }
 
 export function buildRatioCompareAnswer(rows: FinanceOperand[]): string {
+  if (rows.length === 1) {
+    const p = rows[0];
+    const pct = realizationPct(p);
+    const real = realizationOf(p);
+    return [
+      `Persentase realisasi ${labelOf(p)} terhadap total budget:`,
+      `• Realisasi ${fmtIdr(real)} / Total Budget ${fmtIdr(Number(p.totalBudget))} × 100% = ${pctLabel(pct)}`,
+      `Operasi: Realisasi / Total Budget × 100%.`,
+    ].join('\n');
+  }
   if (rows.length < 2) {
-    return rows[0] ? buildDescribeAnswer(rows[0]) : 'Operand perbandingan belum lengkap.';
+    return 'Operand perbandingan belum lengkap.';
   }
   const scored = rows.map((p) => ({
     p,
@@ -301,9 +325,7 @@ export function buildIntraObjectCompareAnswer(p: FinanceOperand): string {
     who = `Jasa Budget lebih besar (${fmtIdr(jasa)}) dibanding Material Budget (${fmtIdr(mat)}). Selisih = ${fmtIdr(diff)}.`;
   }
   return [
-    `Perbandingan intra-object pada ${labelOf(p)}:`,
-    `• COMPARE(Material Budget, Jasa Budget)`,
-    `• ABS(Material − Jasa) = ${fmtIdr(diff)}`,
+    `Perbandingan material dan jasa pada ${labelOf(p)}:`,
     who,
   ].join('\n');
 }
@@ -325,18 +347,28 @@ export function buildMultiMetricCompareAnswer(rows: FinanceOperand[]): string {
       : realizationOf(a) > realizationOf(b)
         ? a
         : b;
+  const remWinner =
+    remainingOf(a) === remainingOf(b)
+      ? null
+      : remainingOf(a) > remainingOf(b)
+        ? a
+        : b;
   const budgetLine = budgetWinner
     ? `${budgetWinner.code} memiliki Total Budget lebih besar (${fmtIdr(Number(budgetWinner.totalBudget))}).`
     : `Total Budget kedua project sama (${fmtIdr(Number(a.totalBudget))}).`;
   const realLine = realWinner
     ? `${realWinner.code} memiliki Realisasi lebih besar (${fmtIdr(realizationOf(realWinner))}) berdasarkan data saat ini.`
     : `Realisasi kedua project sama (${fmtIdr(realizationOf(a))}).`;
+  const remLine = remWinner
+    ? `${remWinner.code} memiliki Sisa Budget lebih besar (${fmtIdr(remainingOf(remWinner))}).`
+    : `Sisa Budget kedua project sama (${fmtIdr(remainingOf(a))}).`;
   return [
     `Perbandingan multi-metric (Budget DAN Realisasi) — tanpa penilaian performa:`,
-    `• ${a.code}: Budget ${fmtIdr(Number(a.totalBudget))} | Realisasi ${fmtIdr(realizationOf(a))}`,
-    `• ${b.code}: Budget ${fmtIdr(Number(b.totalBudget))} | Realisasi ${fmtIdr(realizationOf(b))}`,
+    `• ${a.code}: Budget ${fmtIdr(Number(a.totalBudget))} | Realisasi ${fmtIdr(realizationOf(a))} | Sisa ${fmtIdr(remainingOf(a))}`,
+    `• ${b.code}: Budget ${fmtIdr(Number(b.totalBudget))} | Realisasi ${fmtIdr(realizationOf(b))} | Sisa ${fmtIdr(remainingOf(b))}`,
     budgetLine,
     realLine,
+    remLine,
   ].join('\n');
 }
 
@@ -387,13 +419,12 @@ export function buildCausalWhyAnswer(
   const ledgerLabel = ledger?.entryType || 'tidak ada baris ledger';
   const why3 = `Why3: ledger terakhir ${ledgerLabel}${ledger?.amount != null ? ` sebesar ${fmtIdr(Number(ledger.amount))}` : ''}. Ini fakta ledger, bukan otomatis akar penyebab operasional.`;
   const boundary = [
-    'Why4 = unknown — bukti operasional penyebab utama tidak tersedia di data Finance Project saat ini.',
-    'Why5 = unknown — permintaan 5-Why tidak menambah kedalaman jika evidencenya habis.',
-    'Batas kausal tercapai: data menunjukkan kondisi keuangan, tetapi tidak menetapkan penyebab operasional (invoice, PM, lapangan, dsb).',
+    'Dari data Finance Project yang tersedia, penyebab operasional lebih dalam (invoice, PM, lapangan, dan sejenisnya) tidak tercatat, jadi tetap unknown.',
+    'Batas kausal tercapai: data menunjukkan kondisi keuangan, tetapi tidak menetapkan penyebab operasional.',
   ];
   return {
     answer: [
-      `5-why PAI (hanya fakta DB; level tanpa data = unknown) — ${labelOf(p)}`,
+      `Analisis berdasarkan data ${labelOf(p)}:`,
       why1,
       why2,
       why3,
@@ -419,19 +450,21 @@ export function buildHypothesisAnswer(
 export function buildPremiseAnswer(p: FinanceOperand): string {
   const real = realizationOf(p);
   return [
-    `Observasi: Realisasi ${p.code} = ${fmtIdr(real)}.`,
-    'Realisasi Rp0 (atau rendah) hanya berarti tidak ada realisasi keuangan tercatat pada data yang tersedia.',
-    'Itu tidak membuktikan bahwa project belum mulai dikerjakan — status operasional membutuhkan evidence independen (progress, log implementasi, visit, dsb).',
-    `Status Finance yang tercatat: ${p.status || 'n/a'} (${p.hierarchyLevel || 'n/a'}). Observed financial state ≠ operational causality.`,
+    `Realisasi ${p.code} saat ini ${fmtIdr(real)}.`,
+    real === 0
+      ? `Realisasi Rp0 menunjukkan belum ada realisasi finansial yang tercatat untuk ${p.code}.`
+      : 'Angka itu hanya menggambarkan realisasi finansial yang tercatat pada data yang tersedia.',
+    'Namun dari data Finance Project tersebut saja belum dapat disimpulkan bahwa pekerjaan belum dimulai — itu tidak membuktikan bahwa project belum mulai dikerjakan, karena data yang tersedia tidak menunjukkan penyebab atau progress operasional.',
+    `Status Finance yang tercatat: ${p.status || 'n/a'} (${p.hierarchyLevel || 'n/a'}).`,
   ].join('\n');
 }
 
 export function buildCausalBoundaryHoldAnswer(objectLabel?: string | null): string {
   return [
     'Batas kausal sudah tercapai pada giliran sebelumnya.',
-    objectLabel ? `Object: ${objectLabel}` : null,
-    'Tidak ada Why berikutnya yang didukung evidence baru. Repeated questioning tidak menambah data.',
-    'Penyebab lebih dalam tetap unknown sampai ada evidence baru, object berubah, atau scope analitik berubah.',
+    objectLabel ? `Masih untuk ${objectLabel}.` : null,
+    'Tidak ada penyebab berikutnya yang didukung evidence baru. Mengulang pertanyaan yang sama tidak menambah data.',
+    'Penyebab lebih dalam tetap unknown sampai ada evidence baru, object yang dianalisis berubah, atau jenis pertanyaannya berubah.',
   ]
     .filter(Boolean)
     .join('\n');
