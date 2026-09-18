@@ -22,6 +22,8 @@ module.exports = {
         UPLOAD_DIR: './uploads',
         FILE_BASE_URL: 'https://api.permatrax.tech/api/files',
         MAX_FILE_SIZE: '52428800',
+        PAI_SLOT_FILL: 'false',
+        PAI_FRAME_LLM: 'true',
       },
       error_file: '../../logs/api-error.log',
       out_file: '../../logs/api-out.log',

@@ -8,7 +8,8 @@ import { AiOllamaService } from './ai-ollama.service';
 import { extractConstraintsFromText } from './ai-constraints';
 import type { ActiveConstraintSet } from './ai-session';
 import { EMPTY_CONSTRAINTS } from './ai-session';
-import { extractHierarchyConstraint, normalizeId, isStandaloneFinanceAggregateQuery, isFinanceFilterOnlyQuery, isFinanceContextFilterQuery } from './ai-nlu';
+import { extractHierarchyConstraint, normalizeId, isStandaloneFinanceAggregateQuery, isFinanceFilterOnlyQuery, isFinanceContextFilterQuery, isResultSetNarrowingQuery } from './ai-nlu';
+import { fillEmptySlotsFromLlm, shouldAskFrameLlm } from './ai-frame-llm';
 
 export function isSlotFillEnabled(): boolean {
   const v = (process.env.PAI_SLOT_FILL || '').toLowerCase();
@@ -74,11 +75,16 @@ export async function extractSlots(
   ollama: AiOllamaService,
 ): Promise<{ constraints: ActiveConstraintSet; usedLlm: boolean }> {
   const heuristic = extractConstraintsFromText(text);
-  // Always apply tag-based hierarchy from message
-  const hier = extractHierarchyConstraint(text);
-  if (hier && !heuristic.hierarchy) heuristic.hierarchy = hier;
+  // Never promote "Yang SEGMENT" candidate-picks into a global filter.
+  if (!isResultSetNarrowingQuery(text)) {
+    const hier = extractHierarchyConstraint(text);
+    if (hier && !heuristic.hierarchy) heuristic.hierarchy = hier;
+  }
 
   if (!isSlotFillEnabled()) {
+    if (shouldAskFrameLlm(text, heuristic)) {
+      return fillEmptySlotsFromLlm(text, heuristic, ollama);
+    }
     return { constraints: heuristic, usedLlm: false };
   }
 
@@ -90,7 +96,8 @@ export async function extractSlots(
     hasUsableHeuristic(heuristic) ||
     isStandaloneFinanceAggregateQuery(text) ||
     isFinanceFilterOnlyQuery(text) ||
-    isFinanceContextFilterQuery(text)
+    isFinanceContextFilterQuery(text) ||
+    isResultSetNarrowingQuery(text)
   ) {
     return { constraints: heuristic, usedLlm: false };
   }

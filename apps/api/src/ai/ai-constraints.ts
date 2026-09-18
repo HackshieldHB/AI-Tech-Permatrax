@@ -5,11 +5,14 @@ import {
   extractOwnerName,
   extractProjectNeedle,
   hasExplicitRankingMetric,
-  detectExplicitTopN,
+  detectRequestedRankingN,
   detectRankingDirection,
   isFinanceFilterClearQuery,
   isFinanceFilterRemoveQuery,
   isResultSetNarrowingQuery,
+  isModuleDataRankingQuery,
+  isRankingPatchFollowUp,
+  hasActiveStatusNegation,
 } from './ai-nlu';
 import type { ActiveConstraintSet } from './ai-session';
 import { EMPTY_CONSTRAINTS } from './ai-session';
@@ -34,7 +37,12 @@ export function extractConstraintsFromText(text: string): ActiveConstraintSet {
     return out;
   }
 
-  if (/\b(aktif|active)\b/.test(m) && !/(non.?arsip|seluruh|semua|closed|archived)/.test(m)) {
+  if (hasActiveStatusNegation(text)) {
+    out.extra!.push('status:not_active');
+  } else if (
+    /\b(aktif|active)\b/.test(m) &&
+    !/(non.?arsip|seluruh|semua|closed|archived)/.test(m)
+  ) {
     out.status = 'ACTIVE';
   } else if (/(non.?arsip|non.?archived|active\s*\+\s*closed)/.test(m)) {
     out.status = 'NON_ARCHIVED';
@@ -71,21 +79,27 @@ export function extractConstraintsFromText(text: string): ActiveConstraintSet {
     out.ranking = 'smallest';
   } else if (/(paling sedikit|hampir habis)/.test(m)) {
     out.ranking = 'lowest_stock';
-  } else if (/(paling banyak|tertinggi)/.test(m) && /(stok|stock|barang)/.test(m)) {
+  } else if (/(paling banyak|tertinggi)/.test(m) && /(stok|stock|barang|stoknya)/.test(m)) {
     out.ranking = 'highest_stock';
-  } else if (/\btop\s*\d+\b/.test(m) || /\branking\b/.test(m)) {
+  } else if (/\btop[\s-]*\d+\b/.test(m) || /\branking\b/.test(m)) {
     out.ranking = 'top';
   }
 
-  // PAI-FNC-004: carry ranking metric hint in extra
-  if (out.ranking === 'top' || out.ranking === 'smallest') {
+  // PAI-FNC-004 V4: metric + Top-N attach to ranking utterances / patches
+  // even when direction is inherited from the latest ranking state.
+  const rankingTurn =
+    out.ranking === 'top' ||
+    out.ranking === 'smallest' ||
+    isModuleDataRankingQuery(text) ||
+    isRankingPatchFollowUp(text);
+  if (rankingTurn) {
     if (/(over\s*budget|overbudget)/.test(m)) out.extra!.push('metric:overbudget');
     else if (/(sisa|remaining)/.test(m)) out.extra!.push('metric:remaining');
     else if (/(material)/.test(m)) out.extra!.push('metric:materialBudget');
     else if (/(jasa|service)/.test(m)) out.extra!.push('metric:jasaBudget');
     else if (/(realisasi|spent)/.test(m)) out.extra!.push('metric:realization');
     else if (/(budget|anggaran)/.test(m)) out.extra!.push('metric:totalBudget');
-    const topN = detectExplicitTopN(text);
+    const topN = detectRequestedRankingN(text);
     if (topN) out.extra!.push(`limit:${topN}`);
   }
 
@@ -104,10 +118,8 @@ export function buildConstrainedFinanceQuery(
   lastDataQuery?: string | null,
 ): string {
   const parts: string[] = [];
-  const ranking =
-    constraints.ranking ||
-    (/(terbesar|top\s*\d*)/i.test(lastDataQuery || '') ? 'top' : null) ||
-    (/(terkecil)/i.test(lastDataQuery || '') ? 'smallest' : null);
+  // PAI Phase 2: ranking comes from the committed constraint frame only.
+  const ranking = constraints.ranking || null;
 
   const limitHint = constraints.extra?.find((e) => e.startsWith('limit:'))?.replace(
     'limit:',
@@ -177,6 +189,19 @@ export function appendInheritedRankingMetricTag(
   return `${message} [METRIC_${key}]`.trim();
 }
 
+/** Carry previous sort direction only when this turn did not name one. */
+export function appendInheritedRankingDirectionTag(
+  message: string,
+  constraints: ActiveConstraintSet,
+  text: string,
+): string {
+  if (/\[DIR_/i.test(message)) return message;
+  if (detectRankingDirection(text) != null) return message;
+  if (constraints.ranking === 'smallest') return `${message} [DIR_ASC]`.trim();
+  if (constraints.ranking === 'top') return `${message} [DIR_DESC]`.trim();
+  return message;
+}
+
 /** Carry previous Top-N only when this turn did not name a count. */
 export function appendInheritedRankingLimitTag(
   message: string,
@@ -184,7 +209,7 @@ export function appendInheritedRankingLimitTag(
   text: string,
 ): string {
   if (/\[LIMIT_/i.test(message)) return message;
-  if (detectExplicitTopN(text) != null) return message;
+  if (detectRequestedRankingN(text) != null) return message;
   const hint = constraints.extra?.find((e) => e.startsWith('limit:'));
   if (!hint) return message;
   const n = hint.replace('limit:', '');

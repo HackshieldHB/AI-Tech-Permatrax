@@ -75,6 +75,35 @@ export function isUnknownInformationInquiry(text: string): boolean {
   return false;
 }
 
+/** Causal / 5-why about the business — not “kenapa kamu (PAI) jawab…”. */
+export function isBusinessDiagnosticQuery(text: string): boolean {
+  if (isMetaReasoningInquiry(text)) return false;
+  const m = normalizeId(text);
+  return (
+    /(kenapa|mengapa|mengapakah)/.test(m) ||
+    /(\b5\s*-?\s*whys?\b|\bfive\s*whys?\b)/.test(m) ||
+    /(akar masalah|root cause)/.test(m)
+  );
+}
+
+export function buildBusinessDiagnosticAnswer(input: {
+  code?: string | null;
+  factSummary?: string | null;
+}): string {
+  if (input.factSummary) {
+    return input.factSummary;
+  }
+  return [
+    'PAI tidak punya riwayat penyebab (5-why, audit, komentar, atau timeline status). Saya tidak akan mengarang alasan kenapa angka atau status itu terjadi.',
+    '',
+    'Tool yang ada hanya menampilkan fakta live: status, total budget, material, jasa, realisasi, dan sisa.',
+    '',
+    input.code
+      ? `Kode ${input.code} tidak ketemu di data live, jadi saya tidak bisa menambahkan fakta budget/realisasi.`
+      : 'Sebutkan kode project (contoh SEG-2026-005) supaya saya lampirkan fakta live. Tanpa kode, saya tidak menjalankan ringkasan Finance / ranking sebagai pengganti jawaban “kenapa”.',
+  ].join('\n');
+}
+
 export function isMetaReasoningInquiry(text: string): boolean {
   const m = normalizeId(text);
   if (isUnknownInformationInquiry(text)) return true;

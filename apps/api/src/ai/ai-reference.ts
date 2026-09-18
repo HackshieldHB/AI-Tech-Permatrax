@@ -13,6 +13,7 @@ export type ConversationAttribute =
   | 'qty'
   | 'name'
   | 'requestor'
+  | 'pic'
   | null;
 
 export type ResolvedReference = {
@@ -50,13 +51,37 @@ export function extractEntityFromAnswer(
   return null;
 }
 
+/** SITE/SEG/FIN code from locked Active Object / Active Reference. */
+export function extractSessionProjectCode(session: {
+  activeObject?: string | null;
+  activeReference?: string | null;
+}): string | null {
+  return (
+    extractExplicitEntityCode(session.activeObject || '') ||
+    extractExplicitEntityCode(session.activeReference || '')
+  );
+}
+
 /** Explicit project/stock code in the user utterance. */
 export function extractExplicitEntityCode(text: string): string | null {
-  const finance = text.match(/\b((?:SITE|SEG|FIN)-\d{4}-\d+)\b/i);
-  if (finance) return finance[1].toUpperCase();
+  const finance = extractExplicitEntityCodes(text)[0];
+  if (finance) return finance;
   const stock = text.match(/\b([A-Z]{2,}-?\d{2,}[A-Z0-9._-]*)\b/);
   if (stock && !/^(TOP|RP|IDR)\b/i.test(stock[1])) return stock[1];
   return null;
+}
+
+/** All SITE/SEG/FIN codes in the current turn, in order of appearance. */
+export function extractExplicitEntityCodes(text: string): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const m of text.matchAll(/\b((?:SITE|SEG|FIN)-\d{4}-\d+)\b/gi)) {
+    const code = m[1].toUpperCase();
+    if (seen.has(code)) continue;
+    seen.add(code);
+    out.push(code);
+  }
+  return out;
 }
 
 export function extractActiveReferenceFromAnswer(
@@ -149,6 +174,47 @@ export function extractActiveReferenceByDiscriminator(
   };
 }
 
+export type PendingFinanceCandidate = {
+  code: string;
+  hierarchyLevel: string;
+  name: string;
+};
+
+/**
+ * Filter an existing candidate set. Exact object.code always outranks
+ * parent/child relationship matches (PAI-FNC-005).
+ */
+export function filterPendingFinanceCandidates(
+  candidates: PendingFinanceCandidate[] | null | undefined,
+  text: string,
+): PendingFinanceCandidate[] {
+  if (!candidates || candidates.length === 0) return [];
+  const m = normalizeId(text);
+  const exact = text
+    .match(/\b((?:SITE|SEG|FIN)-\d{4}-\d+)\b/i)?.[1]
+    ?.toUpperCase();
+  let pool = candidates;
+  if (exact) {
+    const byCode = pool.filter((c) => c.code.toUpperCase() === exact);
+    if (byCode.length > 0) pool = byCode;
+  }
+  const wantStand = /\bstandalone\b/.test(m);
+  const wantSeg = /\bsegment\b/.test(m) || (/\bseg\b/.test(m) && !exact);
+  const wantSite = /\bsite\b/.test(m) && !wantSeg && !wantStand;
+  if (wantStand) {
+    pool = pool.filter((c) => c.hierarchyLevel === 'STANDALONE');
+  } else if (wantSeg) {
+    pool = pool.filter(
+      (c) => c.hierarchyLevel === 'SEGMENT' || /^SEG-/i.test(c.code),
+    );
+  } else if (wantSite) {
+    pool = pool.filter(
+      (c) => c.hierarchyLevel === 'SITE' || /^(SITE|FIN)-/i.test(c.code),
+    );
+  }
+  return pool;
+}
+
 export function pickPendingFinanceCandidate(
   candidates:
     | Array<{ code: string; hierarchyLevel: string; name: string }>
@@ -156,34 +222,41 @@ export function pickPendingFinanceCandidate(
     | undefined,
   text: string,
 ): { code: string; hierarchyLevel: string; name: string } | null {
-  if (!candidates || candidates.length === 0) return null;
-  const m = normalizeId(text);
-  const exact = text.match(/\b((?:SITE|SEG|FIN)-\d{4}-\d+)\b/i)?.[1]?.toUpperCase();
-  if (exact) {
-    const byCode = candidates.filter((c) => c.code.toUpperCase() === exact);
-    if (byCode.length === 1) return byCode[0];
-  }
-  const wantSeg = /\bsegment\b|\bseg\b/.test(m);
-  const wantSite = /\bsite\b/.test(m) && !wantSeg;
-  const typed = wantSeg
-    ? candidates.filter(
-        (c) =>
-          c.hierarchyLevel === 'SEGMENT' || /^SEG-/i.test(c.code),
-      )
-    : wantSite
-      ? candidates.filter(
-          (c) => c.hierarchyLevel === 'SITE' || /^(SITE|FIN)-/i.test(c.code),
-        )
-      : candidates;
-  if (typed.length === 1) return typed[0];
-  if (exact) {
-    const typedExact = typed.find((c) => c.code.toUpperCase() === exact);
-    if (typedExact) return typedExact;
-  }
-  return null;
+  const typed = filterPendingFinanceCandidates(candidates, text);
+  return typed.length === 1 ? typed[0] : null;
 }
 
 /** Count numbered rows in a ranked/list answer. */
+export function extractRankedFinanceMembers(
+  answer: string | null | undefined,
+): Array<{ code: string; name?: string; status?: string; hierarchyLevel?: string }> {
+  if (!answer) return [];
+  const out: Array<{
+    code: string;
+    name?: string;
+    status?: string;
+    hierarchyLevel?: string;
+  }> = [];
+  for (const raw of answer.split(/\n/)) {
+    const line = raw.trim();
+    const m = line.match(
+      /^\d+\.\s*((?:SITE|SEG|FIN)-\d{4}-\d+)\s+(.+?)(?:\s+[—-]\s+|$)/i,
+    );
+    if (!m) continue;
+    const rest = line.slice(m[0].length);
+    const status = /\b(ACTIVE|CLOSED|ARCHIVED)\b/i.exec(line)?.[1]?.toUpperCase();
+    const hier = /\[(SITE|SEGMENT|STANDALONE)\]/i.exec(line)?.[1]?.toUpperCase();
+    out.push({
+      code: m[1].toUpperCase(),
+      name: m[2].trim(),
+      status,
+      hierarchyLevel: hier,
+    });
+    void rest;
+  }
+  return out;
+}
+
 export function countRankedItems(answer: string | null | undefined): number {
   if (!answer) return 0;
   let max = 0;
@@ -238,12 +311,18 @@ export function detectRequestedAttribute(text: string): ConversationAttribute {
     (/(jumlah(nya)?|qty|stoknya|stocknya)/.test(m) && m.length <= 40)
   )
     return 'qty';
-  // Bare "budgetnya" — not "budget project" / "ajuin budget"
+  if (/\bpic(-nya|nya)?\b/.test(m) && /(siapa|who|nama)/.test(m)) return 'pic';
+  // Bare "budgetnya" / "berapa budgetnya" — not "budget project ACTIVE"
   if (
     /^(budget(nya)?|nominal(nya)?|nilainya)[.!]?\s*$/.test(m) ||
-    (/^(budget(nya)?|nominal(nya)?)\b/.test(m) &&
-      m.length <= 24 &&
-      !/(project|proyek|ajuin|ajukan|cara|perizinan)/.test(m))
+    /^(berapa|brapa)\s+(budget(nya)?|nominal(nya)?)\??$/.test(m) ||
+    /(yang ini).*(budget(nya)?)/.test(m) ||
+    (/(budget(nya)?|nominal(nya)?)\b/.test(m) &&
+      /(berapa|yang ini|ini\b)/.test(m) &&
+      m.length <= 72 &&
+      !/(semua|seluruh|keseluruhan|aktif|active|project yang|proyek yang|terbesar|terkecil)/.test(
+        m,
+      ))
   )
     return 'budget';
   if (
@@ -275,7 +354,7 @@ export function isAttributeFollowUp(text: string): boolean {
   const m = normalizeId(text);
   // Never treat howto / new-request phrasing as attribute follow-up
   if (
-    /(ajuin|ajukan|cara|gimana|bagaimana|tambah|buat|tutorial|langkah)/.test(m)
+    /(ajuin|ajukan|cara |tutorial|langkah|tambah barang|buat request)/.test(m)
   ) {
     return false;
   }
@@ -285,6 +364,10 @@ export function isAttributeFollowUp(text: string): boolean {
       m,
     )
   ) {
+    return false;
+  }
+  // "bagaimana cara" is howto; "bagaimana kondisi budget" is live data
+  if (/(bagaimana|gimana).*(cara|tutorial|langkah|ajuin|ajukan)/.test(m)) {
     return false;
   }
   // Strict short attribute phrases
@@ -311,6 +394,12 @@ export function isAttributeFollowUp(text: string): boolean {
 
 export function isActiveReferenceDetailQuery(text: string): boolean {
   const m = normalizeId(text);
+  if (/(berapa|jumlah|ada berapa)/.test(m) && /(tadi|lima|daftar|status)/.test(m)) {
+    return false;
+  }
+  if (/\bpic(-nya|nya)?\b/.test(m) && /(siapa|who)/.test(m)) {
+    return false;
+  }
   const hasRef =
     isOrdinalReference(text) ||
     /\b(yang tadi|tadi|tersebut|yang sebelumnya|yang barusan|itu)\b/.test(m) ||
@@ -409,6 +498,7 @@ export function attributeNeedsLiveLookup(
     // Hierarchy tags [SITE]/[SEGMENT] are NOT project status
     return !/\[(active|closed|archived)\]/.test(line) && !/status\s*:/.test(line);
   }
+  if (attr === 'pic') return true;
   if (attr === 'budget') {
     return !/(rp|budget)/.test(line);
   }
@@ -554,7 +644,9 @@ export function hasConversationalReference(text: string): boolean {
     ) ||
     /\b(barang|project|item|proyek)\s+(pertama|kedua|ketiga|keempat|terakhir|ke-?\d+)\b/.test(
       m,
-    )
+    ) ||
+    /\b(project|proyek|data)\s+(ini|itu)\b/.test(m) ||
+    /\bdari data\b/.test(m)
   );
 }
 

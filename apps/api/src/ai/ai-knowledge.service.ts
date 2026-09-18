@@ -185,6 +185,30 @@ export class AiKnowledgeService implements OnModuleInit {
 
       const dl = hay.split(/\s+/).length || 1;
       let score = 0;
+      const stop = new Set([
+        'apa',
+        'itu',
+        'dan',
+        'yang',
+        'untuk',
+        'di',
+        'ke',
+        'dari',
+        'bisa',
+        'saja',
+        'aku',
+        'saya',
+        'kalau',
+        'sebagai',
+        'lakukan',
+        'dapat',
+        'permatrax',
+      ]);
+      const entity = tokens.filter((t) => t.length > 2 && !stop.has(t));
+      const title = chunk.article.title.toLowerCase();
+      for (const t of entity) {
+        if (title.includes(t)) score += 1.6;
+      }
       for (const t of tokens) {
         const tf = countOccurrences(hay, t);
         if (tf <= 0) continue;

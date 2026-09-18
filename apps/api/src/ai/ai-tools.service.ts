@@ -8,7 +8,11 @@ import {
   detectFinanceMode,
   detectRankingMetric,
   detectRankingDirection,
-  detectExplicitTopN,
+  detectRequestedRankingN,
+  detectComparisonMetric,
+  hasActiveStatusNegation,
+  isStatusBreakdownQuery,
+  isStockQuantityRankingQuery,
   hasExplicitRankingMetric,
   extractHierarchyConstraint,
   extractOwnerName,
@@ -24,6 +28,24 @@ import {
   type FinanceMetric,
   type FinanceRankingMetric,
 } from './ai-nlu';
+import {
+  businessTransactionLabel,
+  detectAnalyticalRequest,
+  executeAnalyticalOperation,
+  extractFinanceCodes,
+  isCausalQuery,
+  isFinanceInterpretationQuery,
+  isPendingApprovalQuery,
+  looksLikeOpaqueId,
+  toOperand,
+} from './ai-analytics-ops';
+
+import {
+  buildClusterWhyTemplate,
+  buildFinanceWhyTemplate,
+  detectWhyFocus,
+  type FinanceExplainPack,
+} from './ai-explain';
 
 export type ToolTrace = {
   name: string;
@@ -56,10 +78,13 @@ export class AiToolsService {
       /(dana|cair|pencairan|disburse).*(terakhir|last|keluar|kapan)/.test(m) ||
       /(dana\s*keluar|terakhir\s*cair)/.test(m)
     ) {
-      tools.push('last_fund_disbursement');
+      if (!isPendingApprovalQuery(message)) {
+        tools.push('last_fund_disbursement');
+      }
     }
 
     if (
+      isPendingApprovalQuery(message) ||
       /(approval\s*dana|dana.*pending|pending.*approval|belum.*(cair|approve|disetujui))/.test(
         m,
       )
@@ -85,16 +110,17 @@ export class AiToolsService {
 
     if (
       /(purchase request|\bpr\b|pembelian)/.test(m) &&
-      /(berapa|jumlah|pending|status|saya)/.test(m)
+      /(berapa|jumlah|pending|status|saya|masih)/.test(m)
     ) {
       tools.push('my_purchase_requests');
     }
 
     if (
-      (/(stok|stock|barang)/.test(m) &&
+      (/(stoknya|\bstok\b|\bstock\b|barang)/.test(m) &&
         /(berapa|cari|cek|qty|jumlah|total|paling|terendah|terkecil|terbesar|sedikit|banyak)/.test(
           m,
         )) ||
+      isStockQuantityRankingQuery(message) ||
       /(barang|stok|stock).*(paling sedikit|paling kecil|paling banyak|terendah)/.test(
         m,
       ) ||
@@ -179,6 +205,10 @@ export class AiToolsService {
       // legacy alias
       case 'finance_project_totals':
         return this.financeAnalytics(user, message);
+      case 'explain_finance_project':
+        return this.explainFinanceProject(user, message);
+      case 'explain_permit_cluster':
+        return this.explainPermitCluster(user, message);
       case 'last_fund_disbursement':
         return this.lastFundDisbursement(user);
       case 'pending_fund_approvals':
@@ -188,7 +218,7 @@ export class AiToolsService {
       case 'my_visit_requests':
         return this.myVisitRequests(user);
       case 'my_purchase_requests':
-        return this.myPurchaseRequests(user);
+        return this.myPurchaseRequests(user, message);
       case 'search_stock':
         return this.searchStock(user, message);
       case 'count_suppliers':
@@ -328,10 +358,24 @@ export class AiToolsService {
 
     // Strip constraint/recovery tags for NLU so session tags don't hijack mode
     const bareMessage = message
-      .replace(/\s*\[(SCOPE_|HIERARCHY_|BROADER_|USER_|METRIC).*?\]/gi, ' ')
+      .replace(/\s*\[(SCOPE_|HIERARCHY_|BROADER_|USER_|METRIC|LIMIT_|DIR_|RESULT_SET:).*?\]/gi, ' ')
       .replace(/\s+/g, ' ')
       .trim();
+    const resultSetMatch = message.match(/\[RESULT_SET:([^\]]+)\]/i);
+    const resultSetCodes = resultSetMatch
+      ? resultSetMatch[1]
+          .split(',')
+          .map((c) => c.trim().toUpperCase())
+          .filter((c) => /^(SITE|SEG|FIN)-\d{4}-\d+$/.test(c))
+      : [];
     let mode = detectFinanceMode(bareMessage);
+    if (
+      (mode === 'metric_aggregate' || mode === 'summary') &&
+      (/\[METRIC_/i.test(message) || /\[LIMIT_/i.test(message) || /\[DIR_/i.test(message)) &&
+      !isProjectCountQuery(bareMessage)
+    ) {
+      mode = /\[DIR_ASC\]/i.test(message) ? 'smallest' : 'top_budget';
+    }
     // PAI-FNC-002: hard-prefer project_count over inherited Summary prose
     if (
       isProjectCountQuery(bareMessage) &&
@@ -340,10 +384,14 @@ export class AiToolsService {
       mode !== 'top_budget' &&
       mode !== 'smallest' &&
       mode !== 'status_count' &&
+      mode !== 'status_breakdown' &&
       mode !== 'metric_aggregate' &&
       mode !== 'filtered_list'
     ) {
       mode = 'project_count';
+    }
+    if (isStatusBreakdownQuery(bareMessage)) {
+      mode = 'status_breakdown';
     }
     const metrics = detectFinanceMetrics(bareMessage);
     const metric = metrics[0] ?? detectFinanceMetric(bareMessage);
@@ -352,12 +400,21 @@ export class AiToolsService {
     const rankingMetric = detectRankingMetric(
       hasExplicitRankingMetric(bareMessage) ? bareMessage : message,
     );
-    const explicitN = detectExplicitTopN(bareMessage);
+    const explicitN = detectRequestedRankingN(bareMessage);
     const taggedLimit = message.match(/\[LIMIT_(\d{1,2})\]/i);
     const topN =
       explicitN ??
-      (taggedLimit ? Math.min(50, Math.max(1, Number(taggedLimit[1]))) : 10);
-    const rankDir = detectRankingDirection(bareMessage);
+      (resultSetCodes.length
+        ? resultSetCodes.length
+        : taggedLimit
+          ? Math.min(50, Math.max(1, Number(taggedLimit[1])))
+          : 10);
+    const taggedDir: 'asc' | 'desc' | null = /\[DIR_ASC\]/i.test(message)
+      ? 'asc'
+      : /\[DIR_DESC\]/i.test(message)
+        ? 'desc'
+        : null;
+    const rankDir = detectRankingDirection(bareMessage) ?? taggedDir;
     const broaderScope =
       /\[broader_retry\]|\[scope_non_archived\]|\[scope_all\]/i.test(message) ||
       /non.?arsip|non.?archived|termasuk closed|active\s*\+\s*closed/i.test(
@@ -375,15 +432,20 @@ export class AiToolsService {
       /\[scope_archived\]/i.test(message) ||
       (/\b(archived|arsip)\b/.test(normalizeId(bareMessage)) &&
         (mode === 'status_count' || mode === 'filtered_list'));
+    const negatedActive = hasActiveStatusNegation(bareMessage);
     const forceActive =
       (/\[scope_active\]/i.test(message) &&
         mode !== 'project_count' &&
-        mode !== 'metric_aggregate') ||
+        mode !== 'metric_aggregate' &&
+        mode !== 'status_breakdown' &&
+        !negatedActive) ||
       (/\baktif\b|\bactive\b/.test(normalizeId(bareMessage)) &&
+        !negatedActive &&
         !broaderScope &&
         !forceClosed &&
         !forceArchived &&
         mode !== 'status_count' &&
+        mode !== 'status_breakdown' &&
         mode !== 'project_count');
 
     const hierarchyLevel = extractHierarchyConstraint(message);
@@ -393,7 +455,9 @@ export class AiToolsService {
     };
     if (forceArchived || metric === 'status_archived') statusWhere = 'ARCHIVED';
     else if (forceClosed || metric === 'status_closed') statusWhere = 'CLOSED';
-    else if (
+    else if (metric === 'status_not_active') {
+      statusWhere = { in: ['CLOSED', 'ARCHIVED'] };
+    } else if (
       !broaderScope &&
       (forceActive ||
         metric === 'status_active' ||
@@ -409,6 +473,16 @@ export class AiToolsService {
       status: statusWhere,
       ...(hierarchyLevel ? { hierarchyLevel } : {}),
     };
+    if (resultSetCodes.length) {
+      baseWhere.code = { in: resultSetCodes };
+    }
+    const compareCodes = [
+      ...new Set(
+        [...bareMessage.matchAll(/\b((?:SITE|SEG|FIN)-\d{4}-\d+)\b/gi)].map((x) =>
+          x[1].toUpperCase(),
+        ),
+      ),
+    ];
 
     if (/\[broader_retry\]/i.test(message)) {
       return this.financeBroaderRetry(user, {
@@ -419,6 +493,35 @@ export class AiToolsService {
 
     if (!this.canSeeAllFinance(user.role)) {
       baseWhere.createdById = user.userId;
+    }
+
+    const analyticalAsk =
+      detectAnalyticalRequest(bareMessage) || detectAnalyticalRequest(message);
+    if (
+      compareCodes.length >= 2 &&
+      /(banding|dibanding|lebih besar|lebih kecil)/.test(normalizeId(bareMessage)) &&
+      analyticalAsk?.kind !== 'ratio_compare' &&
+      analyticalAsk?.kind !== 'multi_metric_compare' &&
+      analyticalAsk?.kind !== 'intra_compare'
+    ) {
+      return this.compareFinanceMetrics(
+        user,
+        compareCodes[0],
+        compareCodes[1],
+        detectComparisonMetric(bareMessage) || 'totalBudget',
+      );
+    }
+    if (
+      compareCodes.length < 2 &&
+      /(banding|dibanding)/.test(normalizeId(bareMessage)) &&
+      /(tadi|sebelumnya|barusan|yang ini)/.test(normalizeId(bareMessage))
+    ) {
+      return {
+        name: 'finance_analytics',
+        ok: true,
+        summary:
+          'Tidak lengkap untuk membandingkan. Sebutkan kedua kode project, atau rujuk object yang tadi.',
+      };
     }
 
     if (mode === 'by_owner') {
@@ -441,6 +544,39 @@ export class AiToolsService {
     }
 
     if (mode === 'status_count') {
+      if (metric === 'status_not_active') {
+        const whereNotActive: Prisma.FinanceProjectWhereInput = {
+          ...baseWhere,
+          status: { in: ['CLOSED', 'ARCHIVED'] },
+          ...(hierarchyLevel ? { hierarchyLevel } : {}),
+        };
+        const [closed, archived, count] = await Promise.all([
+          this.prisma.financeProject.count({
+            where: { ...whereNotActive, status: 'CLOSED' },
+          }),
+          this.prisma.financeProject.count({
+            where: { ...whereNotActive, status: 'ARCHIVED' },
+          }),
+          this.prisma.financeProject.count({ where: whereNotActive }),
+        ]);
+        return {
+          name: 'finance_analytics',
+          ok: true,
+          summary: [
+            `Finance Project yang tidak ACTIVE – ${count} Project`,
+            `• CLOSED – ${closed} Project`,
+            `• ARCHIVED – ${archived} Project`,
+            `Data per ${fmtDateId()}.`,
+          ].join('\n'),
+          data: {
+            status: 'NOT_ACTIVE',
+            count,
+            closed,
+            archived,
+            mode: 'status_count',
+          },
+        };
+      }
       const statusLabel =
         metric === 'status_closed'
           ? 'CLOSED'
@@ -457,10 +593,50 @@ export class AiToolsService {
       return {
         name: 'finance_analytics',
         ok: true,
-        summary: hierarchyLevel
+        summary: resultSetCodes.length
+          ? `${count} project ${statusLabel} dari ${resultSetCodes.length} project tadi`
+          : hierarchyLevel
           ? `${statusLabel} ${hierarchyLevel} – ${count} Project`
           : `${statusLabel} Project – ${count} Project`,
         data: { status: statusLabel, count, mode: 'status_count' },
+      };
+    }
+
+    if (mode === 'status_breakdown') {
+      const groups = await this.prisma.financeProject.groupBy({
+        by: ['status'],
+        where: this.canSeeAllFinance(user.role)
+          ? {}
+          : { createdById: user.userId },
+        _count: { _all: true },
+      });
+      const countOf = (status: string) => {
+        const row = groups.find((g) => String(g.status) === status);
+        const c = row?._count as { _all?: number } | number | undefined;
+        if (typeof c === 'number') return c;
+        return c?._all ?? 0;
+      };
+      const active = countOf('ACTIVE');
+      const closed = countOf('CLOSED');
+      const archived = countOf('ARCHIVED');
+      const total = active + closed + archived;
+      return {
+        name: 'finance_analytics',
+        ok: true,
+        summary: [
+          `Jumlah Finance Project per status (total ${total})`,
+          `• ACTIVE – ${active} Project`,
+          `• CLOSED – ${closed} Project`,
+          `• ARCHIVED – ${archived} Project`,
+          `Data per ${fmtDateId()}.`,
+        ].join('\n'),
+        data: {
+          mode: 'status_breakdown',
+          ACTIVE: active,
+          CLOSED: closed,
+          ARCHIVED: archived,
+          total,
+        },
       };
     }
 
@@ -490,78 +666,90 @@ export class AiToolsService {
     }
 
     if (mode === 'search') {
-      const needle =
-        extractProjectNeedle(message) || extractSearchNeedle(message);
-      const exactCode = (needle || message).match(
-        /\b((?:SITE|SEG|FIN)-\d{4}-\d+)\b/i,
-      )?.[1];
-      const isCari =
-        /\bcari\b/i.test(normalizeId(bareMessage)) ||
-        /\bcari\b/i.test(normalizeId(message));
-      const isDetailLookup = /^detail\b/i.test(bareMessage.trim());
-      if (exactCode && isDetailLookup && !isCari) {
-        const exactRows = await this.prisma.financeProject.findMany({
-          where: {
-            status: { not: 'ARCHIVED' },
-            ...(hierarchyLevel ? { hierarchyLevel } : {}),
-          },
-          select: {
-            code: true,
-            name: true,
-            description: true,
-            totalBudget: true,
-            materialBudget: true,
-            jasaBudget: true,
-            materialSpent: true,
-            jasaSpent: true,
-            status: true,
-            hierarchyLevel: true,
-            isOverbudget: true,
-            poCustomerNumber: true,
-            parent: { select: { code: true, name: true } },
-          },
-          take: 20,
-        });
-        const hit = exactRows.filter(
-          (r) => r.code.toUpperCase() === exactCode.toUpperCase(),
-        );
-        if (hit.length === 1) {
-          const r = hit[0];
-          const spent = Number(r.materialSpent) + Number(r.jasaSpent);
-          const budget = Number(r.totalBudget);
-          return {
-            name: 'finance_analytics',
-            ok: true,
-            summary: [
-              `${r.code} — ${r.name}`,
-              `• Status: ${r.status} (${r.hierarchyLevel})`,
-              r.parent ? `• Parent: ${r.parent.code} ${r.parent.name}` : null,
-              r.poCustomerNumber ? `• PO/Client: ${r.poCustomerNumber}` : null,
-              `• Total Budget: ${fmtIdr(budget)}`,
-              `• Material budget: ${fmtIdr(Number(r.materialBudget ?? 0))} | Jasa budget: ${fmtIdr(Number(r.jasaBudget ?? 0))}`,
-              `• Realisasi: ${fmtIdr(spent)} | Sisa: ${fmtIdr(budget - spent)}`,
-              r.isOverbudget ? `• Over budget` : null,
-            ]
-              .filter(Boolean)
-              .join('\n'),
-            data: hit,
-          };
-        }
-      }
-      if (needle) {
-        const tokens = meaningfulTokens(needle);
-        const parts = tokens.length > 0 ? tokens : [needle];
-        const attrOr = (p: string): Prisma.FinanceProjectWhereInput[] => [
-          { name: { contains: p, mode: 'insensitive' } },
-          { code: { contains: p, mode: 'insensitive' } },
-          { description: { contains: p, mode: 'insensitive' } },
-          { poCustomerNumber: { contains: p, mode: 'insensitive' } },
-          { parent: { name: { contains: p, mode: 'insensitive' } } },
-          { parent: { code: { contains: p, mode: 'insensitive' } } },
-        ];
-        baseWhere.OR = parts.flatMap((p) => attrOr(p));
+      const codes = extractFinanceCodes(message);
+      const analyticalAsk =
+        !!detectAnalyticalRequest(message) ||
+        isCausalQuery(message) ||
+        isFinanceInterpretationQuery(message);
+      if (codes.length >= 2 || (codes.length >= 1 && analyticalAsk)) {
+        // Exact codes beat token ILIKE — otherwise take:10 can drop a compare operand.
+        baseWhere.OR = codes.map((c) => ({
+          code: { equals: c, mode: 'insensitive' as const },
+        }));
         delete (baseWhere as { status?: unknown }).status;
         baseWhere.status = { not: 'ARCHIVED' };
+      } else {
+        const needle =
+          extractProjectNeedle(message) || extractSearchNeedle(message);
+        const exactCode = (needle || message).match(
+          /\b((?:SITE|SEG|FIN)-\d{4}-\d+)\b/i,
+        )?.[1];
+        // Exact unique code is the object itself (PAI-DIQ-003). Related children
+        // are not treated as ambiguity.
+        const exactObjectOnly = !!exactCode;
+        if (exactCode && exactObjectOnly && !analyticalAsk) {
+          const exactRows = await this.prisma.financeProject.findMany({
+            where: {
+              status: { not: 'ARCHIVED' },
+              code: { equals: exactCode, mode: 'insensitive' },
+            },
+            select: {
+              code: true,
+              name: true,
+              description: true,
+              totalBudget: true,
+              materialBudget: true,
+              jasaBudget: true,
+              materialSpent: true,
+              jasaSpent: true,
+              status: true,
+              hierarchyLevel: true,
+              isOverbudget: true,
+              poCustomerNumber: true,
+              parent: { select: { code: true, name: true } },
+            },
+            take: 5,
+          });
+          const hit = exactRows.filter(
+            (r) => r.code.toUpperCase() === exactCode.toUpperCase(),
+          );
+          if (hit.length === 1) {
+            return {
+              name: 'finance_analytics',
+              ok: true,
+              summary: this.formatFinanceSearchCard(hit[0]),
+              data: hit,
+            };
+          }
+        }
+        if (needle) {
+          if (exactCode && !exactObjectOnly) {
+            // Exact object + children of that code. Do not tokenize SEG-2026-005
+            // into "005" (that falsely matches FIN-2026-005 via contains).
+            baseWhere.OR = [
+              { code: { equals: exactCode, mode: 'insensitive' } },
+              { parent: { code: { equals: exactCode, mode: 'insensitive' } } },
+            ];
+          } else if (exactCode && exactObjectOnly) {
+            baseWhere.OR = [
+              { code: { equals: exactCode, mode: 'insensitive' } },
+            ];
+          } else {
+            const tokens = meaningfulTokens(needle);
+            const parts = tokens.length > 0 ? tokens : [needle];
+            const attrOr = (p: string): Prisma.FinanceProjectWhereInput[] => [
+              { name: { contains: p, mode: 'insensitive' } },
+              { code: { contains: p, mode: 'insensitive' } },
+              { description: { contains: p, mode: 'insensitive' } },
+              { poCustomerNumber: { contains: p, mode: 'insensitive' } },
+              { parent: { name: { contains: p, mode: 'insensitive' } } },
+              { parent: { code: { contains: p, mode: 'insensitive' } } },
+            ];
+            baseWhere.OR = parts.flatMap((p) => attrOr(p));
+          }
+          delete (baseWhere as { status?: unknown }).status;
+          baseWhere.status = { not: 'ARCHIVED' };
+        }
       }
     }
 
@@ -614,6 +802,9 @@ export class AiToolsService {
         dir,
         hierarchyLevel,
         topN,
+        !(
+          /satu saja|ambil satu|hanya satu/.test(normalizeId(bareMessage))
+        ) && (topN === 1 || /mana yang/.test(normalizeId(bareMessage))),
       );
     }
 
@@ -622,9 +813,11 @@ export class AiToolsService {
     }
 
     if (mode === 'search') {
+      const codesWanted = extractFinanceCodes(message);
       const rows = await this.prisma.financeProject.findMany({
         where: baseWhere,
         select: {
+          id: true,
           code: true,
           name: true,
           description: true,
@@ -639,7 +832,7 @@ export class AiToolsService {
           poCustomerNumber: true,
           parent: { select: { code: true, name: true } },
         },
-        take: 10,
+        take: Math.max(10, codesWanted.length || 0),
         orderBy: { updatedAt: 'desc' },
       });
       if (rows.length === 0) {
@@ -649,6 +842,64 @@ export class AiToolsService {
           summary:
             'Project tidak ditemukan di database untuk kata kunci tersebut (non-ARCHIVED). Coba nama site, segment, client/PO, atau kode project.',
           data: { mode: 'search', count: 0 },
+        };
+      }
+      const scoped =
+        codesWanted.length > 0
+          ? rows.filter((r) => codesWanted.includes(r.code.toUpperCase()))
+          : rows;
+      const opRows = (scoped.length ? scoped : rows).map((r) => toOperand(r));
+      let analytical = detectAnalyticalRequest(bareMessage) || detectAnalyticalRequest(message);
+      if (
+        !analytical &&
+        /persentase|terhadap budget/i.test(message) &&
+        /bandingkan|lebih besar/i.test(message)
+      ) {
+        analytical = { kind: 'ratio_compare', metrics: ['realization', 'budget'] };
+      }
+      if (!analytical && isCausalQuery(message)) {
+        if (/(belum mulai|belum dikerjakan)/i.test(message)) {
+          analytical = { kind: 'premise', metrics: ['realization'] };
+        } else if (/(apakah karena|invoice|vendor)/i.test(message)) {
+          analytical = { kind: 'hypothesis', metrics: ['realization'], hypothesis: message };
+        } else {
+          analytical = { kind: 'causal_why', metrics: ['realization'] };
+        }
+      }
+      if (analytical && opRows.length > 0) {
+        let ledger: { entryType: string; amount?: number } | null = null;
+        if (
+          (analytical.kind === 'causal_why' ||
+            analytical.kind === 'hypothesis' ||
+            analytical.kind === 'premise') &&
+          opRows[0]?.id
+        ) {
+          const last = await this.prisma.budgetLedger
+            .findFirst({
+              where: { financeProjectId: opRows[0].id },
+              orderBy: { createdAt: 'desc' },
+              select: { entryType: true, amount: true },
+            })
+            .catch(() => null);
+          if (last) {
+            ledger = {
+              entryType: last.entryType,
+              amount: Number(last.amount || 0),
+            };
+          }
+        }
+        const executed = executeAnalyticalOperation(analytical, opRows, ledger);
+        return {
+          name: 'finance_analytics',
+          ok: true,
+          summary: executed.summary,
+          data: {
+            mode: 'analytical_op',
+            kind: analytical.kind,
+            deterministic: true,
+            causal: executed.causal,
+            rows: scoped.length ? scoped : rows,
+          },
         };
       }
       const lines = rows.map((r) => {
@@ -779,6 +1030,36 @@ export class AiToolsService {
         smallest,
       },
     };
+  }
+
+  private formatFinanceSearchCard(r: {
+    code: string;
+    name: string;
+    totalBudget: unknown;
+    materialBudget?: unknown;
+    jasaBudget?: unknown;
+    materialSpent: unknown;
+    jasaSpent: unknown;
+    status: string;
+    hierarchyLevel: string;
+    isOverbudget: boolean;
+    poCustomerNumber?: string | null;
+    parent?: { code: string | null; name: string | null } | null;
+  }): string {
+    const spent = Number(r.materialSpent) + Number(r.jasaSpent);
+    const budget = Number(r.totalBudget);
+    return [
+      `${r.code} — ${r.name}`,
+      `• Status: ${r.status} (${r.hierarchyLevel})`,
+      r.parent?.code ? `• Parent: ${r.parent.code} ${r.parent.name}` : null,
+      r.poCustomerNumber ? `• PO/Client: ${r.poCustomerNumber}` : null,
+      `• Total Budget: ${fmtIdr(budget)}`,
+      `• Material budget: ${fmtIdr(Number(r.materialBudget ?? 0))} | Jasa budget: ${fmtIdr(Number(r.jasaBudget ?? 0))}`,
+      `• Realisasi: ${fmtIdr(spent)} | Sisa: ${fmtIdr(budget - spent)}`,
+      r.isOverbudget ? `• Over budget` : null,
+    ]
+      .filter(Boolean)
+      .join('\n');
   }
 
   /** PAI-FNC-005: list projects by status/hierarchy filters, never keyword search. */
@@ -942,6 +1223,81 @@ export class AiToolsService {
     };
   }
 
+  private async compareFinanceMetrics(
+    user: AuthUser,
+    codeA: string,
+    codeB: string,
+    metric:
+      | 'totalBudget'
+      | 'realization'
+      | 'remaining'
+      | 'materialBudget'
+      | 'jasaBudget' = 'totalBudget',
+  ): Promise<ToolTrace> {
+    const rows = await this.prisma.financeProject.findMany({
+      where: {
+        status: { not: 'ARCHIVED' },
+        code: { in: [codeA, codeB] },
+        ...(this.canSeeAllFinance(user.role) ? {} : { createdById: user.userId }),
+      },
+      select: {
+        code: true,
+        name: true,
+        totalBudget: true,
+        materialBudget: true,
+        jasaBudget: true,
+        materialSpent: true,
+        jasaSpent: true,
+        status: true,
+      },
+    });
+    const a = rows.find((r) => r.code.toUpperCase() === codeA.toUpperCase());
+    const b = rows.find((r) => r.code.toUpperCase() === codeB.toUpperCase());
+    if (!a || !b) {
+      return {
+        name: 'finance_analytics',
+        ok: true,
+        summary: `Tidak lengkap untuk membandingkan ${codeA} dan ${codeB}.`,
+      };
+    }
+    const valueOf = (
+      row: typeof a,
+    ): number => {
+      const realized =
+        Number(row.materialSpent) + Number(row.jasaSpent);
+      if (metric === 'realization') return realized;
+      if (metric === 'remaining') return Number(row.totalBudget) - realized;
+      if (metric === 'materialBudget') return Number(row.materialBudget);
+      if (metric === 'jasaBudget') return Number(row.jasaBudget);
+      return Number(row.totalBudget);
+    };
+    const label =
+      metric === 'realization'
+        ? 'Realisasi'
+        : metric === 'remaining'
+          ? 'Sisa Budget'
+          : metric === 'materialBudget'
+            ? 'Material Budget'
+            : metric === 'jasaBudget'
+              ? 'Jasa Budget'
+              : 'budget';
+    const va = valueOf(a);
+    const vb = valueOf(b);
+    const winner = va === vb ? null : va > vb ? a : b;
+    const loser = winner ? (winner === a ? b : a) : null;
+    const summary = winner
+      ? metric === 'totalBudget'
+        ? `${winner.code} memiliki ${label} lebih besar, yaitu ${fmtIdr(valueOf(winner))} dibandingkan ${loser!.code} sebesar ${fmtIdr(valueOf(loser!))}.`
+        : `${label} ${winner.code} lebih besar, yaitu ${fmtIdr(valueOf(winner))} dibandingkan ${loser!.code} sebesar ${fmtIdr(valueOf(loser!))}.`
+      : `${label} ${a.code} dan ${b.code} sama, yaitu ${fmtIdr(va)}.`;
+    return {
+      name: 'finance_analytics',
+      ok: true,
+      summary: [summary, `Data per ${fmtDateId()}.`].join('\n'),
+      data: { mode: 'compare', metric, a, b },
+    };
+  }
+
   /** PAI-FNC-004: dynamic ranking by metric + direction + Top N. */
   private async financeRankingList(
     baseWhere: Prisma.FinanceProjectWhereInput,
@@ -949,6 +1305,7 @@ export class AiToolsService {
     dir: 'asc' | 'desc',
     hierarchyLevel: 'SITE' | 'SEGMENT' | 'STANDALONE' | null,
     limit = 10,
+    tieAware = false,
   ): Promise<ToolTrace> {
     const where: Prisma.FinanceProjectWhereInput = {
       ...baseWhere,
@@ -1040,7 +1397,14 @@ export class AiToolsService {
       dir === 'desc' ? b.sortValue - a.sortValue : a.sortValue - b.sortValue,
     );
     const n = Math.max(1, Math.min(50, limit || 10));
-    const top = scored.slice(0, n);
+    let top = scored.slice(0, n);
+    if (tieAware && scored.length) {
+      const extreme = scored[0].sortValue;
+      const ties = scored.filter(
+        (s) => Math.abs(Number(s.sortValue) - Number(extreme)) < 0.5,
+      );
+      if (ties.length > 1) top = ties;
+    }
     const hierLabel = hierarchyLevel ? ` (${hierarchyLevel} saja)` : '';
     const metricLabel: Record<FinanceRankingMetric, string> = {
       totalBudget: 'Total Budget',
@@ -1051,7 +1415,12 @@ export class AiToolsService {
       overbudget: 'Over Budget',
     };
     const dirLabel = dir === 'desc' ? 'terbesar' : 'terkecil';
-    const title = `Top ${n} Finance Project — ${metricLabel[rankingMetric]} ${dirLabel}${hierLabel}`;
+    const tied = tieAware && top.length > 1;
+    const title = tied
+      ? `Ada ${top.length} project dengan ${metricLabel[rankingMetric]} paling ${dirLabel} yang sama, yaitu ${fmtIdr(top[0].sortValue)}${hierLabel}`
+      : n === 1
+        ? `Finance Project dengan ${metricLabel[rankingMetric]} paling ${dirLabel}${hierLabel}`
+        : `Top ${n} Finance Project — ${metricLabel[rankingMetric]} ${dirLabel}${hierLabel}`;
     const lines = top.map((item, i) => {
       const val =
         rankingMetric === 'realization'
@@ -1073,18 +1442,19 @@ export class AiToolsService {
       name: 'finance_analytics',
       ok: true,
       summary: [title, ...lines, `Data per ${fmtDateId()}.`].join('\n'),
-      data: { rankingMetric, dir, rows: top.map((t) => t.r) },
+      data: { rankingMetric, dir, limit: n, rows: top.map((t) => t.r) },
     };
   }
 
   private async pendingFundApprovals(user: AuthUser): Promise<ToolTrace> {
     const canSeeAll = this.canSeeAllFinance(user.role) || user.role === 'PURCHASING';
-    const where: Prisma.CashOperationRequestWhereInput = {
-      status: { in: ['SUBMITTED', 'IN_REVIEW', 'APPROVED'] },
+    const pendingCashStatuses = ['SUBMITTED', 'IN_REVIEW'] as const;
+    const cashWhere: Prisma.CashOperationRequestWhereInput = {
+      status: { in: [...pendingCashStatuses] },
       ...(canSeeAll ? {} : { requestedBy: user.userId }),
     };
     const rows = await this.prisma.cashOperationRequest.findMany({
-      where,
+      where: cashWhere,
       select: {
         requestNumber: true,
         status: true,
@@ -1092,32 +1462,80 @@ export class AiToolsService {
         description: true,
         currentApproverRole: true,
         requester: { select: { name: true } },
+        financeProject: { select: { code: true, name: true } },
       },
       orderBy: { updatedAt: 'desc' },
       take: 10,
     });
-    if (rows.length === 0) {
+
+    const ftttPending =
+      canSeeAll || user.role.startsWith('PM_') || user.role.includes('FTTT')
+        ? await this.prisma.ftttTransaction.findMany({
+            where: { requestStatus: 'PENDING_REVIEW' },
+            select: {
+              id: true,
+              aktivitas: true,
+              category: true,
+              total: true,
+              requestStatus: true,
+              createdAt: true,
+              createdBy: { select: { name: true } },
+              ftttProject: { select: { projectName: true } },
+              financeProject: { select: { code: true, name: true } },
+            },
+            orderBy: { createdAt: 'desc' },
+            take: 10,
+          })
+        : [];
+
+    if (rows.length === 0 && ftttPending.length === 0) {
       return {
         name: 'pending_fund_approvals',
         ok: true,
-        summary: 'Tidak ada pengajuan dana yang masih pending di scope kamu.',
+        summary:
+          'Tidak ada pengajuan dana yang masih pending approval (SUBMITTED / IN_REVIEW / PENDING_REVIEW) di scope kamu. Record APPROVED tidak dimasukkan karena sudah lolos approval.',
       };
     }
-    const lines = rows.map(
+    const cashLines = rows.map(
       (r) =>
         `• ${r.requestNumber} — ${fmtIdr(Number(r.amount))} — ${r.status}` +
         `${r.currentApproverRole ? ` (menunggu ${r.currentApproverRole})` : ''}` +
-        ` — ${r.requester.name}: ${r.description.slice(0, 80)}`,
+        ` — ${r.requester.name}: ${r.description.slice(0, 80)}` +
+        (r.financeProject
+          ? ` [${r.financeProject.code} ${r.financeProject.name}]`
+          : ''),
     );
+    const ftttLines = ftttPending.map((t) => {
+      const label = businessTransactionLabel({
+        activity: t.aktivitas,
+        category: t.category,
+        projectName: t.ftttProject?.projectName,
+        financeCode: t.financeProject?.code,
+        financeName: t.financeProject?.name,
+        requester: t.createdBy?.name,
+        dateLabel: t.createdAt
+          ? new Date(t.createdAt).toLocaleDateString('id-ID')
+          : null,
+      });
+      return (
+        `• ${label} — ${fmtIdr(Number(t.total))} — ${t.requestStatus}` +
+        ` — ${t.createdBy.name}: ${t.aktivitas}` +
+        (t.financeProject
+          ? ` [${t.financeProject.code} ${t.financeProject.name}]`
+          : '')
+      );
+    });
     return {
       name: 'pending_fund_approvals',
       ok: true,
       summary: [
-        `Approval / pengajuan dana yang masih jalan (${rows.length})`,
-        ...lines,
+        `Cash Operation / pengajuan dana pending approval (${rows.length + ftttPending.length})`,
+        'Scope status: SUBMITTED, IN_REVIEW, PENDING_REVIEW — tidak mencampur record yang sudah disetujui.',
+        ...cashLines,
+        ...ftttLines,
         `Per ${fmtDateId()}.`,
       ].join('\n'),
-      data: rows,
+      data: { cash: rows, fttt: ftttPending, deterministic: true },
     };
   }
 
@@ -1273,7 +1691,15 @@ export class AiToolsService {
         at: fttt.disbursedAt,
         summary: [
           `Dana terakhir keluar dari FTTT Financial Request (Dana Keluar):`,
-          `• No. transaksi: ${fttt.id}`,
+          `• No. transaksi: ${looksLikeOpaqueId(fttt.id) ? businessTransactionLabel({
+            activity: fttt.aktivitas,
+            category: fttt.category,
+            projectName: fttt.ftttProject.projectName,
+            financeCode: fttt.financeProject?.code,
+            financeName: fttt.financeProject?.name,
+            requester: fttt.createdBy.name,
+            dateLabel: fttt.disbursedAt ? fmtDt(fttt.disbursedAt) : null,
+          }) : fttt.id}`,
           `• Tanggal cair: ${fmtDt(fttt.disbursedAt)} WIB`,
           `• Nominal: ${fmt(Number(fttt.total))}`,
           `• Aktivitas: ${fttt.aktivitas}`,
@@ -1313,6 +1739,213 @@ export class AiToolsService {
       ok: true,
       summary: latest.summary,
       data: latest.data,
+    };
+  }
+
+  private async explainFinanceProject(
+    user: AuthUser,
+    message: string,
+  ): Promise<ToolTrace> {
+    if (!this.canAccessFinance(user.role)) {
+      return {
+        name: 'explain_finance_project',
+        ok: true,
+        summary:
+          'Role kamu belum punya akses explain Finance Project. Buka menu Finance Projects jika tersedia.',
+      };
+    }
+    const code = message.match(/\b((?:SITE|SEG|FIN)-\d{4}-\d+)\b/i)?.[1];
+    if (!code) {
+      return {
+        name: 'explain_finance_project',
+        ok: false,
+        summary: 'Sebutkan kode project (SITE/SEG/FIN-YYYY-NNN) untuk 5-why faktual.',
+      };
+    }
+    const scope: Prisma.FinanceProjectWhereInput = {
+      status: { not: 'ARCHIVED' },
+    };
+    if (!this.canSeeAllFinance(user.role)) {
+      scope.createdById = user.userId;
+    }
+    const rows = await this.prisma.financeProject.findMany({
+      where: scope,
+      select: {
+        id: true,
+        code: true,
+        name: true,
+        status: true,
+        hierarchyLevel: true,
+        totalBudget: true,
+        materialBudget: true,
+        jasaBudget: true,
+        materialSpent: true,
+        jasaSpent: true,
+        isOverbudget: true,
+        poCustomerNumber: true,
+        poApprovalStatus: true,
+        parent: { select: { code: true } },
+      },
+      take: 40,
+    });
+    const r = rows.find((x) => x.code.toUpperCase() === code.toUpperCase());
+    if (!r) {
+      return {
+        name: 'explain_finance_project',
+        ok: true,
+        summary: `Project ${code.toUpperCase()} tidak ditemukan di data live / scope akses Anda.`,
+      };
+    }
+
+    let ledgerNotes: string[] = [];
+    try {
+      const ledger = await this.prisma.budgetLedger.findMany({
+        where: {
+          financeProjectId: r.id,
+          notes: { not: null },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 5,
+        select: { notes: true, entryType: true, amount: true },
+      });
+      ledgerNotes = ledger
+        .map((l) =>
+          l.notes
+            ? `${l.entryType} ${fmtIdr(Number(l.amount))}: ${l.notes}`.slice(0, 120)
+            : '',
+        )
+        .filter(Boolean);
+    } catch {
+      ledgerNotes = [];
+    }
+
+    let cashPendingCount = 0;
+    let cashLatestStatus: string | null = null;
+    try {
+      const cash = await this.prisma.cashOperationRequest.findMany({
+        where: {
+          financeProjectId: r.id,
+          status: { in: ['SUBMITTED', 'IN_REVIEW', 'APPROVED'] },
+        },
+        orderBy: { updatedAt: 'desc' },
+        take: 5,
+        select: { status: true },
+      });
+      cashPendingCount = cash.length;
+      cashLatestStatus = cash[0]?.status ?? null;
+    } catch {
+      cashPendingCount = 0;
+    }
+
+    const pack: FinanceExplainPack = {
+      code: r.code,
+      name: r.name,
+      status: r.status,
+      hierarchyLevel: r.hierarchyLevel,
+      totalBudget: Number(r.totalBudget),
+      materialBudget: Number(r.materialBudget ?? 0),
+      jasaBudget: Number(r.jasaBudget ?? 0),
+      materialSpent: Number(r.materialSpent),
+      jasaSpent: Number(r.jasaSpent),
+      isOverbudget: r.isOverbudget,
+      poCustomerNumber: r.poCustomerNumber,
+      poApprovalStatus: r.poApprovalStatus,
+      parentCode: r.parent?.code ?? null,
+      ledgerNotes,
+      cashPendingCount,
+      cashLatestStatus,
+    };
+    return {
+      name: 'explain_finance_project',
+      ok: true,
+      summary: buildFinanceWhyTemplate(pack, detectWhyFocus(message)),
+      data: pack,
+    };
+  }
+
+  private async explainPermitCluster(
+    user: AuthUser,
+    message: string,
+  ): Promise<ToolTrace> {
+    const where: Prisma.PermitClusterWhereInput = {};
+    if (!this.canSeeAllClusters(user.role)) {
+      if (user.role.startsWith('PM_')) {
+        where.assignedPmId = user.userId;
+      } else if (user.fiberType) {
+        where.fiberType = user.fiberType;
+      } else {
+        return {
+          name: 'explain_permit_cluster',
+          ok: true,
+          summary: buildClusterWhyTemplate({
+            clusterCode: null,
+            phase: null,
+            status: null,
+            daysSinceUpdate: null,
+            holdNote: null,
+          }),
+        };
+      }
+    }
+    const needle = message.match(/\b([A-Z0-9][A-Z0-9._-]{2,})\b/i)?.[1];
+    const rows = await this.prisma.permitCluster.findMany({
+      where,
+      select: {
+        id: true,
+        clusterCode: true,
+        currentPhase: true,
+        status: true,
+        updatedAt: true,
+      },
+      orderBy: { updatedAt: 'desc' },
+      take: 20,
+    });
+    const row =
+      (needle
+        ? rows.find((c) =>
+            c.clusterCode.toUpperCase().includes(needle.toUpperCase()),
+          )
+        : null) ||
+      rows.find((c) => c.status === 'ON_HOLD') ||
+      rows[0] ||
+      null;
+    let holdNote: string | null = null;
+    if (row) {
+      try {
+        const stages = await this.prisma.clusterStageProgress.findMany({
+          where: { clusterId: row.id },
+          select: { notes: true, status: true },
+          take: 8,
+        });
+        holdNote =
+          stages
+            .filter((s) => s.notes)
+            .map((s) => `${s.status}: ${s.notes}`)
+            .join('; ') || null;
+      } catch {
+        holdNote = null;
+      }
+    }
+    const days =
+      row?.updatedAt != null
+        ? Math.max(
+            0,
+            Math.floor(
+              (Date.now() - new Date(row.updatedAt).getTime()) / 86400000,
+            ),
+          )
+        : null;
+    return {
+      name: 'explain_permit_cluster',
+      ok: true,
+      summary: buildClusterWhyTemplate({
+        clusterCode: row?.clusterCode ?? null,
+        phase: row?.currentPhase ?? null,
+        status: row?.status ?? null,
+        daysSinceUpdate: days,
+        holdNote,
+      }),
+      data: row,
     };
   }
 
@@ -1432,13 +2065,21 @@ export class AiToolsService {
     };
   }
 
-  private async myPurchaseRequests(user: AuthUser): Promise<ToolTrace> {
+  private async myPurchaseRequests(
+    user: AuthUser,
+    message = '',
+  ): Promise<ToolTrace> {
+    const m = normalizeId(message);
+    const pendingOnly = /\bpending\b/.test(m);
+    const statuses = pendingOnly
+      ? (['PENDING'] as const)
+      : (['PENDING', 'IN_REVIEW', 'APPROVED', 'ORDERED'] as const);
     const where: Prisma.PurchaseRequestWhereInput =
       user.role === 'FINANCE' || user.role === 'PURCHASING' || user.role === 'GENERAL_MANAGER'
-        ? { status: { in: ['PENDING', 'IN_REVIEW', 'APPROVED', 'ORDERED'] } }
+        ? { status: { in: [...statuses] } }
         : {
             requestedBy: user.userId,
-            status: { in: ['PENDING', 'IN_REVIEW', 'APPROVED', 'ORDERED'] },
+            status: { in: [...statuses] },
           };
     const count = await this.prisma.purchaseRequest.count({ where });
     const recent = await this.prisma.purchaseRequest.findMany({
@@ -1447,13 +2088,14 @@ export class AiToolsService {
       orderBy: { createdAt: 'desc' },
       take: 5,
     });
+    const scopeLabel = pendingOnly ? 'pending' : 'aktif';
     return {
       name: 'my_purchase_requests',
       ok: true,
       summary:
         count === 0
-          ? 'Tidak ada purchase request aktif di scope Anda.'
-          : `${count} purchase request aktif. Contoh: ${recent
+          ? `Tidak ada purchase request ${scopeLabel} di scope Anda.`
+          : `${count} purchase request ${scopeLabel}. Contoh: ${recent
               .map((r) => `${r.requestNumber} (${r.status})`)
               .join(', ')}.`,
       data: recent.map((r) => ({
@@ -1470,6 +2112,10 @@ export class AiToolsService {
         m,
       );
     const highest = /(paling banyak|paling besar|tertinggi|terbesar)/.test(m);
+    const rankN = Math.max(
+      1,
+      Math.min(50, detectRequestedRankingN(message) ?? (lowest || highest ? 10 : 8)),
+    );
 
     const stop = new Set([
       'stok',
@@ -1518,7 +2164,7 @@ export class AiToolsService {
         minStockQty: true,
         category: true,
       },
-      take: lowest || highest ? 10 : 8,
+      take: lowest || highest ? rankN : 8,
       orderBy: lowest
         ? { currentQty: 'asc' }
         : highest
@@ -1534,12 +2180,26 @@ export class AiToolsService {
       };
     }
 
+    const top = items.slice(0, rankN);
+    if ((highest || lowest) && rankN === 1 && top[0]) {
+      const i = top[0];
+      const phrase = lowest ? 'paling sedikit' : 'paling banyak';
+      return {
+        name: 'search_stock',
+        ok: true,
+        summary: [
+          `${i.name} memiliki stok ${phrase}, yaitu ${i.currentQty} ${i.unit}.`,
+          `Data per ${fmtDateId()}.`,
+        ].join('\n'),
+        data: top,
+      };
+    }
     const title = lowest
       ? 'Stok paling sedikit (currentQty terendah)'
       : highest
         ? 'Stok paling banyak (currentQty tertinggi)'
         : 'Stok';
-    const lines = items.map(
+    const lines = top.map(
       (i, idx) =>
         `${idx + 1}. ${i.code} — ${i.name}: ${i.currentQty} ${i.unit}` +
         (i.minStockQty != null ? ` (min ${i.minStockQty})` : ''),
@@ -1549,7 +2209,7 @@ export class AiToolsService {
       name: 'search_stock',
       ok: true,
       summary: [title, ...lines, `Data per ${fmtDateId()}.`].join('\n'),
-      data: items,
+      data: top,
     };
   }
 
