@@ -16,6 +16,14 @@ import {
   isUnknownInformationInquiry,
 } from './ai-strategy';
 import { buildPaiCapabilityCard } from './ai-capability';
+import {
+  extractFinanceCodes,
+  isCausalFollowUp,
+  isCausalQuery,
+  isExplicitRankingUtterance,
+  isFinanceInterpretationQuery,
+  isObjectScopedReference,
+} from './ai-analytics-ops';
 
 export { normalizeId };
 
@@ -1203,10 +1211,22 @@ export function classifyPaIntent(text: string): PaIntent {
   }
 
   // Ranking / live data inside module — before howto keyword traps
-  if (isModuleDataRankingQuery(raw)) return 'analytics';
+  if (isModuleDataRankingQuery(raw) && !isFinanceInterpretationQuery(raw)) {
+    return 'analytics';
+  }
+
+  if (isCausalFollowUp(raw)) {
+    return 'analytics';
+  }
+
+  if (isFinanceInterpretationQuery(raw)) {
+    return /(bandingkan|dibanding|versus|\bvs\b)/.test(m)
+      ? 'comparison'
+      : 'data';
+  }
 
   // Causal 5-why before overbudget/analytics keyword traps
-  if (isBusinessDiagnosticQuery(raw)) return 'data';
+  if (isBusinessDiagnosticQuery(raw) || isCausalQuery(raw)) return 'data';
 
   if (
     (/(bagaimana|gimana|cara|langkah|tutorial|caranya|gimana cara)/.test(m) ||
@@ -1215,7 +1235,8 @@ export function classifyPaIntent(text: string): PaIntent {
       /^(ajuin|ajukan)\b/.test(m) ||
       /(ajuin|ajukan).*(budget|perizinan|dana|cash|stock|stok|visit)/.test(m) ||
       /(add stock|tambah stok|tambah barang)/.test(m)) &&
-    !isMetaReasoningInquiry(raw)
+    !isMetaReasoningInquiry(raw) &&
+    !isFinanceInterpretationQuery(raw)
   ) {
     return 'howto';
   }
@@ -1475,10 +1496,13 @@ export function isResultSetNarrowingQuery(text: string): boolean {
  * use the default Finance dataset — not Active Object or leftover filters.
  */
 export function isStandaloneFinanceAggregateQuery(text: string): boolean {
-  if (hasConversationalReference(text)) return false;
+  if (hasConversationalReference(text) || isObjectScopedReference(text)) {
+    return false;
+  }
   if (isResultSetScopedFollowUp(text)) return false;
   if (isActiveObjectAttributeQuery(text)) return false;
   if (isObjectComparisonQuery(text)) return false;
+  if (isFinanceInterpretationQuery(text) || isCausalQuery(text)) return false;
   if (isFinanceContextFilterQuery(text) || isFinanceFilterOnlyQuery(text)) {
     return false;
   }
@@ -2121,6 +2145,10 @@ export function extractProjectNeedle(text: string): string | null {
 
   const code = text.match(/\b((?:SITE|SEG|FIN)-\d{4}-\d+)\b/i);
   if (code) return code[1];
+  const activeTag = text.match(
+    /\[ACTIVE_OBJECT:((?:SITE|SEG|FIN)-\d{4}-\d+)\]/i,
+  );
+  if (activeTag) return activeTag[1];
 
   const quoted = text.match(/["“](.+?)["”]/);
   if (quoted?.[1]?.trim()) return quoted[1].trim();
@@ -2237,19 +2265,32 @@ export function detectFinanceMode(text: string): FinanceMode {
 
   if (isObjectComparisonQuery(text)) return 'search';
   if (isStatusBreakdownQuery(text)) return 'status_breakdown';
+  const codes = extractFinanceCodes(text);
+  if (
+    (isObjectScopedReference(text) ||
+      isFinanceInterpretationQuery(text) ||
+      codes.length >= 2) &&
+    !isExplicitRankingUtterance(text) &&
+    !/(berdasarkan|dilihat dari|lihat dari)\s+(total\s+)?(realisasi|budget|anggaran|material|jasa|sisa)/.test(
+      m,
+    )
+  ) {
+    return 'search';
+  }
 
   // PAI-FNC-004: ranking with dynamic metric (before generic overbudget/summary)
   const wantsRank =
-    /(top\s*\d*|terbesar|terkecil|ranking|paling besar|paling kecil|paling tinggi|paling rendah|highest|lowest|largest|smallest)/.test(
+    (/(top\s*\d*|terbesar|terkecil|ranking|paling besar|paling kecil|paling tinggi|paling rendah|highest|lowest|largest|smallest)/.test(
       m,
     ) ||
-    /(berdasarkan|dilihat dari|lihat dari)\s+(total\s+)?(realisasi|budget|anggaran|material|jasa|sisa)/.test(
-      m,
-    ) ||
-    /(kalau|gimana|bagaimana).*(berdasarkan|dari)\s+(realisasi|budget|material|jasa|sisa)/.test(
-      m,
-    ) ||
-    isRankingPatchFollowUp(text);
+      /(berdasarkan|dilihat dari|lihat dari)\s+(total\s+)?(realisasi|budget|anggaran|material|jasa|sisa)/.test(
+        m,
+      ) ||
+      /(kalau|gimana|bagaimana).*(berdasarkan|dari)\s+(realisasi|budget|material|jasa|sisa)/.test(
+        m,
+      ) ||
+      isRankingPatchFollowUp(text)) &&
+    !/(bandingkan|persentase|selisih|rasio)/.test(m);
   if (wantsRank) {
     const dir = detectRankingDirection(text);
     if (dir === 'asc') return 'smallest';
@@ -2630,4 +2671,14 @@ export {
   buildRecoveryAnswer,
   buildRecoveryFailedAnswer,
 } from './ai-recovery';
+
+export {
+  extractFinanceCodes,
+  isCausalFollowUp,
+  isCausalQuery,
+  isFinanceInterpretationQuery,
+  isObjectScopedReference,
+  isPendingApprovalQuery,
+  detectAnalyticalRequest,
+} from './ai-analytics-ops';
 

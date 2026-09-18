@@ -28,6 +28,17 @@ import {
   type FinanceMetric,
   type FinanceRankingMetric,
 } from './ai-nlu';
+import {
+  businessTransactionLabel,
+  detectAnalyticalRequest,
+  executeAnalyticalOperation,
+  extractFinanceCodes,
+  isCausalQuery,
+  isFinanceInterpretationQuery,
+  isPendingApprovalQuery,
+  looksLikeOpaqueId,
+  toOperand,
+} from './ai-analytics-ops';
 
 import {
   buildClusterWhyTemplate,
@@ -67,10 +78,13 @@ export class AiToolsService {
       /(dana|cair|pencairan|disburse).*(terakhir|last|keluar|kapan)/.test(m) ||
       /(dana\s*keluar|terakhir\s*cair)/.test(m)
     ) {
-      tools.push('last_fund_disbursement');
+      if (!isPendingApprovalQuery(message)) {
+        tools.push('last_fund_disbursement');
+      }
     }
 
     if (
+      isPendingApprovalQuery(message) ||
       /(approval\s*dana|dana.*pending|pending.*approval|belum.*(cair|approve|disetujui))/.test(
         m,
       )
@@ -481,9 +495,14 @@ export class AiToolsService {
       baseWhere.createdById = user.userId;
     }
 
+    const analyticalAsk =
+      detectAnalyticalRequest(bareMessage) || detectAnalyticalRequest(message);
     if (
       compareCodes.length >= 2 &&
-      /(banding|dibanding|lebih besar|lebih kecil)/.test(normalizeId(bareMessage))
+      /(banding|dibanding|lebih besar|lebih kecil)/.test(normalizeId(bareMessage)) &&
+      analyticalAsk?.kind !== 'ratio_compare' &&
+      analyticalAsk?.kind !== 'multi_metric_compare' &&
+      analyticalAsk?.kind !== 'intra_compare'
     ) {
       return this.compareFinanceMetrics(
         user,
@@ -647,76 +666,90 @@ export class AiToolsService {
     }
 
     if (mode === 'search') {
-      const needle =
-        extractProjectNeedle(message) || extractSearchNeedle(message);
-      const exactCode = (needle || message).match(
-        /\b((?:SITE|SEG|FIN)-\d{4}-\d+)\b/i,
-      )?.[1];
-      // Exact unique code is the object itself (PAI-DIQ-003). Related children
-      // are not treated as ambiguity.
-      const exactObjectOnly = !!exactCode;
-      if (exactCode && exactObjectOnly) {
-        const exactRows = await this.prisma.financeProject.findMany({
-          where: {
-            status: { not: 'ARCHIVED' },
-            code: { equals: exactCode, mode: 'insensitive' },
-          },
-          select: {
-            code: true,
-            name: true,
-            description: true,
-            totalBudget: true,
-            materialBudget: true,
-            jasaBudget: true,
-            materialSpent: true,
-            jasaSpent: true,
-            status: true,
-            hierarchyLevel: true,
-            isOverbudget: true,
-            poCustomerNumber: true,
-            parent: { select: { code: true, name: true } },
-          },
-          take: 5,
-        });
-        const hit = exactRows.filter(
-          (r) => r.code.toUpperCase() === exactCode.toUpperCase(),
-        );
-        if (hit.length === 1) {
-          return {
-            name: 'finance_analytics',
-            ok: true,
-            summary: this.formatFinanceSearchCard(hit[0]),
-            data: hit,
-          };
-        }
-      }
-      if (needle) {
-        if (exactCode && !exactObjectOnly) {
-          // Exact object + children of that code. Do not tokenize SEG-2026-005
-          // into "005" (that falsely matches FIN-2026-005 via contains).
-          baseWhere.OR = [
-            { code: { equals: exactCode, mode: 'insensitive' } },
-            { parent: { code: { equals: exactCode, mode: 'insensitive' } } },
-          ];
-        } else if (exactCode && exactObjectOnly) {
-          baseWhere.OR = [
-            { code: { equals: exactCode, mode: 'insensitive' } },
-          ];
-        } else {
-          const tokens = meaningfulTokens(needle);
-          const parts = tokens.length > 0 ? tokens : [needle];
-          const attrOr = (p: string): Prisma.FinanceProjectWhereInput[] => [
-            { name: { contains: p, mode: 'insensitive' } },
-            { code: { contains: p, mode: 'insensitive' } },
-            { description: { contains: p, mode: 'insensitive' } },
-            { poCustomerNumber: { contains: p, mode: 'insensitive' } },
-            { parent: { name: { contains: p, mode: 'insensitive' } } },
-            { parent: { code: { contains: p, mode: 'insensitive' } } },
-          ];
-          baseWhere.OR = parts.flatMap((p) => attrOr(p));
-        }
+      const codes = extractFinanceCodes(message);
+      const analyticalAsk =
+        !!detectAnalyticalRequest(message) ||
+        isCausalQuery(message) ||
+        isFinanceInterpretationQuery(message);
+      if (codes.length >= 2 || (codes.length >= 1 && analyticalAsk)) {
+        // Exact codes beat token ILIKE — otherwise take:10 can drop a compare operand.
+        baseWhere.OR = codes.map((c) => ({
+          code: { equals: c, mode: 'insensitive' as const },
+        }));
         delete (baseWhere as { status?: unknown }).status;
         baseWhere.status = { not: 'ARCHIVED' };
+      } else {
+        const needle =
+          extractProjectNeedle(message) || extractSearchNeedle(message);
+        const exactCode = (needle || message).match(
+          /\b((?:SITE|SEG|FIN)-\d{4}-\d+)\b/i,
+        )?.[1];
+        // Exact unique code is the object itself (PAI-DIQ-003). Related children
+        // are not treated as ambiguity.
+        const exactObjectOnly = !!exactCode;
+        if (exactCode && exactObjectOnly && !analyticalAsk) {
+          const exactRows = await this.prisma.financeProject.findMany({
+            where: {
+              status: { not: 'ARCHIVED' },
+              code: { equals: exactCode, mode: 'insensitive' },
+            },
+            select: {
+              code: true,
+              name: true,
+              description: true,
+              totalBudget: true,
+              materialBudget: true,
+              jasaBudget: true,
+              materialSpent: true,
+              jasaSpent: true,
+              status: true,
+              hierarchyLevel: true,
+              isOverbudget: true,
+              poCustomerNumber: true,
+              parent: { select: { code: true, name: true } },
+            },
+            take: 5,
+          });
+          const hit = exactRows.filter(
+            (r) => r.code.toUpperCase() === exactCode.toUpperCase(),
+          );
+          if (hit.length === 1) {
+            return {
+              name: 'finance_analytics',
+              ok: true,
+              summary: this.formatFinanceSearchCard(hit[0]),
+              data: hit,
+            };
+          }
+        }
+        if (needle) {
+          if (exactCode && !exactObjectOnly) {
+            // Exact object + children of that code. Do not tokenize SEG-2026-005
+            // into "005" (that falsely matches FIN-2026-005 via contains).
+            baseWhere.OR = [
+              { code: { equals: exactCode, mode: 'insensitive' } },
+              { parent: { code: { equals: exactCode, mode: 'insensitive' } } },
+            ];
+          } else if (exactCode && exactObjectOnly) {
+            baseWhere.OR = [
+              { code: { equals: exactCode, mode: 'insensitive' } },
+            ];
+          } else {
+            const tokens = meaningfulTokens(needle);
+            const parts = tokens.length > 0 ? tokens : [needle];
+            const attrOr = (p: string): Prisma.FinanceProjectWhereInput[] => [
+              { name: { contains: p, mode: 'insensitive' } },
+              { code: { contains: p, mode: 'insensitive' } },
+              { description: { contains: p, mode: 'insensitive' } },
+              { poCustomerNumber: { contains: p, mode: 'insensitive' } },
+              { parent: { name: { contains: p, mode: 'insensitive' } } },
+              { parent: { code: { contains: p, mode: 'insensitive' } } },
+            ];
+            baseWhere.OR = parts.flatMap((p) => attrOr(p));
+          }
+          delete (baseWhere as { status?: unknown }).status;
+          baseWhere.status = { not: 'ARCHIVED' };
+        }
       }
     }
 
@@ -780,9 +813,11 @@ export class AiToolsService {
     }
 
     if (mode === 'search') {
+      const codesWanted = extractFinanceCodes(message);
       const rows = await this.prisma.financeProject.findMany({
         where: baseWhere,
         select: {
+          id: true,
           code: true,
           name: true,
           description: true,
@@ -797,7 +832,7 @@ export class AiToolsService {
           poCustomerNumber: true,
           parent: { select: { code: true, name: true } },
         },
-        take: 10,
+        take: Math.max(10, codesWanted.length || 0),
         orderBy: { updatedAt: 'desc' },
       });
       if (rows.length === 0) {
@@ -807,6 +842,64 @@ export class AiToolsService {
           summary:
             'Project tidak ditemukan di database untuk kata kunci tersebut (non-ARCHIVED). Coba nama site, segment, client/PO, atau kode project.',
           data: { mode: 'search', count: 0 },
+        };
+      }
+      const scoped =
+        codesWanted.length > 0
+          ? rows.filter((r) => codesWanted.includes(r.code.toUpperCase()))
+          : rows;
+      const opRows = (scoped.length ? scoped : rows).map((r) => toOperand(r));
+      let analytical = detectAnalyticalRequest(bareMessage) || detectAnalyticalRequest(message);
+      if (
+        !analytical &&
+        /persentase|terhadap budget/i.test(message) &&
+        /bandingkan|lebih besar/i.test(message)
+      ) {
+        analytical = { kind: 'ratio_compare', metrics: ['realization', 'budget'] };
+      }
+      if (!analytical && isCausalQuery(message)) {
+        if (/(belum mulai|belum dikerjakan)/i.test(message)) {
+          analytical = { kind: 'premise', metrics: ['realization'] };
+        } else if (/(apakah karena|invoice|vendor)/i.test(message)) {
+          analytical = { kind: 'hypothesis', metrics: ['realization'], hypothesis: message };
+        } else {
+          analytical = { kind: 'causal_why', metrics: ['realization'] };
+        }
+      }
+      if (analytical && opRows.length > 0) {
+        let ledger: { entryType: string; amount?: number } | null = null;
+        if (
+          (analytical.kind === 'causal_why' ||
+            analytical.kind === 'hypothesis' ||
+            analytical.kind === 'premise') &&
+          opRows[0]?.id
+        ) {
+          const last = await this.prisma.budgetLedger
+            .findFirst({
+              where: { financeProjectId: opRows[0].id },
+              orderBy: { createdAt: 'desc' },
+              select: { entryType: true, amount: true },
+            })
+            .catch(() => null);
+          if (last) {
+            ledger = {
+              entryType: last.entryType,
+              amount: Number(last.amount || 0),
+            };
+          }
+        }
+        const executed = executeAnalyticalOperation(analytical, opRows, ledger);
+        return {
+          name: 'finance_analytics',
+          ok: true,
+          summary: executed.summary,
+          data: {
+            mode: 'analytical_op',
+            kind: analytical.kind,
+            deterministic: true,
+            causal: executed.causal,
+            rows: scoped.length ? scoped : rows,
+          },
         };
       }
       const lines = rows.map((r) => {
@@ -1355,12 +1448,13 @@ export class AiToolsService {
 
   private async pendingFundApprovals(user: AuthUser): Promise<ToolTrace> {
     const canSeeAll = this.canSeeAllFinance(user.role) || user.role === 'PURCHASING';
-    const where: Prisma.CashOperationRequestWhereInput = {
-      status: { in: ['SUBMITTED', 'IN_REVIEW', 'APPROVED'] },
+    const pendingCashStatuses = ['SUBMITTED', 'IN_REVIEW'] as const;
+    const cashWhere: Prisma.CashOperationRequestWhereInput = {
+      status: { in: [...pendingCashStatuses] },
       ...(canSeeAll ? {} : { requestedBy: user.userId }),
     };
     const rows = await this.prisma.cashOperationRequest.findMany({
-      where,
+      where: cashWhere,
       select: {
         requestNumber: true,
         status: true,
@@ -1368,32 +1462,80 @@ export class AiToolsService {
         description: true,
         currentApproverRole: true,
         requester: { select: { name: true } },
+        financeProject: { select: { code: true, name: true } },
       },
       orderBy: { updatedAt: 'desc' },
       take: 10,
     });
-    if (rows.length === 0) {
+
+    const ftttPending =
+      canSeeAll || user.role.startsWith('PM_') || user.role.includes('FTTT')
+        ? await this.prisma.ftttTransaction.findMany({
+            where: { requestStatus: 'PENDING_REVIEW' },
+            select: {
+              id: true,
+              aktivitas: true,
+              category: true,
+              total: true,
+              requestStatus: true,
+              createdAt: true,
+              createdBy: { select: { name: true } },
+              ftttProject: { select: { projectName: true } },
+              financeProject: { select: { code: true, name: true } },
+            },
+            orderBy: { createdAt: 'desc' },
+            take: 10,
+          })
+        : [];
+
+    if (rows.length === 0 && ftttPending.length === 0) {
       return {
         name: 'pending_fund_approvals',
         ok: true,
-        summary: 'Tidak ada pengajuan dana yang masih pending di scope kamu.',
+        summary:
+          'Tidak ada pengajuan dana yang masih pending approval (SUBMITTED / IN_REVIEW / PENDING_REVIEW) di scope kamu. Record APPROVED tidak dimasukkan karena sudah lolos approval.',
       };
     }
-    const lines = rows.map(
+    const cashLines = rows.map(
       (r) =>
         `• ${r.requestNumber} — ${fmtIdr(Number(r.amount))} — ${r.status}` +
         `${r.currentApproverRole ? ` (menunggu ${r.currentApproverRole})` : ''}` +
-        ` — ${r.requester.name}: ${r.description.slice(0, 80)}`,
+        ` — ${r.requester.name}: ${r.description.slice(0, 80)}` +
+        (r.financeProject
+          ? ` [${r.financeProject.code} ${r.financeProject.name}]`
+          : ''),
     );
+    const ftttLines = ftttPending.map((t) => {
+      const label = businessTransactionLabel({
+        activity: t.aktivitas,
+        category: t.category,
+        projectName: t.ftttProject?.projectName,
+        financeCode: t.financeProject?.code,
+        financeName: t.financeProject?.name,
+        requester: t.createdBy?.name,
+        dateLabel: t.createdAt
+          ? new Date(t.createdAt).toLocaleDateString('id-ID')
+          : null,
+      });
+      return (
+        `• ${label} — ${fmtIdr(Number(t.total))} — ${t.requestStatus}` +
+        ` — ${t.createdBy.name}: ${t.aktivitas}` +
+        (t.financeProject
+          ? ` [${t.financeProject.code} ${t.financeProject.name}]`
+          : '')
+      );
+    });
     return {
       name: 'pending_fund_approvals',
       ok: true,
       summary: [
-        `Approval / pengajuan dana yang masih jalan (${rows.length})`,
-        ...lines,
+        `Cash Operation / pengajuan dana pending approval (${rows.length + ftttPending.length})`,
+        'Scope status: SUBMITTED, IN_REVIEW, PENDING_REVIEW — tidak mencampur record yang sudah disetujui.',
+        ...cashLines,
+        ...ftttLines,
         `Per ${fmtDateId()}.`,
       ].join('\n'),
-      data: rows,
+      data: { cash: rows, fttt: ftttPending, deterministic: true },
     };
   }
 
@@ -1549,7 +1691,15 @@ export class AiToolsService {
         at: fttt.disbursedAt,
         summary: [
           `Dana terakhir keluar dari FTTT Financial Request (Dana Keluar):`,
-          `• No. transaksi: ${fttt.id}`,
+          `• No. transaksi: ${looksLikeOpaqueId(fttt.id) ? businessTransactionLabel({
+            activity: fttt.aktivitas,
+            category: fttt.category,
+            projectName: fttt.ftttProject.projectName,
+            financeCode: fttt.financeProject?.code,
+            financeName: fttt.financeProject?.name,
+            requester: fttt.createdBy.name,
+            dateLabel: fttt.disbursedAt ? fmtDt(fttt.disbursedAt) : null,
+          }) : fttt.id}`,
           `• Tanggal cair: ${fmtDt(fttt.disbursedAt)} WIB`,
           `• Nominal: ${fmt(Number(fttt.total))}`,
           `• Aktivitas: ${fttt.aktivitas}`,

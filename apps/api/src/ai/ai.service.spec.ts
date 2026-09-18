@@ -189,6 +189,10 @@ describe('PermaTrax AI chatbot (logic)', () => {
       },
       budgetLedger: {
         findMany: jest.fn().mockResolvedValue([]),
+        findFirst: jest.fn().mockResolvedValue({
+          entryType: 'BUDGET_INIT',
+          amount: 1000000000,
+        }),
       },
       clusterStageProgress: {
         findMany: jest.fn().mockResolvedValue([]),
@@ -209,6 +213,7 @@ describe('PermaTrax AI chatbot (logic)', () => {
       },
       ftttTransaction: {
         findFirst: jest.fn().mockResolvedValue(null),
+        findMany: jest.fn().mockResolvedValue([]),
       },
       supplier: {
         count: jest.fn().mockResolvedValue(12),
@@ -4777,5 +4782,194 @@ describe('PermaTrax AI chatbot (logic)', () => {
     expect(res.answer).toMatch(/Top 3/i);
     expect(res.answer).toMatch(/FIN-2026-002/);
     expect(res.answer).toMatch(/SITE/i);
+  });
+
+  it('DIQ-021: project-ini interpretation stays on Active Object', async () => {
+    const prisma = makePrisma();
+    const row = {
+      id: 'fp-001',
+      code: 'FIN-2026-001',
+      name: 'iForte Bandung 1',
+      totalBudget: 1000000000,
+      materialBudget: 500000000,
+      jasaBudget: 500000000,
+      materialSpent: 5556680,
+      jasaSpent: 1100000,
+      status: 'ACTIVE',
+      hierarchyLevel: 'STANDALONE',
+      isOverbudget: false,
+      poCustomerNumber: null,
+      parent: null,
+    };
+    (prisma as any).financeProject.findMany = jest.fn().mockResolvedValue([row]);
+    const { ai } = makeServices(prisma);
+    const start = await ai.chat(user, 'Aku mau bahas Finance Project.');
+    await ai.chat(user, 'Cari Finance Project FIN-2026-001.', start.conversationId);
+    const res = await ai.chat(
+      user,
+      'Dari data project ini, bagaimana kondisi budget dan realisasinya?',
+      start.conversationId,
+    );
+    expect(res.answer).toMatch(/FIN-2026-001/);
+    expect(res.answer).toMatch(/Realisasi/i);
+    expect(res.answer).not.toMatch(/Top 10 Finance Project/i);
+    expect(res.answer).not.toMatch(/SEG-2026-038/);
+  });
+
+  it('DIQ-022: ratio compare uses Realisasi/Budget, not absolute Realisasi only', async () => {
+    const prisma = makePrisma();
+    (prisma as any).financeProject.findMany = jest.fn().mockResolvedValue([
+      {
+        id: 'a',
+        code: 'FIN-2026-001',
+        name: 'One',
+        totalBudget: 1000000000,
+        materialBudget: 500000000,
+        jasaBudget: 500000000,
+        materialSpent: 6656680,
+        jasaSpent: 0,
+        status: 'ACTIVE',
+        hierarchyLevel: 'STANDALONE',
+        isOverbudget: false,
+        parent: null,
+      },
+      {
+        id: 'b',
+        code: 'FIN-2026-005',
+        name: 'Five',
+        totalBudget: 3000000000,
+        materialBudget: 1000000000,
+        jasaBudget: 1000000000,
+        materialSpent: 0,
+        jasaSpent: 0,
+        status: 'ACTIVE',
+        hierarchyLevel: 'STANDALONE',
+        isOverbudget: false,
+        parent: null,
+      },
+    ]);
+    const { ai } = makeServices(prisma);
+    const start = await ai.chat(user, 'Aku mau bahas Finance Project.');
+    const res = await ai.chat(
+      user,
+      'Bandingkan FIN-2026-001 dengan FIN-2026-005. Project mana yang persentase realisasinya terhadap budget lebih besar?',
+      start.conversationId,
+    );
+    expect(res.answer).toMatch(/Realisasi \/ Total Budget/i);
+    expect(res.answer).toMatch(/FIN-2026-001/);
+    expect(res.answer).toMatch(/FIN-2026-005/);
+  });
+
+  it('DIQ-023: material vs jasa difference on Active Object', async () => {
+    const prisma = makePrisma();
+    (prisma as any).financeProject.findMany = jest.fn().mockResolvedValue([
+      {
+        id: 'b',
+        code: 'FIN-2026-005',
+        name: 'Five',
+        totalBudget: 3000000000,
+        materialBudget: 1000000000,
+        jasaBudget: 1000000000,
+        materialSpent: 0,
+        jasaSpent: 0,
+        status: 'ACTIVE',
+        hierarchyLevel: 'STANDALONE',
+        isOverbudget: false,
+        parent: null,
+      },
+    ]);
+    const { ai } = makeServices(prisma);
+    const start = await ai.chat(user, 'Aku mau bahas Finance Project.');
+    await ai.chat(user, 'Cari FIN-2026-005.', start.conversationId);
+    const res = await ai.chat(
+      user,
+      'Dari material budget dan jasa budgetnya, mana yang lebih besar dan berapa selisihnya?',
+      start.conversationId,
+    );
+    expect(res.answer).toMatch(/Material Budget dan Jasa Budget sama besar/i);
+    expect(res.answer).toMatch(/selisih/i);
+  });
+
+  it('DIQ-026: pending approval excludes APPROVED and does not use CUID as No. transaksi', async () => {
+    const prisma = makePrisma();
+    (prisma as any).cashOperationRequest.findMany = jest.fn().mockResolvedValue([
+      {
+        requestNumber: 'RM-2026-0004',
+        status: 'SUBMITTED',
+        amount: 1500000,
+        description: 'Ops pending',
+        currentApproverRole: 'FINANCE',
+        requester: { name: 'Ahmad' },
+        financeProject: { code: 'FIN-2026-014', name: 'Testing' },
+      },
+    ]);
+    (prisma as any).ftttTransaction.findMany = jest.fn().mockResolvedValue([
+      {
+        id: 'cmrlxd6zi001eq0he23eexdra',
+        aktivitas: 'perizinan 2',
+        category: 'PERIZINAN',
+        total: 10000000,
+        requestStatus: 'PENDING_REVIEW',
+        createdAt: new Date('2026-09-09T02:00:00Z'),
+        createdBy: { name: 'Ahmad' },
+        ftttProject: { projectName: 'Testing' },
+        financeProject: { code: 'FIN-2026-014', name: 'Testing' },
+      },
+    ]);
+    const { ai } = makeServices(prisma);
+    const start = await ai.chat(user, 'Aku mau bahas Cash Operation.');
+    const res = await ai.chat(
+      user,
+      'Tampilkan Cash Operation yang pending approval.',
+      start.conversationId,
+    );
+    expect(res.answer).toMatch(/pending approval/i);
+    expect(res.answer).not.toMatch(/— APPROVED/);
+    expect(res.answer).not.toMatch(/No\. transaksi: cmrlxd6zi001eq0he23eexdra/i);
+    expect(res.answer).toMatch(/RM-2026-0004|FIN-2026-014|perizinan 2/i);
+  });
+
+  it('DIQ-027/029/030: hypothesis, premise, and causal boundary hold', async () => {
+    const prisma = makePrisma();
+    const row = {
+      id: 'fp-005',
+      code: 'FIN-2026-005',
+      name: 'Five',
+      totalBudget: 3000000000,
+      materialBudget: 1000000000,
+      jasaBudget: 1000000000,
+      materialSpent: 0,
+      jasaSpent: 0,
+      status: 'ACTIVE',
+      hierarchyLevel: 'STANDALONE',
+      isOverbudget: false,
+      parent: null,
+    };
+    (prisma as any).financeProject.findMany = jest.fn().mockResolvedValue([row]);
+    const { ai } = makeServices(prisma);
+    const start = await ai.chat(user, 'Aku mau bahas Finance Project.');
+    await ai.chat(user, 'Cari FIN-2026-005.', start.conversationId);
+    const hyp = await ai.chat(
+      user,
+      'Kenapa FIN-2026-005 belum ada realisasi? Apakah karena invoice dari vendor belum masuk?',
+      start.conversationId,
+    );
+    expect(hyp.answer).toMatch(/tidak dapat dikonfirmasi|tidak mengadopsi/i);
+    const premise = await ai.chat(
+      user,
+      'Karena FIN-2026-005 realisasinya Rp0, berarti project ini belum mulai dikerjakan kan?',
+      start.conversationId,
+    );
+    expect(premise.answer).toMatch(/tidak membuktikan bahwa project belum mulai/i);
+    const why = await ai.chat(
+      user,
+      'Kenapa realisasinya masih jauh di bawah budget?',
+      start.conversationId,
+    );
+    expect(why.answer).toMatch(/Why1/);
+    expect(why.answer).toMatch(/unknown/i);
+    const follow = await ai.chat(user, 'Terus kenapa lagi?', start.conversationId);
+    expect(follow.answer).toMatch(/Batas kausal sudah tercapai/i);
+    expect(follow.answer).not.toMatch(/Why1 \(observasi\)/);
   });
 });

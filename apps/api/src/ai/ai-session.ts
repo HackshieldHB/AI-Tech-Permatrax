@@ -279,6 +279,10 @@ export type ConversationSessionState = {
   lastReasoningNote: string | null;
   /** Committed operational frame (PAI Phase 2) */
   frame: ConversationFrame;
+  /** PAI-DIQ-012: deeper Why is unavailable for the current object */
+  causalBoundaryReached: boolean;
+  causalDepth: number;
+  causalObject: string | null;
 };
 
 export const EMPTY_CONSTRAINTS: ActiveConstraintSet = {
@@ -320,6 +324,9 @@ export const EMPTY_SESSION: ConversationSessionState = {
   lastAnswerFp: null,
   lastReasoningNote: null,
   frame: { ...EMPTY_FRAME, ranking: { ...EMPTY_FRAME.ranking }, filters: { ...EMPTY_FRAME.filters } },
+  causalBoundaryReached: false,
+  causalDepth: 0,
+  causalObject: null,
 };
 
 const SESSION_TOOL = '_session';
@@ -344,6 +351,9 @@ export function normalizeSessionState(
     previousObject: raw?.previousObject ?? null,
     objectHistory: Array.isArray(raw?.objectHistory) ? raw!.objectHistory : [],
     frame: normalizeConversationFrame(raw?.frame ?? base.frame),
+    causalBoundaryReached: !!raw?.causalBoundaryReached,
+    causalDepth: Number(raw?.causalDepth || 0),
+    causalObject: raw?.causalObject ?? null,
   };
 }
 
