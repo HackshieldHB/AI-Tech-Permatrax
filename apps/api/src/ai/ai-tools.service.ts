@@ -852,8 +852,7 @@ export class AiToolsService {
       let analytical = detectAnalyticalRequest(bareMessage) || detectAnalyticalRequest(message);
       if (
         !analytical &&
-        /persentase|terhadap budget/i.test(message) &&
-        /bandingkan|lebih besar/i.test(message)
+        /persentase|persen|%\s|terhadap (total )?budget/i.test(message)
       ) {
         analytical = { kind: 'ratio_compare', metrics: ['realization', 'budget'] };
       }

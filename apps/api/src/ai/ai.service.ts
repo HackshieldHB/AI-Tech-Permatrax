@@ -94,6 +94,7 @@ import {
   buildBusinessDiagnosticAnswer,
   isBusinessDiagnosticQuery,
   isKnowledgeDefinitionQuery,
+  isPendingApprovalQuery,
   isMetaReasoningInquiry,
   isUnknownInformationInquiry,
   mapResponseStrategy,
@@ -444,6 +445,7 @@ export class AiService {
       !businessDiagnostic &&
       !knowledgeTurn &&
       !isResultSetScopedFollowUp(text) &&
+      !isPendingApprovalQuery(text) &&
       !isObjectComparisonQuery(text) &&
       !isComparisonMetricFollowUp(text) &&
       !inheritCompare &&
@@ -538,6 +540,8 @@ export class AiService {
       !referenceDetail &&
       !liveObjectLookup &&
       !inheritCompare &&
+      !analyticalNow &&
+      !isPendingApprovalQuery(text) &&
       !isObjectComparisonQuery(text) &&
       isActiveObjectAttributeQuery(text) &&
       extractSessionProjectCode(session)
@@ -633,6 +637,8 @@ export class AiService {
       !referenceDetail &&
       !liveObjectLookup &&
       !analyticalNow &&
+      !isResultSetScopedFollowUp(text) &&
+      !isPendingApprovalQuery(text) &&
       (hasConversationalReference(text) || isContextDependentFollowUp(text)) &&
       session.activeTopic &&
       !isOrdinalReference(text) &&
@@ -1964,6 +1970,7 @@ export class AiService {
     if (
       useTools &&
       session.activeTopic === 'finance' &&
+      !isPendingApprovalQuery(text) &&
       !isStockQuantityRankingQuery(text) &&
       !toolNames.includes('finance_analytics') &&
       (/budget|project|proyek|berapa|jumlah|total|terbesar|terkecil|over|material|jasa|realisasi|sisa|active|closed|archived|site|segment|\bcari\b|\btop\s*\d+|(?:site|seg|fin)-\d{4}/i.test(
@@ -2176,6 +2183,8 @@ export class AiService {
       !hasUsefulTools &&
       intent === 'faq' &&
       !session.correctionApplied &&
+      !analyticalNow &&
+      extractFinanceCodes(text).length < 2 &&
       (!session.activeTopic || isKnowledgeDefinitionQuery(text))
     ) {
       const skipDomainLock =
