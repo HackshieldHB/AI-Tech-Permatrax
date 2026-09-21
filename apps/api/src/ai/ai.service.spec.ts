@@ -10,6 +10,8 @@ import {
   detectFinanceMetrics,
   detectRankingMetric,
   detectRankingDirection,
+  detectComparisonMetric,
+  detectTopic,
   detectTopNLimit,
   detectExplicitTopN,
   detectRequestedRankingN,
@@ -922,6 +924,23 @@ describe('PermaTrax AI chatbot (logic)', () => {
     expect(res.answer).toMatch(/ACTIVE|ruang lingkup/i);
     expect(res.answer).not.toMatch(/Total Project\s*:/i);
     expect(res.toolTraces).toHaveLength(0);
+  });
+
+  it('DIQ-010 RT-46: FIN codes are finance; data tersebut does not force domain clarify', () => {
+    expect(detectTopic('FIN-2026-001 dan FIN-2026-005')).toBe('finance');
+    expect(
+      detectComparisonMetric(
+        'bandingkan persentase realisasi FIN-2026-001 dengan FIN-2026-005',
+      ),
+    ).toBe('realizationPct');
+    const ctx = resolveSessionContext({
+      message:
+        'Kalau dibandingkan persentase realisasi FIN-2026-001 dengan FIN-2026-005 dari data tersebut, apa yang bisa disimpulkan?',
+      priorUsers: [],
+    });
+    expect(ctx.needsTopicClarify).toBe(false);
+    expect(ctx.activeTopic).toBe('finance');
+    expect(ctx.clarifyPrompt).toBeUndefined();
   });
 
   it('BHV-003: "yang tadi" resolves finance context without unnecessary clarify', () => {
@@ -4732,6 +4751,63 @@ describe('PermaTrax AI chatbot (logic)', () => {
     expect(realisasi.answer).toMatch(/FIN-2026-006/);
     expect(realisasi.answer).not.toMatch(/FIN-2026-001/);
     expect(realisasi.answer).not.toMatch(/Top 10|paling terbesar/i);
+  });
+
+  it('DIQ-010 RT-46: percent compare of two explicit codes plus evidence-limited interpretation', async () => {
+    const prisma = makePrisma();
+    const rows = [
+      {
+        code: 'FIN-2026-001',
+        name: 'One',
+        totalBudget: 1000000000,
+        materialBudget: 0,
+        jasaBudget: 0,
+        materialSpent: 6700000,
+        jasaSpent: 0,
+        status: 'ACTIVE',
+        hierarchyLevel: 'SITE',
+        isOverbudget: false,
+        poCustomerNumber: null,
+        parent: null,
+        description: 'one',
+      },
+      {
+        code: 'FIN-2026-005',
+        name: 'Five',
+        totalBudget: 3000000000,
+        materialBudget: 0,
+        jasaBudget: 0,
+        materialSpent: 0,
+        jasaSpent: 0,
+        status: 'ACTIVE',
+        hierarchyLevel: 'SITE',
+        isOverbudget: false,
+        poCustomerNumber: null,
+        parent: null,
+        description: 'five',
+      },
+    ];
+    (prisma as any).financeProject.findMany = jest.fn(async (args: any) => {
+      const eq = args?.where?.code?.equals;
+      const inn = args?.where?.code?.in;
+      if (eq) return rows.filter((r) => r.code === String(eq).toUpperCase());
+      if (inn) return rows.filter((r) => inn.includes(r.code));
+      return rows;
+    });
+    const { ai } = makeServices(prisma);
+    const res = await ai.chat(
+      user,
+      'Kalau dibandingkan persentase realisasi FIN-2026-001 dengan FIN-2026-005 dari data tersebut, apa yang bisa disimpulkan?',
+    );
+    expect(res.intent).not.toBe('clarify');
+    expect(res.answer).not.toMatch(/topik yang mana/i);
+    expect(res.answer).toMatch(/FIN-2026-001/);
+    expect(res.answer).toMatch(/FIN-2026-005/);
+    expect(res.answer).toMatch(/0[,.]67\s*%|≈ 0[,.]67%/);
+    expect(res.answer).toMatch(/= 0%|0%/);
+    expect(res.answer).toMatch(/lebih besar/i);
+    expect(res.answer).toMatch(/tidak cukup untuk menyimpulkan progress atau performa operasional/i);
+    expect(res.answer).not.toMatch(/belum mulai|tidak dikerjakan|terlambat/i);
   });
 
   it('DIQ-020: stock ranking after PR does not replay pending PR', async () => {

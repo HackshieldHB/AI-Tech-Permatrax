@@ -567,7 +567,7 @@ export class AiService {
               ? { a: current, b: other }
               : null;
       if (pair) {
-        liveObjectLookup = `Bandingkan ${metricWord} ${pair.a} dengan ${pair.b}`;
+        liveObjectLookup = `Bandingkan ${metricWord} ${pair.a} dengan ${pair.b}. ${text}`;
         intent = 'comparison';
         session = {
           ...session,

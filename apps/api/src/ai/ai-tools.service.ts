@@ -490,6 +490,12 @@ export class AiToolsService {
         compareCodes[0],
         compareCodes[1],
         detectComparisonMetric(bareMessage) || 'totalBudget',
+        {
+          interpret:
+            /(disimpulkan|kesimpulan|interpretasi|apa yang bisa disimpulkan)/.test(
+              normalizeId(bareMessage),
+            ),
+        },
       );
     }
     if (
@@ -1137,9 +1143,11 @@ export class AiToolsService {
     metric:
       | 'totalBudget'
       | 'realization'
+      | 'realizationPct'
       | 'remaining'
       | 'materialBudget'
       | 'jasaBudget' = 'totalBudget',
+    opts: { interpret?: boolean } = {},
   ): Promise<ToolTrace> {
     const rows = await this.prisma.financeProject.findMany({
       where: {
@@ -1167,36 +1175,80 @@ export class AiToolsService {
         summary: `Tidak lengkap untuk membandingkan ${codeA} dan ${codeB}.`,
       };
     }
-    const valueOf = (
-      row: typeof a,
-    ): number => {
-      const realized =
-        Number(row.materialSpent) + Number(row.jasaSpent);
+    const realizedOf = (row: typeof a) =>
+      Number(row.materialSpent) + Number(row.jasaSpent);
+    const valueOf = (row: typeof a): number => {
+      const realized = realizedOf(row);
       if (metric === 'realization') return realized;
+      if (metric === 'realizationPct') {
+        const budget = Number(row.totalBudget);
+        return budget ? realized / budget : 0;
+      }
       if (metric === 'remaining') return Number(row.totalBudget) - realized;
       if (metric === 'materialBudget') return Number(row.materialBudget);
       if (metric === 'jasaBudget') return Number(row.jasaBudget);
       return Number(row.totalBudget);
     };
+    const fmtPct = (part: number, whole: number): string => {
+      if (!whole) return 'n/a';
+      const p = (part / whole) * 100;
+      if (p === 0) return '0%';
+      return `${p.toLocaleString('id-ID', {
+        maximumFractionDigits: 2,
+        minimumFractionDigits: 0,
+      })}%`;
+    };
     const label =
       metric === 'realization'
         ? 'Realisasi'
-        : metric === 'remaining'
-          ? 'Sisa Budget'
-          : metric === 'materialBudget'
-            ? 'Material Budget'
-            : metric === 'jasaBudget'
-              ? 'Jasa Budget'
-              : 'budget';
+        : metric === 'realizationPct'
+          ? 'persentase realisasi terhadap total budget'
+          : metric === 'remaining'
+            ? 'Sisa Budget'
+            : metric === 'materialBudget'
+              ? 'Material Budget'
+              : metric === 'jasaBudget'
+                ? 'Jasa Budget'
+                : 'budget';
     const va = valueOf(a);
     const vb = valueOf(b);
     const winner = va === vb ? null : va > vb ? a : b;
     const loser = winner ? (winner === a ? b : a) : null;
-    const summary = winner
-      ? metric === 'totalBudget'
-        ? `${winner.code} memiliki ${label} lebih besar, yaitu ${fmtIdr(valueOf(winner))} dibandingkan ${loser!.code} sebesar ${fmtIdr(valueOf(loser!))}.`
-        : `${label} ${winner.code} lebih besar, yaitu ${fmtIdr(valueOf(winner))} dibandingkan ${loser!.code} sebesar ${fmtIdr(valueOf(loser!))}.`
-      : `${label} ${a.code} dan ${b.code} sama, yaitu ${fmtIdr(va)}.`;
+    const pctLine = (row: typeof a) =>
+      `${row.code}: ${fmtIdr(realizedOf(row))} / ${fmtIdr(Number(row.totalBudget))} × 100% ${
+        Number(row.totalBudget) && realizedOf(row) === 0
+          ? '= 0%'
+          : `≈ ${fmtPct(realizedOf(row), Number(row.totalBudget))}`
+      }`;
+    let summary: string;
+    if (metric === 'realizationPct') {
+      const head = winner
+        ? `${winner.code} memiliki ${label} yang lebih besar.`
+        : `${a.code} dan ${b.code} memiliki ${label} yang sama.`;
+      summary = [pctLine(a), pctLine(b), '', head].join('\n');
+      if (opts.interpret) {
+        const noteA = realizedOf(a)
+          ? `${a.code} sudah mencatat sebagian realisasi finansial`
+          : `${a.code} belum mencatat realisasi finansial`;
+        const noteB = realizedOf(b)
+          ? `${b.code} sudah mencatat sebagian realisasi finansial`
+          : `${b.code} belum mencatat realisasi finansial`;
+        summary = [
+          'Dengan data saat ini:',
+          pctLine(a),
+          pctLine(b),
+          '',
+          head,
+          `Berdasarkan data Finance Project yang tersedia, ${noteA}, sedangkan ${noteB}. Data tersebut saja tidak cukup untuk menyimpulkan progress atau performa operasional kedua project.`,
+        ].join('\n');
+      }
+    } else {
+      summary = winner
+        ? metric === 'totalBudget'
+          ? `${winner.code} memiliki ${label} lebih besar, yaitu ${fmtIdr(valueOf(winner))} dibandingkan ${loser!.code} sebesar ${fmtIdr(valueOf(loser!))}.`
+          : `${label} ${winner.code} lebih besar, yaitu ${fmtIdr(valueOf(winner))} dibandingkan ${loser!.code} sebesar ${fmtIdr(valueOf(loser!))}.`
+        : `${label} ${a.code} dan ${b.code} sama, yaitu ${fmtIdr(va)}.`;
+    }
     return {
       name: 'finance_analytics',
       ok: true,

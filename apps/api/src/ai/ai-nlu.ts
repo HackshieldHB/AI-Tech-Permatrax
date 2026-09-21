@@ -343,6 +343,7 @@ export function detectTopic(text: string): SessionTopic | null {
   if (/\bfttt\b/.test(m)) return 'fttt';
   if (/finance|budget|anggaran|finance project|proyek finance/.test(m))
     return 'finance';
+  if (/\b((?:site|seg|fin)-\d{4}-\d+)\b/.test(m)) return 'finance';
   return null;
 }
 
@@ -619,7 +620,15 @@ export function resolveSessionContext(input: {
 
   if (ref) {
     // Persist topic wins — do NOT ask clarify when we already have active context
-    if (!historyTopic && !prior && !entity) {
+    // PAI-DIQ-010 RT-46: "data tersebut" is not domain-ambiguous when FIN/SEG/SITE
+    // codes (or an explicit topic) are already in this turn.
+    if (
+      !historyTopic &&
+      !prior &&
+      !entity &&
+      !msgTopic &&
+      extractExplicitEntityCodes(msg).length === 0
+    ) {
       return {
         effectiveText: msg,
         activeTopic: null,
@@ -962,6 +971,12 @@ export function isRankingPatchFollowUp(text: string): boolean {
   if (isObjectComparisonQuery(text) || isComparisonMetricFollowUp(text)) {
     return false;
   }
+  if (
+    isObjectScopedInterpretationQuery(text) ||
+    isIntraObjectMetricCompareQuery(text)
+  ) {
+    return false;
+  }
   if (isResultSetNarrowingQuery(text)) return false;
   if (isFinanceFilterClearQuery(text) || isFinanceFilterRemoveQuery(text)) {
     return false;
@@ -1013,6 +1028,12 @@ export function isRankingPatchFollowUp(text: string): boolean {
 export function isModuleDataRankingQuery(text: string): boolean {
   if (isProceduralGuidanceQuery(text)) return false;
   if (isObjectComparisonQuery(text) || isComparisonMetricFollowUp(text)) {
+    return false;
+  }
+  if (
+    isObjectScopedInterpretationQuery(text) ||
+    isIntraObjectMetricCompareQuery(text)
+  ) {
     return false;
   }
   const m = normalizeId(text);
@@ -1697,6 +1718,7 @@ export function isActiveObjectAttributeQuery(text: string): boolean {
 /** Compare current object vs a previously referenced object (PAI-DIQ-006). */
 export function isObjectComparisonQuery(text: string): boolean {
   const m = normalizeId(primaryUtterance(text));
+  if (isIntraObjectMetricCompareQuery(text)) return false;
   if (detectExplicitTopN(text) != null && /(tampilkan|top)\b/.test(m)) {
     return false;
   }
@@ -1758,25 +1780,74 @@ export function isShortComparisonMetricFollowUp(text: string): boolean {
   return glue && metricBit;
 }
 
+/** “Dari data project ini, bagaimana kondisi budget dan realisasinya?” */
+export function isObjectScopedInterpretationQuery(text: string): boolean {
+  const m = normalizeId(primaryUtterance(text));
+  if (isExplicitGlobalFinancePopulation(text)) return false;
+  if (detectExplicitTopN(text) != null) return false;
+  if (/(paling besar|paling kecil|terbesar|terkecil|top\s*\d*|ranking)/.test(m)) {
+    return false;
+  }
+  const objectRef =
+    /(project ini|proyek ini|data (project|proyek) ini|dari data (ini|itu))/.test(
+      m,
+    );
+  const condition =
+    /(bagaimana|gimana).*(kondisi).*(budget|realisasi)/.test(m) ||
+    /(kondisi).*(budget|realisasi)/.test(m) ||
+    /(budget).*(dan).*(realisasi)|(realisasi).*(dan).*(budget)/.test(m);
+  return objectRef && condition;
+}
+
+/** Material vs Jasa on the same Active Object + selisih (PAI-DIQ-010 DIQ-023). */
+export function isIntraObjectMetricCompareQuery(text: string): boolean {
+  const m = normalizeId(primaryUtterance(text));
+  if (extractExplicitEntityCodes(text).length >= 2) return false;
+  const both =
+    /(\bmaterial\b).*\b(jasa|service)\b|\b(jasa|service)\b.*\bmaterial\b/.test(
+      m,
+    );
+  const op = /(lebih besar|lebih kecil|selisih|bandingkan|dibanding)/.test(m);
+  return both && op;
+}
+
 export type ComparisonMetric =
   | 'totalBudget'
   | 'realization'
+  | 'realizationPct'
   | 'remaining'
   | 'materialBudget'
   | 'jasaBudget';
 
-export function detectComparisonMetric(text: string): ComparisonMetric | null {
+export function detectComparisonMetrics(text: string): ComparisonMetric[] {
   const m = normalizeId(primaryUtterance(text));
-  if (/(realisasi|spent|terpakai)/.test(m)) return 'realization';
-  if (/(sisa|remaining)/.test(m)) return 'remaining';
-  if (/\bmaterial\b/.test(m)) return 'materialBudget';
-  if (/\b(jasa|service)\b/.test(m)) return 'jasaBudget';
-  if (/(budget|anggaran)/.test(m)) return 'totalBudget';
-  return null;
+  const wantsPct =
+    /(persen|persentase|%\b|terhadap (total\s*)?budget)/.test(m);
+  if (wantsPct && /(realisasi|spent|terpakai)/.test(m)) {
+    return ['realizationPct'];
+  }
+  const out: ComparisonMetric[] = [];
+  const wantsReal = /(realisasi|spent|terpakai)/.test(m);
+  const wantsMat = /\bmaterial\b/.test(m);
+  const wantsJasa = /\b(jasa|service)\b/.test(m);
+  const wantsSisa = /(sisa|remaining)/.test(m);
+  const wantsBudget =
+    /(budget|anggaran)/.test(m) && !wantsMat && !wantsJasa && !wantsSisa;
+  if (wantsBudget) out.push('totalBudget');
+  if (wantsReal) out.push('realization');
+  if (wantsMat) out.push('materialBudget');
+  if (wantsJasa) out.push('jasaBudget');
+  if (wantsSisa) out.push('remaining');
+  return out;
+}
+
+export function detectComparisonMetric(text: string): ComparisonMetric | null {
+  return detectComparisonMetrics(text)[0] ?? null;
 }
 
 export function comparisonMetricWord(metric: ComparisonMetric): string {
   if (metric === 'realization') return 'realisasi';
+  if (metric === 'realizationPct') return 'persentase realisasi';
   if (metric === 'remaining') return 'sisa';
   if (metric === 'materialBudget') return 'material';
   if (metric === 'jasaBudget') return 'jasa';
