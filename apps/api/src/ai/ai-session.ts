@@ -207,6 +207,8 @@ export type ActiveComparisonScope = {
     | 'totalBudget'
     | 'realization'
     | 'realizationPct'
+    | 'materialPct'
+    | 'jasaPct'
     | 'remaining'
     | 'materialBudget'
     | 'jasaBudget';

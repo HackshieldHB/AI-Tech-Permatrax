@@ -15,6 +15,7 @@ import {
   formatPctPoints,
   hasActiveStatusNegation,
   isIntraObjectPercentCompareQuery,
+  ratioForComparisonMetric,
   wantsPercentDifference,
   type RatioOperand,
   isStatusBreakdownQuery,
@@ -1161,6 +1162,8 @@ export class AiToolsService {
       | 'totalBudget'
       | 'realization'
       | 'realizationPct'
+      | 'materialPct'
+      | 'jasaPct'
       | 'remaining'
       | 'materialBudget'
       | 'jasaBudget' = 'totalBudget',
@@ -1194,13 +1197,14 @@ export class AiToolsService {
     }
     const realizedOf = (row: typeof a) =>
       Number(row.materialSpent) + Number(row.jasaSpent);
+    const ratio = ratioForComparisonMetric(metric);
     const valueOf = (row: typeof a): number => {
+      if (ratio) {
+        const den = this.ratioFieldValue(row, ratio.den);
+        return den ? this.ratioFieldValue(row, ratio.num) / den : 0;
+      }
       const realized = realizedOf(row);
       if (metric === 'realization') return realized;
-      if (metric === 'realizationPct') {
-        const budget = Number(row.totalBudget);
-        return budget ? realized / budget : 0;
-      }
       if (metric === 'remaining') return Number(row.totalBudget) - realized;
       if (metric === 'materialBudget') return Number(row.materialBudget);
       if (metric === 'jasaBudget') return Number(row.jasaBudget);
@@ -1211,34 +1215,38 @@ export class AiToolsService {
       return formatPctId((part / whole) * 100);
     };
     const label =
-      metric === 'realization'
+      ratio?.label ||
+      (metric === 'realization'
         ? 'Realisasi'
-        : metric === 'realizationPct'
-          ? 'persentase realisasi terhadap total budget'
-          : metric === 'remaining'
-            ? 'Sisa Budget'
-            : metric === 'materialBudget'
-              ? 'Material Budget'
-              : metric === 'jasaBudget'
-                ? 'Jasa Budget'
-                : 'budget';
+        : metric === 'remaining'
+          ? 'Sisa Budget'
+          : metric === 'materialBudget'
+            ? 'Material Budget'
+            : metric === 'jasaBudget'
+              ? 'Jasa Budget'
+              : 'budget');
     const va = valueOf(a);
     const vb = valueOf(b);
     const winner = va === vb ? null : va > vb ? a : b;
     const loser = winner ? (winner === a ? b : a) : null;
-    const pctLine = (row: typeof a) =>
-      `${row.code}: ${fmtIdr(realizedOf(row))} / ${fmtIdr(Number(row.totalBudget))} × 100% ${
-        Number(row.totalBudget) && realizedOf(row) === 0
-          ? '= 0%'
-          : `≈ ${fmtPct(realizedOf(row), Number(row.totalBudget))}`
+    const pctLine = (row: typeof a) => {
+      const num = ratio
+        ? this.ratioFieldValue(row, ratio.num)
+        : realizedOf(row);
+      const den = ratio
+        ? this.ratioFieldValue(row, ratio.den)
+        : Number(row.totalBudget);
+      return `${row.code}: ${fmtIdr(num)} / ${fmtIdr(den)} × 100% ${
+        den && num === 0 ? '= 0%' : `≈ ${fmtPct(num, den)}`
       }`;
+    };
     let summary: string;
-    if (metric === 'realizationPct') {
+    if (ratio) {
       const head = winner
         ? `${winner.code} memiliki ${label} yang lebih besar.`
         : `${a.code} dan ${b.code} memiliki ${label} yang sama.`;
       summary = [pctLine(a), pctLine(b), '', head].join('\n');
-      if (opts.interpret) {
+      if (opts.interpret && metric === 'realizationPct') {
         const noteA = realizedOf(a)
           ? `${a.code} sudah mencatat sebagian realisasi finansial`
           : `${a.code} belum mencatat realisasi finansial`;

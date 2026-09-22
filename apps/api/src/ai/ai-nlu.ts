@@ -1815,6 +1815,8 @@ export type ComparisonMetric =
   | 'totalBudget'
   | 'realization'
   | 'realizationPct'
+  | 'materialPct'
+  | 'jasaPct'
   | 'remaining'
   | 'materialBudget'
   | 'jasaBudget';
@@ -1830,21 +1832,23 @@ export function detectPercentOperandPairs(text: string): RatioOperand[] {
   const m = normalizeId(primaryUtterance(text));
   if (!/(persen|persentase|%\b)/.test(m)) return [];
   const out: RatioOperand[] = [];
+  const usage = /(spent|terpakai|penggunaan|utilisasi|pemakaian)/.test(m);
   if (
     /\bmaterial\b/.test(m) &&
-    /(spent|terpakai)/.test(m) &&
-    /(budget|anggaran)/.test(m)
+    /(budget|anggaran)/.test(m) &&
+    (usage || !/(realisasi)/.test(m))
   ) {
     out.push({
       num: 'materialSpent',
       den: 'materialBudget',
-      label: 'material spent terhadap material budget',
+      label: 'penggunaan material budget',
     });
   }
   if (
     /\b(jasa|service)\b/.test(m) &&
-    /(spent|terpakai)/.test(m) &&
-    /(budget|anggaran)/.test(m)
+    /(budget|anggaran)/.test(m) &&
+    (usage ||
+      (/(spent|terpakai)/.test(m) && !/(realisasi)/.test(m)))
   ) {
     out.push({
       num: 'jasaSpent',
@@ -1888,9 +1892,24 @@ export function detectComparisonMetrics(text: string): ComparisonMetric[] {
     wantsPct &&
     /(realisasi)/.test(m) &&
     !/\bmaterial\s*spent\b/.test(m) &&
-    !/\bjasa\s*spent\b/.test(m)
+    !/\bjasa\s*spent\b/.test(m) &&
+    !/\bmaterial\b/.test(m)
   ) {
     return ['realizationPct'];
+  }
+  if (
+    wantsPct &&
+    /\bmaterial\b/.test(m) &&
+    !/\b(jasa|service)\b/.test(m)
+  ) {
+    return ['materialPct'];
+  }
+  if (
+    wantsPct &&
+    /\b(jasa|service)\b/.test(m) &&
+    !/\bmaterial\b/.test(m)
+  ) {
+    return ['jasaPct'];
   }
   const out: ComparisonMetric[] = [];
   const wantsReal = /(realisasi|spent|terpakai)/.test(m);
@@ -1914,10 +1933,39 @@ export function detectComparisonMetric(text: string): ComparisonMetric | null {
 export function comparisonMetricWord(metric: ComparisonMetric): string {
   if (metric === 'realization') return 'realisasi';
   if (metric === 'realizationPct') return 'persentase realisasi';
+  if (metric === 'materialPct') return 'persentase penggunaan material budget';
+  if (metric === 'jasaPct') return 'persentase penggunaan jasa budget';
   if (metric === 'remaining') return 'sisa';
   if (metric === 'materialBudget') return 'material';
   if (metric === 'jasaBudget') return 'jasa';
   return 'budget';
+}
+
+export function ratioForComparisonMetric(
+  metric: ComparisonMetric,
+): RatioOperand | null {
+  if (metric === 'realizationPct') {
+    return {
+      num: 'realized',
+      den: 'totalBudget',
+      label: 'persentase realisasi terhadap total budget',
+    };
+  }
+  if (metric === 'materialPct') {
+    return {
+      num: 'materialSpent',
+      den: 'materialBudget',
+      label: 'persentase penggunaan material budget',
+    };
+  }
+  if (metric === 'jasaPct') {
+    return {
+      num: 'jasaSpent',
+      den: 'jasaBudget',
+      label: 'persentase penggunaan jasa budget',
+    };
+  }
+  return null;
 }
 export function hasActiveStatusNegation(text: string): boolean {
   const m = normalizeId(text);

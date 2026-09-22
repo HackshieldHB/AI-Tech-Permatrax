@@ -2391,6 +2391,9 @@ export class AiService {
                 metric?:
                   | 'totalBudget'
                   | 'realization'
+                  | 'realizationPct'
+                  | 'materialPct'
+                  | 'jasaPct'
                   | 'remaining'
                   | 'materialBudget'
                   | 'jasaBudget';
