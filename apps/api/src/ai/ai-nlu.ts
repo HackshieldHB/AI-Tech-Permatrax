@@ -1819,11 +1819,77 @@ export type ComparisonMetric =
   | 'materialBudget'
   | 'jasaBudget';
 
+export type RatioOperand = {
+  num: 'realized' | 'materialSpent' | 'jasaSpent';
+  den: 'totalBudget' | 'materialBudget' | 'jasaBudget';
+  label: string;
+};
+
+/** Map PERCENTAGE(numerator, denominator) from explicit Finance fields. */
+export function detectPercentOperandPairs(text: string): RatioOperand[] {
+  const m = normalizeId(primaryUtterance(text));
+  if (!/(persen|persentase|%\b)/.test(m)) return [];
+  const out: RatioOperand[] = [];
+  if (
+    /\bmaterial\b/.test(m) &&
+    /(spent|terpakai)/.test(m) &&
+    /(budget|anggaran)/.test(m)
+  ) {
+    out.push({
+      num: 'materialSpent',
+      den: 'materialBudget',
+      label: 'material spent terhadap material budget',
+    });
+  }
+  if (
+    /\b(jasa|service)\b/.test(m) &&
+    /(spent|terpakai)/.test(m) &&
+    /(budget|anggaran)/.test(m)
+  ) {
+    out.push({
+      num: 'jasaSpent',
+      den: 'jasaBudget',
+      label: 'jasa spent terhadap jasa budget',
+    });
+  }
+  if (
+    !out.length &&
+    /(realisasi)/.test(m) &&
+    /(budget|anggaran)/.test(m)
+  ) {
+    out.push({
+      num: 'realized',
+      den: 'totalBudget',
+      label: 'realisasi terhadap total budget',
+    });
+  }
+  return out;
+}
+
+export function wantsPercentDifference(text: string): boolean {
+  const m = normalizeId(text);
+  return /(selisih).*(persen|persentase|nya)|sebutkan selisih/.test(m);
+}
+
+export function isIntraObjectPercentCompareQuery(text: string): boolean {
+  if (extractExplicitEntityCodes(text).length >= 2) return false;
+  const pairs = detectPercentOperandPairs(text);
+  if (pairs.length >= 2) return true;
+  return (
+    isIntraObjectMetricCompareQuery(text) &&
+    /(persen|persentase|%\b)/.test(normalizeId(text))
+  );
+}
+
 export function detectComparisonMetrics(text: string): ComparisonMetric[] {
   const m = normalizeId(primaryUtterance(text));
-  const wantsPct =
-    /(persen|persentase|%\b|terhadap (total\s*)?budget)/.test(m);
-  if (wantsPct && /(realisasi|spent|terpakai)/.test(m)) {
+  const wantsPct = /(persen|persentase|%\b)/.test(m);
+  if (
+    wantsPct &&
+    /(realisasi)/.test(m) &&
+    !/\bmaterial\s*spent\b/.test(m) &&
+    !/\bjasa\s*spent\b/.test(m)
+  ) {
     return ['realizationPct'];
   }
   const out: ComparisonMetric[] = [];
@@ -2306,7 +2372,8 @@ export function extractHierarchyConstraint(
 export function detectFinanceMode(text: string): FinanceMode {
   const m = normalizeId(primaryUtterance(text));
 
-  if (isObjectComparisonQuery(text)) return 'search';
+  if (isObjectComparisonQuery(text) || isIntraObjectPercentCompareQuery(text))
+    return 'search';
   if (isStatusBreakdownQuery(text)) return 'status_breakdown';
 
   // PAI-FNC-004: ranking with dynamic metric (before generic overbudget/summary)
@@ -2483,6 +2550,24 @@ export function fmtIdr(n: number): string {
     currency: 'IDR',
     maximumFractionDigits: 0,
   }).format(n);
+}
+
+export function formatPctId(p: number): string {
+  if (!Number.isFinite(p)) return 'n/a';
+  if (p === 0) return '0%';
+  return `${p.toLocaleString('id-ID', {
+    maximumFractionDigits: 2,
+    minimumFractionDigits: 0,
+  })}%`;
+}
+
+export function formatPctPoints(p: number): string {
+  if (!Number.isFinite(p)) return 'n/a';
+  if (p === 0) return '0';
+  return p.toLocaleString('id-ID', {
+    maximumFractionDigits: 2,
+    minimumFractionDigits: 0,
+  });
 }
 
 export function fmtDateId(d = new Date()): string {

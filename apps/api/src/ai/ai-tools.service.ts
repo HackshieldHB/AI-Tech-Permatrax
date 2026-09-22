@@ -10,7 +10,13 @@ import {
   detectRankingDirection,
   detectRequestedRankingN,
   detectComparisonMetric,
+  detectPercentOperandPairs,
+  formatPctId,
+  formatPctPoints,
   hasActiveStatusNegation,
+  isIntraObjectPercentCompareQuery,
+  wantsPercentDifference,
+  type RatioOperand,
   isStatusBreakdownQuery,
   isStockQuantityRankingQuery,
   hasExplicitRankingMetric,
@@ -495,7 +501,18 @@ export class AiToolsService {
             /(disimpulkan|kesimpulan|interpretasi|apa yang bisa disimpulkan)/.test(
               normalizeId(bareMessage),
             ),
+          difference: wantsPercentDifference(bareMessage),
         },
+      );
+    }
+    if (
+      compareCodes.length === 1 &&
+      isIntraObjectPercentCompareQuery(bareMessage)
+    ) {
+      return this.compareIntraObjectRatios(
+        user,
+        compareCodes[0],
+        detectPercentOperandPairs(bareMessage),
       );
     }
     if (
@@ -1147,7 +1164,7 @@ export class AiToolsService {
       | 'remaining'
       | 'materialBudget'
       | 'jasaBudget' = 'totalBudget',
-    opts: { interpret?: boolean } = {},
+    opts: { interpret?: boolean; difference?: boolean } = {},
   ): Promise<ToolTrace> {
     const rows = await this.prisma.financeProject.findMany({
       where: {
@@ -1191,12 +1208,7 @@ export class AiToolsService {
     };
     const fmtPct = (part: number, whole: number): string => {
       if (!whole) return 'n/a';
-      const p = (part / whole) * 100;
-      if (p === 0) return '0%';
-      return `${p.toLocaleString('id-ID', {
-        maximumFractionDigits: 2,
-        minimumFractionDigits: 0,
-      })}%`;
+      return formatPctId((part / whole) * 100);
     };
     const label =
       metric === 'realization'
@@ -1242,6 +1254,13 @@ export class AiToolsService {
           `Berdasarkan data Finance Project yang tersedia, ${noteA}, sedangkan ${noteB}. Data tersebut saja tidak cukup untuk menyimpulkan progress atau performa operasional kedua project.`,
         ].join('\n');
       }
+      if (opts.difference) {
+        const pts = Math.abs(va - vb) * 100;
+        summary = [
+          summary,
+          `Selisih persentase ≈ ${formatPctPoints(pts)} percentage point.`,
+        ].join('\n');
+      }
     } else {
       summary = winner
         ? metric === 'totalBudget'
@@ -1254,6 +1273,108 @@ export class AiToolsService {
       ok: true,
       summary: [summary, `Data per ${fmtDateId()}.`].join('\n'),
       data: { mode: 'compare', metric, a, b },
+    };
+  }
+
+  private ratioFieldValue(
+    row: {
+      totalBudget: unknown;
+      materialBudget: unknown;
+      jasaBudget: unknown;
+      materialSpent: unknown;
+      jasaSpent: unknown;
+    },
+    field: RatioOperand['num'] | RatioOperand['den'],
+  ): number {
+    if (field === 'realized') {
+      return Number(row.materialSpent) + Number(row.jasaSpent);
+    }
+    if (field === 'materialSpent') return Number(row.materialSpent);
+    if (field === 'jasaSpent') return Number(row.jasaSpent);
+    if (field === 'materialBudget') return Number(row.materialBudget);
+    if (field === 'jasaBudget') return Number(row.jasaBudget);
+    return Number(row.totalBudget);
+  }
+
+  private async compareIntraObjectRatios(
+    user: AuthUser,
+    code: string,
+    pairs: RatioOperand[],
+  ): Promise<ToolTrace> {
+    const ops =
+      pairs.length >= 2
+        ? pairs.slice(0, 2)
+        : ([
+            {
+              num: 'materialSpent',
+              den: 'materialBudget',
+              label: 'material spent terhadap material budget',
+            },
+            {
+              num: 'jasaSpent',
+              den: 'jasaBudget',
+              label: 'jasa spent terhadap jasa budget',
+            },
+          ] satisfies RatioOperand[]);
+    const rows = await this.prisma.financeProject.findMany({
+      where: {
+        status: { not: 'ARCHIVED' },
+        code,
+        ...(this.canSeeAllFinance(user.role) ? {} : { createdById: user.userId }),
+      },
+      select: {
+        code: true,
+        name: true,
+        totalBudget: true,
+        materialBudget: true,
+        jasaBudget: true,
+        materialSpent: true,
+        jasaSpent: true,
+      },
+      take: 1,
+    });
+    const row = rows[0];
+    if (!row) {
+      return {
+        name: 'finance_analytics',
+        ok: true,
+        summary: `Tidak lengkap untuk menghitung persentase ${code}.`,
+      };
+    }
+    const lines = ops.map((op) => {
+      const num = this.ratioFieldValue(row, op.num);
+      const den = this.ratioFieldValue(row, op.den);
+      const pct =
+        den === 0
+          ? 'n/a'
+          : num === 0
+            ? '= 0%'
+            : `≈ ${formatPctId((num / den) * 100)}`;
+      return `${op.label}: ${fmtIdr(num)} / ${fmtIdr(den)} × 100% ${pct}`;
+    });
+    const pcts = ops.map((op) => {
+      const num = this.ratioFieldValue(row, op.num);
+      const den = this.ratioFieldValue(row, op.den);
+      return den ? num / den : 0;
+    });
+    const winnerIdx = pcts[0] === pcts[1] ? -1 : pcts[0] > pcts[1] ? 0 : 1;
+    const head =
+      winnerIdx < 0
+        ? `Persentase ${ops[0].label} dan ${ops[1].label} sama.`
+        : `Persentase penggunaan ${
+            ops[winnerIdx].num === 'materialSpent' ? 'Material Budget' : 'Jasa Budget'
+          } lebih besar.`;
+    return {
+      name: 'finance_analytics',
+      ok: true,
+      summary: [
+        `${row.code} — ${row.name}`,
+        ...lines,
+        '',
+        head,
+        `Data per ${fmtDateId()}.`,
+      ].join('\n'),
+      data: { mode: 'intra_ratio', code: row.code, pairs: ops },
     };
   }
 

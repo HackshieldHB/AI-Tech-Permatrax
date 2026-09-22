@@ -4810,6 +4810,100 @@ describe('PermaTrax AI chatbot (logic)', () => {
     expect(res.answer).not.toMatch(/belum mulai|tidak dikerjakan|terlambat/i);
   });
 
+  it('DIQ-010 RT-48: percent compare also states the requested difference', async () => {
+    const prisma = makePrisma();
+    const rows = [
+      {
+        code: 'FIN-2026-001',
+        name: 'One',
+        totalBudget: 1000000000,
+        materialBudget: 500000000,
+        jasaBudget: 500000000,
+        materialSpent: 6656680,
+        jasaSpent: 0,
+        status: 'ACTIVE',
+        hierarchyLevel: 'SITE',
+        isOverbudget: false,
+        poCustomerNumber: null,
+        parent: null,
+        description: 'one',
+      },
+      {
+        code: 'FIN-2026-005',
+        name: 'Five',
+        totalBudget: 3000000000,
+        materialBudget: 0,
+        jasaBudget: 0,
+        materialSpent: 0,
+        jasaSpent: 0,
+        status: 'ACTIVE',
+        hierarchyLevel: 'SITE',
+        isOverbudget: false,
+        poCustomerNumber: null,
+        parent: null,
+        description: 'five',
+      },
+    ];
+    (prisma as any).financeProject.findMany = jest.fn(async (args: any) => {
+      const eq = args?.where?.code?.equals;
+      const inn = args?.where?.code?.in;
+      if (eq) return rows.filter((r) => r.code === String(eq).toUpperCase());
+      if (inn) return rows.filter((r) => inn.includes(r.code));
+      return rows;
+    });
+    const { ai } = makeServices(prisma);
+    const res = await ai.chat(
+      user,
+      'Hitung persentase realisasi terhadap total budget untuk FIN-2026-001 dan FIN-2026-005, lalu bandingkan dan sebutkan selisih persentasenya.',
+    );
+    expect(res.intent).not.toBe('clarify');
+    expect(res.answer).toMatch(/FIN-2026-001/);
+    expect(res.answer).toMatch(/FIN-2026-005/);
+    expect(res.answer).toMatch(/lebih besar/i);
+    expect(res.answer).toMatch(/selisih persentase/i);
+    expect(res.answer).toMatch(/0[,.]67/);
+    expect(res.answer).toMatch(/percentage point/i);
+  });
+
+  it('DIQ-010 RT-49: intra-object material vs jasa spent percentages', async () => {
+    const prisma = makePrisma();
+    const rows = [
+      {
+        code: 'FIN-2026-001',
+        name: 'iForte Bandung 1',
+        totalBudget: 1000000000,
+        materialBudget: 500000000,
+        jasaBudget: 500000000,
+        materialSpent: 5556680,
+        jasaSpent: 1100000,
+        status: 'ACTIVE',
+        hierarchyLevel: 'STANDALONE',
+        isOverbudget: false,
+        poCustomerNumber: null,
+        parent: null,
+        description: 'one',
+      },
+    ];
+    (prisma as any).financeProject.findMany = jest.fn(async (args: any) => {
+      const eq = args?.where?.code?.equals;
+      const inn = args?.where?.code?.in;
+      if (eq) return rows.filter((r) => r.code === String(eq).toUpperCase());
+      if (inn) return rows.filter((r) => inn.includes(r.code));
+      return rows;
+    });
+    const { ai } = makeServices(prisma);
+    const res = await ai.chat(
+      user,
+      'Untuk FIN-2026-001, berapa persen material spent terhadap material budget dan jasa spent terhadap jasa budget? Bandingkan keduanya.',
+    );
+    expect(res.intent).not.toBe('clarify');
+    expect(res.answer).toMatch(/FIN-2026-001/);
+    expect(res.answer).toMatch(/1[,.]11\s*%/);
+    expect(res.answer).toMatch(/0[,.]22\s*%/);
+    expect(res.answer).toMatch(/Material Budget lebih besar/i);
+    expect(res.answer).not.toMatch(/Top 10|paling terbesar/i);
+  });
+
   it('DIQ-020: stock ranking after PR does not replay pending PR', async () => {
     const prisma = makePrisma();
     (prisma as any).purchaseRequest.count = jest.fn().mockResolvedValue(8);

@@ -66,6 +66,7 @@ import {
   shouldReuseActiveResultSet,
   isActiveObjectAttributeQuery,
   isObjectComparisonQuery,
+  isIntraObjectPercentCompareQuery,
   isComparisonMetricFollowUp,
   isShortComparisonMetricFollowUp,
   isExplicitGlobalFinancePopulation,
@@ -427,9 +428,28 @@ export class AiService {
     if (
       !liveObjectLookup &&
       !businessDiagnostic &&
+      isIntraObjectPercentCompareQuery(text)
+    ) {
+      const code =
+        extractExplicitEntityCode(text) || extractSessionProjectCode(session);
+      if (code) {
+        liveObjectLookup = `Bandingkan persentase material jasa project ${code}. ${text}`;
+        intent = 'comparison';
+        session = {
+          ...session,
+          activeObject: code,
+          activeReference: code,
+        };
+      }
+    }
+
+    if (
+      !liveObjectLookup &&
+      !businessDiagnostic &&
       !knowledgeTurn &&
       !isResultSetScopedFollowUp(text) &&
       !isObjectComparisonQuery(text) &&
+      !isIntraObjectPercentCompareQuery(text) &&
       !isComparisonMetricFollowUp(text) &&
       !inheritCompare &&
       !/(visit|requestor|requester|pemohon|kunjungan)/.test(normalizeId(text)) &&
