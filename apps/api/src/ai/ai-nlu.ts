@@ -1725,9 +1725,12 @@ export function isObjectComparisonQuery(text: string): boolean {
   if (/(semua|seluruh)\s+(project|proyek)/.test(m)) return false;
   const compareVerb = /(bandingkan|dibandingkan|dibanding)/.test(m);
   const compareAdj = /(lebih besar|lebih kecil)/.test(m);
-  if (!compareVerb && !compareAdj) return false;
+  const compareHighLow =
+    extractExplicitEntityCodes(text).length >= 2 &&
+    /(lebih tinggi|lebih rendah)/.test(m);
+  if (!compareVerb && !compareAdj && !compareHighLow) return false;
   return (
-    /(tadi|itu|budget|yang ini|seg|fin|site|realisasi|sisa|material|sisi|sekarang|kedua|keduanya)/.test(
+    /(tadi|itu|budget|yang ini|seg|fin|site|realisasi|sisa|material|jasa|sisi|sekarang|kedua|keduanya|persen|penggunaan)/.test(
       m,
     )
   );
@@ -1743,7 +1746,7 @@ export function isComparisonMetricFollowUp(text: string): boolean {
   if (/(tampilkan|list|daftar)\s+\d+/.test(m)) return false;
   return (
     /(bandingkan|dibandingkan|dibanding)/.test(m) &&
-    /(realisasi|budget|anggaran|sisa|material|jasa|sisi|lebih besar|lebih kecil|sekarang)/.test(
+    /(realisasi|budget|anggaran|sisa|material|jasa|sisi|lebih besar|lebih kecil|lebih tinggi|lebih rendah|sekarang)/.test(
       m,
     )
   );

@@ -490,7 +490,9 @@ export class AiToolsService {
 
     if (
       compareCodes.length >= 2 &&
-      /(banding|dibanding|lebih besar|lebih kecil)/.test(normalizeId(bareMessage))
+      /(banding|dibanding|lebih besar|lebih kecil|lebih tinggi|lebih rendah)/.test(
+        normalizeId(bareMessage),
+      )
     ) {
       return this.compareFinanceMetrics(
         user,

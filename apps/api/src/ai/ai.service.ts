@@ -560,7 +560,9 @@ export class AiService {
       (isObjectComparisonQuery(text) ||
         inheritCompare ||
         (extractExplicitEntityCodes(text).length >= 2 &&
-          /(bandingkan|dibandingkan|dibanding)/.test(normalizeId(text))))
+          /(bandingkan|dibandingkan|dibanding|lebih besar|lebih kecil|lebih tinggi|lebih rendah)/.test(
+            normalizeId(text),
+          )))
     ) {
       const codes = extractExplicitEntityCodes(text);
       const current =
