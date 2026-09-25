@@ -1730,7 +1730,7 @@ export function isObjectComparisonQuery(text: string): boolean {
     /(lebih tinggi|lebih rendah)/.test(m);
   if (!compareVerb && !compareAdj && !compareHighLow) return false;
   return (
-    /(tadi|itu|budget|yang ini|seg|fin|site|realisasi|sisa|material|jasa|sisi|sekarang|kedua|keduanya|persen|penggunaan)/.test(
+    /(tadi|itu|budget|anggaran|yang ini|seg|fin|site|realisasi|sisa|material|jasa|sisi|sekarang|kedua|keduanya|persen|penggunaan|rasio|porsi|terpakai)/.test(
       m,
     )
   );
@@ -1830,12 +1830,27 @@ export type RatioOperand = {
   label: string;
 };
 
+/** Ratio / porsi / persentase of spent vs allocated budget. */
+export function isUtilizationRatioQuery(text: string): boolean {
+  const m = normalizeId(primaryUtterance(text));
+  return (
+    /(persen|persentase|%\b|rasio|porsi)/.test(m) ||
+    /(penggunaan).*(budget|anggaran)/.test(m) ||
+    /(porsi).*(anggaran|budget)/.test(m) ||
+    /(terpakai|spent|digunakan|menggunakan).*(terhadap|dari).*(anggaran|budget)/.test(
+      m,
+    )
+  );
+}
+
 /** Map PERCENTAGE(numerator, denominator) from explicit Finance fields. */
 export function detectPercentOperandPairs(text: string): RatioOperand[] {
   const m = normalizeId(primaryUtterance(text));
-  if (!/(persen|persentase|%\b)/.test(m)) return [];
+  if (!isUtilizationRatioQuery(text)) return [];
   const out: RatioOperand[] = [];
-  const usage = /(spent|terpakai|penggunaan|utilisasi|pemakaian)/.test(m);
+  const usage = /(spent|terpakai|penggunaan|utilisasi|pemakaian|porsi|rasio)/.test(
+    m,
+  );
   if (
     /\bmaterial\b/.test(m) &&
     /(budget|anggaran)/.test(m) &&
@@ -1856,7 +1871,7 @@ export function detectPercentOperandPairs(text: string): RatioOperand[] {
     out.push({
       num: 'jasaSpent',
       den: 'jasaBudget',
-      label: 'jasa spent terhadap jasa budget',
+      label: 'rasio penggunaan anggaran jasa',
     });
   }
   if (
@@ -1890,15 +1905,13 @@ export function isIntraObjectPercentCompareQuery(text: string): boolean {
 
 export function detectComparisonMetrics(text: string): ComparisonMetric[] {
   const m = normalizeId(primaryUtterance(text));
-  const wantsPct = /(persen|persentase|%\b)/.test(m);
+  const wantsPct = isUtilizationRatioQuery(text);
   if (
     wantsPct &&
-    /(realisasi)/.test(m) &&
-    !/\bmaterial\s*spent\b/.test(m) &&
-    !/\bjasa\s*spent\b/.test(m) &&
+    /\b(jasa|service)\b/.test(m) &&
     !/\bmaterial\b/.test(m)
   ) {
-    return ['realizationPct'];
+    return ['jasaPct'];
   }
   if (
     wantsPct &&
@@ -1909,10 +1922,13 @@ export function detectComparisonMetrics(text: string): ComparisonMetric[] {
   }
   if (
     wantsPct &&
-    /\b(jasa|service)\b/.test(m) &&
-    !/\bmaterial\b/.test(m)
+    /(realisasi)/.test(m) &&
+    !/\bmaterial\s*spent\b/.test(m) &&
+    !/\bjasa\s*spent\b/.test(m) &&
+    !/\bmaterial\b/.test(m) &&
+    !/\b(jasa|service)\b/.test(m)
   ) {
-    return ['jasaPct'];
+    return ['realizationPct'];
   }
   const out: ComparisonMetric[] = [];
   const wantsReal = /(realisasi|spent|terpakai)/.test(m);

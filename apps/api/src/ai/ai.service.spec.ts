@@ -5028,6 +5028,68 @@ describe('PermaTrax AI chatbot (logic)', () => {
     expect(res.answer).not.toMatch(/Top 10|paling terbesar/i);
   });
 
+  it('DIQ-010 RT-58: jasa utilization paraphrases stay jasa ratio, not total realization', async () => {
+    expect(
+      detectComparisonMetric(
+        'Di antara FIN-2026-001 dan FIN-2026-005, mana yang sudah menggunakan porsi anggaran jasa lebih besar? Jawab berdasarkan rasio jasa yang sudah terpakai terhadap anggaran jasa masing-masing.',
+      ),
+    ).toBe('jasaPct');
+    const prisma = makePrisma();
+    const rows = [
+      {
+        code: 'FIN-2026-001',
+        name: 'iForte Bandung 1',
+        totalBudget: 1000000000,
+        materialBudget: 500000000,
+        jasaBudget: 500000000,
+        materialSpent: 5556680,
+        jasaSpent: 1100000,
+        status: 'ACTIVE',
+        hierarchyLevel: 'STANDALONE',
+        isOverbudget: false,
+        poCustomerNumber: null,
+        parent: null,
+        description: 'one',
+      },
+      {
+        code: 'FIN-2026-005',
+        name: 'Five',
+        totalBudget: 3000000000,
+        materialBudget: 1000000000,
+        jasaBudget: 1000000000,
+        materialSpent: 0,
+        jasaSpent: 0,
+        status: 'ACTIVE',
+        hierarchyLevel: 'SITE',
+        isOverbudget: false,
+        poCustomerNumber: null,
+        parent: null,
+        description: 'five',
+      },
+    ];
+    (prisma as any).financeProject.findMany = jest.fn(async (args: any) => {
+      const eq = args?.where?.code?.equals;
+      const inn = args?.where?.code?.in;
+      if (eq) return rows.filter((r) => r.code === String(eq).toUpperCase());
+      if (inn) return rows.filter((r) => inn.includes(r.code));
+      return rows;
+    });
+    const { ai } = makeServices(prisma);
+    const res = await ai.chat(
+      user,
+      'Di antara FIN-2026-001 dan FIN-2026-005, mana yang sudah menggunakan porsi anggaran jasa lebih besar? Jawab berdasarkan rasio jasa yang sudah terpakai terhadap anggaran jasa masing-masing.',
+    );
+    expect(res.intent).not.toBe('clarify');
+    expect(res.answer).toMatch(/FIN-2026-001/);
+    expect(res.answer).toMatch(/FIN-2026-005/);
+    expect(res.answer).toMatch(/0[,.]22\s*%/);
+    expect(res.answer).toMatch(/= 0%|0%/);
+    expect(res.answer).toMatch(/lebih besar/i);
+    expect(res.answer).not.toMatch(/Realisasi FIN-2026-001 lebih besar/i);
+    expect(res.answer).not.toMatch(/Rp6[\s.]656[\s.]680/);
+    expect(res.answer).not.toMatch(/Top 10|paling terbesar/i);
+  });
+
   it('DIQ-020: stock ranking after PR does not replay pending PR', async () => {
     const prisma = makePrisma();
     (prisma as any).purchaseRequest.count = jest.fn().mockResolvedValue(8);
