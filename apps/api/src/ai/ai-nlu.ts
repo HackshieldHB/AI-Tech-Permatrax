@@ -1834,13 +1834,24 @@ export type RatioOperand = {
 export function isUtilizationRatioQuery(text: string): boolean {
   const m = normalizeId(primaryUtterance(text));
   return (
-    /(persen|persentase|%\b|rasio|porsi)/.test(m) ||
-    /(penggunaan).*(budget|anggaran)/.test(m) ||
-    /(porsi).*(anggaran|budget)/.test(m) ||
-    /(terpakai|spent|digunakan|menggunakan).*(terhadap|dari).*(anggaran|budget)/.test(
+    /(persen|persentase|%\b|rasio|porsi|pemakaian)/.test(m) ||
+    /(penggunaan).*(budget|anggaran|jatah|alokasi|biaya)/.test(m) ||
+    /(porsi).*(anggaran|budget|jatah|alokasi)/.test(m) ||
+    /(terpakai|kepakai|spent|digunakan|menggunakan).*(terhadap|dari|dibanding)/.test(
       m,
-    )
+    ) ||
+    /(jatah|alokasi).*(biaya|jasa|material|budget|anggaran)/.test(m)
   );
+}
+
+/** Jasa spent vs jasa allocation, including natural aliases (PAI-DIQ-010 RT-59). */
+export function isJasaUtilizationQuery(text: string): boolean {
+  const m = normalizeId(primaryUtterance(text));
+  if (!/\b(jasa|service)\b/.test(m) || /\bmaterial\b/.test(m)) return false;
+  const used =
+    /(terpakai|kepakai|spent|digunakan|pemakaian|penggunaan)/.test(m);
+  const alloc = /(jatah|alokasi|anggaran|budget|biaya jasa)/.test(m);
+  return used && alloc;
 }
 
 /** Map PERCENTAGE(numerator, denominator) from explicit Finance fields. */
@@ -1848,9 +1859,10 @@ export function detectPercentOperandPairs(text: string): RatioOperand[] {
   const m = normalizeId(primaryUtterance(text));
   if (!isUtilizationRatioQuery(text)) return [];
   const out: RatioOperand[] = [];
-  const usage = /(spent|terpakai|penggunaan|utilisasi|pemakaian|porsi|rasio)/.test(
+  const usage = /(spent|terpakai|kepakai|penggunaan|utilisasi|pemakaian|porsi|rasio)/.test(
     m,
   );
+  const jasaAlloc = /(budget|anggaran|jatah|alokasi|biaya jasa)/.test(m);
   if (
     /\bmaterial\b/.test(m) &&
     /(budget|anggaran)/.test(m) &&
@@ -1864,9 +1876,9 @@ export function detectPercentOperandPairs(text: string): RatioOperand[] {
   }
   if (
     /\b(jasa|service)\b/.test(m) &&
-    /(budget|anggaran)/.test(m) &&
+    jasaAlloc &&
     (usage ||
-      (/(spent|terpakai)/.test(m) && !/(realisasi)/.test(m)))
+      (/(spent|terpakai|kepakai)/.test(m) && !/(realisasi)/.test(m)))
   ) {
     out.push({
       num: 'jasaSpent',
@@ -1905,9 +1917,9 @@ export function isIntraObjectPercentCompareQuery(text: string): boolean {
 
 export function detectComparisonMetrics(text: string): ComparisonMetric[] {
   const m = normalizeId(primaryUtterance(text));
-  const wantsPct = isUtilizationRatioQuery(text);
+  const wantsPct = isUtilizationRatioQuery(text) || isJasaUtilizationQuery(text);
   if (
-    wantsPct &&
+    (wantsPct || isJasaUtilizationQuery(text)) &&
     /\b(jasa|service)\b/.test(m) &&
     !/\bmaterial\b/.test(m)
   ) {
