@@ -82,6 +82,7 @@ import {
   detectFinanceMetrics,
   detectFinanceMode,
   normalizeId,
+  detectAnalyticalRequest,
   shouldApplySessionFinanceFilters,
   needsScopeClarification,
   refineRecoveryQuery,
@@ -97,9 +98,15 @@ import {
   buildBusinessDiagnosticAnswer,
   isBusinessDiagnosticQuery,
   isKnowledgeDefinitionQuery,
+  isPendingApprovalQuery,
   isMetaReasoningInquiry,
   isUnknownInformationInquiry,
   mapResponseStrategy,
+  extractFinanceCodes,
+  isCausalFollowUp,
+  isCausalQuery,
+  isFinanceInterpretationQuery,
+  isObjectScopedReference,
   type UnknownKind,
 } from './ai-nlu';
 import {
@@ -140,6 +147,7 @@ import {
   type ResponseStrategy,
   type RetrievalStrategy,
 } from './ai-session';
+import { buildCausalBoundaryHoldAnswer } from './ai-analytics-ops';
 
 export type ChatCitation = {
   title: string;
@@ -346,7 +354,14 @@ export class AiService {
 
     // PAI-CSM-002: Conversation State follow-ups are always data — never Guide
     const knowledgeTurn = isKnowledgeQaCandidate(text, session, lastAssistant);
+    // PAI-DIQ-010/012: analytical ops (describe/compare/ratio/why) need live operands
+    const analyticalNow =
+      detectAnalyticalRequest(text) ||
+      isFinanceInterpretationQuery(text) ||
+      isCausalQuery(text) ||
+      isCausalFollowUp(text);
     const stateFollowUp =
+      !analyticalNow &&
       !!session.activeTopic &&
       !!(
         session.activeObject ||
@@ -430,6 +445,7 @@ export class AiService {
 
     if (
       !liveObjectLookup &&
+      !analyticalNow &&
       !businessDiagnostic &&
       isIntraObjectPercentCompareQuery(text)
     ) {
@@ -448,9 +464,11 @@ export class AiService {
 
     if (
       !liveObjectLookup &&
+      !analyticalNow &&
       !businessDiagnostic &&
       !knowledgeTurn &&
       !isResultSetScopedFollowUp(text) &&
+      !isPendingApprovalQuery(text) &&
       !isObjectComparisonQuery(text) &&
       !isIntraObjectPercentCompareQuery(text) &&
       !isComparisonMetricFollowUp(text) &&
@@ -546,6 +564,9 @@ export class AiService {
       !referenceDetail &&
       !liveObjectLookup &&
       !inheritCompare &&
+      !analyticalNow &&
+      !isPendingApprovalQuery(text) &&
+      !isObjectComparisonQuery(text) &&
       isActiveObjectAttributeQuery(text) &&
       extractSessionProjectCode(session)
     ) {
@@ -560,6 +581,7 @@ export class AiService {
     if (
       !referenceDetail &&
       !liveObjectLookup &&
+      !(analyticalNow && extractFinanceCodes(text).length >= 2) &&
       (isObjectComparisonQuery(text) ||
         inheritCompare ||
         (extractExplicitEntityCodes(text).length >= 2 &&
@@ -640,6 +662,9 @@ export class AiService {
     if (
       !referenceDetail &&
       !liveObjectLookup &&
+      !analyticalNow &&
+      !isResultSetScopedFollowUp(text) &&
+      !isPendingApprovalQuery(text) &&
       (hasConversationalReference(text) || isContextDependentFollowUp(text)) &&
       session.activeTopic &&
       !isOrdinalReference(text) &&
@@ -700,6 +725,39 @@ export class AiService {
       effectiveText = liveObjectLookup;
       intent = 'data';
     }
+
+    // PAI-DIQ-010: pin object-scoped interpretation to Active Object (never ranking)
+    const activeCode =
+      extractFinanceCodes(session.activeObject || '')[0] ||
+      extractFinanceCodes(session.activeReference || '')[0] ||
+      null;
+    if (
+      (isObjectScopedReference(text) ||
+        isFinanceInterpretationQuery(text) ||
+        isCausalQuery(text) ||
+        isCausalFollowUp(text)) &&
+      !isObjectComparisonQuery(text) &&
+      !inheritCompare &&
+      activeCode &&
+      extractFinanceCodes(text).length === 0
+    ) {
+      effectiveText = `${text} [ACTIVE_OBJECT:${activeCode}]`;
+      if (intent === 'howto' || intent === 'faq') intent = 'data';
+    }
+
+    // PAI-DIQ-012: once evidence is exhausted, do not replay Why1–Why3
+    const causalSameObject =
+      !session.causalObject ||
+      !activeCode ||
+      session.causalObject.toUpperCase().includes(activeCode) ||
+      (session.activeObject || '').toUpperCase().includes(
+        (session.causalObject || '').toUpperCase(),
+      );
+    const holdCausalBoundary =
+      session.causalBoundaryReached &&
+      causalSameObject &&
+      isCausalFollowUp(text) &&
+      extractFinanceCodes(text).length === 0;
 
     // BHV-001/005: after correction/recovery, keep lane until explicit topic switch
     if (
@@ -1086,6 +1144,19 @@ export class AiService {
       });
     }
 
+    if (holdCausalBoundary) {
+      return reply(buildCausalBoundaryHoldAnswer(session.causalObject || session.activeObject), {
+        grounded: true,
+        strategy: 'summary',
+        responseStrategy: 'operational_analytics',
+        patch: {
+          causalBoundaryReached: true,
+          causalDepth: session.causalDepth,
+          causalObject: session.causalObject || session.activeObject,
+        },
+      });
+    }
+
     if (
       isUnsupportedKnowledgeCausalQuery(text) ||
       isUnsupportedKnowledgeCausalQuery(effectiveText)
@@ -1330,6 +1401,19 @@ export class AiService {
     }
 
     if (businessDiagnostic) {
+      const v12Analytical = detectAnalyticalRequest(text);
+      const v12CausalObject =
+        extractExplicitEntityCode(text) || extractSessionProjectCode(session);
+      if (
+        v12CausalObject &&
+        v12Analytical &&
+        (v12Analytical.kind === 'hypothesis' ||
+          v12Analytical.kind === 'premise' ||
+          v12Analytical.kind === 'causal_why')
+      ) {
+        liveObjectLookup = null;
+        if (intent === 'howto' || intent === 'faq') intent = 'data';
+      } else {
       const rawCode =
         extractExplicitEntityCode(text) || extractSessionProjectCode(session);
       const code =
@@ -1416,6 +1500,7 @@ export class AiService {
           },
         },
       );
+      }
     }
 
     // PAI P0/P1: recovery refine — merge constraints across modules, don't re-ask
@@ -1911,6 +1996,7 @@ export class AiService {
     if (
       useTools &&
       session.activeTopic === 'finance' &&
+      !isPendingApprovalQuery(text) &&
       !isStockQuantityRankingQuery(text) &&
       !toolNames.includes('finance_analytics') &&
       (/budget|project|proyek|berapa|jumlah|total|terbesar|terkecil|over|material|jasa|realisasi|sisa|active|closed|archived|site|segment|\bcari\b|\btop\s*\d+|(?:site|seg|fin)-\d{4}/i.test(
@@ -1953,7 +2039,10 @@ export class AiService {
     if (
       toolNames.includes('finance_analytics') &&
       hasUsableConstraint(session.constraints) &&
-      (shouldApplySessionFinanceFilters(text) || applyRankingInherit)
+      (shouldApplySessionFinanceFilters(text) || applyRankingInherit) &&
+      !isFinanceInterpretationQuery(text) &&
+      !isObjectScopedReference(text) &&
+      !isCausalQuery(text)
     ) {
       if (shouldApplySessionFinanceFilters(text)) {
         toolMessage = appendFinanceConstraintTags(
@@ -2167,6 +2256,8 @@ export class AiService {
       !hasUsefulTools &&
       intent === 'faq' &&
       !session.correctionApplied &&
+      !analyticalNow &&
+      extractFinanceCodes(text).length < 2 &&
       (!session.activeTopic || isKnowledgeDefinitionQuery(text))
     ) {
       const skipDomainLock =
@@ -2370,6 +2461,25 @@ export class AiService {
         : liveObjectLookup || rankingToolData
           ? null
           : session.pendingCandidates;
+    const causalTrace = toolTraces.find(
+      (t) =>
+        t.data &&
+        typeof t.data === 'object' &&
+        (t.data as { causal?: { depth?: number; boundaryReached?: boolean } })
+          .causal,
+    );
+    const causalMeta = causalTrace
+      ? (
+          causalTrace.data as {
+            causal: { depth?: number; boundaryReached?: boolean };
+          }
+        ).causal
+      : null;
+    const resetCausal =
+      /\bcari\b/i.test(text) &&
+      extractFinanceCodes(text).length > 0 &&
+      !isCausalQuery(text) &&
+      !isCausalFollowUp(text);
 
     return reply(answer, {
       citations,
@@ -2468,6 +2578,20 @@ export class AiService {
           if (rankingToolData) return null;
           return session.comparisonScope;
         })(),
+        ...(causalMeta
+          ? {
+              causalBoundaryReached: !!causalMeta.boundaryReached,
+              causalDepth: causalMeta.depth ?? 3,
+              causalObject:
+                extractEntityFromAnswer(answer) || session.activeObject,
+            }
+          : resetCausal
+            ? {
+                causalBoundaryReached: false,
+                causalDepth: 0,
+                causalObject: null,
+              }
+            : {}),
       },
     });
   }
@@ -2570,6 +2694,22 @@ ${
     ? `USULAN AKSI: ${input.proposedAction.label} → ${input.proposedAction.href}`
     : ''
 }`;
+
+    const deterministic = input.toolTraces.some(
+      (t) =>
+        t.data &&
+        typeof t.data === 'object' &&
+        (t.data as { deterministic?: boolean }).deterministic,
+    );
+    if (deterministic) {
+      const okTools = input.toolTraces.filter(
+        (t) => t.ok && t.summary && t.name !== '_session',
+      );
+      return {
+        answer: okTools.map((t) => t.summary).join('\n\n'),
+        ollamaUsed: false,
+      };
+    }
 
     const okTools = input.toolTraces.filter(
       (t) => t.ok && t.summary && t.name !== '_session',

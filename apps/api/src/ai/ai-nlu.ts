@@ -16,6 +16,16 @@ import {
   isUnknownInformationInquiry,
 } from './ai-strategy';
 import { buildPaiCapabilityCard } from './ai-capability';
+import {
+  extractFinanceCodes,
+  isCausalFollowUp,
+  isCausalQuery,
+  isExplicitRankingUtterance,
+  isFinanceInterpretationQuery,
+  isObjectScopedReference,
+  isPendingApprovalQuery,
+  detectAnalyticalRequest,
+} from './ai-analytics-ops';
 
 export { normalizeId };
 
@@ -977,6 +987,7 @@ export function isRankingPatchFollowUp(text: string): boolean {
   ) {
     return false;
   }
+  if (isCausalQuery(text) || isCausalFollowUp(text)) return false;
   if (isResultSetNarrowingQuery(text)) return false;
   if (isFinanceFilterClearQuery(text) || isFinanceFilterRemoveQuery(text)) {
     return false;
@@ -1036,6 +1047,7 @@ export function isModuleDataRankingQuery(text: string): boolean {
   ) {
     return false;
   }
+  if (isCausalQuery(text) || isCausalFollowUp(text)) return false;
   const m = normalizeId(text);
   return (
     /(paling sedikit|paling kecil|terendah|terkecil|lowest|min stock|hampir habis)/.test(
@@ -1226,10 +1238,22 @@ export function classifyPaIntent(text: string): PaIntent {
   }
 
   // Ranking / live data inside module — before howto keyword traps
-  if (isModuleDataRankingQuery(raw)) return 'analytics';
+  if (isModuleDataRankingQuery(raw) && !isFinanceInterpretationQuery(raw)) {
+    return 'analytics';
+  }
+
+  if (isCausalFollowUp(raw)) {
+    return 'analytics';
+  }
+
+  if (isFinanceInterpretationQuery(raw)) {
+    return /(bandingkan|dibanding|versus|\bvs\b)/.test(m)
+      ? 'comparison'
+      : 'data';
+  }
 
   // Causal 5-why before overbudget/analytics keyword traps
-  if (isBusinessDiagnosticQuery(raw)) return 'data';
+  if (isBusinessDiagnosticQuery(raw) || isCausalQuery(raw)) return 'data';
 
   if (
     (/(bagaimana|gimana|cara|langkah|tutorial|caranya|gimana cara)/.test(m) ||
@@ -1238,7 +1262,8 @@ export function classifyPaIntent(text: string): PaIntent {
       /^(ajuin|ajukan)\b/.test(m) ||
       /(ajuin|ajukan).*(budget|perizinan|dana|cash|stock|stok|visit)/.test(m) ||
       /(add stock|tambah stok|tambah barang)/.test(m)) &&
-    !isMetaReasoningInquiry(raw)
+    !isMetaReasoningInquiry(raw) &&
+    !isFinanceInterpretationQuery(raw)
   ) {
     return 'howto';
   }
@@ -1288,6 +1313,9 @@ export function isKnowledgeDefinitionQuery(text: string): boolean {
   const m = normalizeId(text);
   if (isProceduralGuidanceQuery(text)) return false;
   if (isModuleDataRankingQuery(text)) return false;
+  if (extractFinanceCodes(text).length >= 2) return false;
+  if (isObjectComparisonQuery(text)) return false;
+  if (detectAnalyticalRequest(text)) return false;
   if (isRoleCapabilityQuery(text) || isBusinessRoleResponsibilityQuery(text)) {
     return true;
   }
@@ -1499,10 +1527,13 @@ export function isResultSetNarrowingQuery(text: string): boolean {
  * use the default Finance dataset — not Active Object or leftover filters.
  */
 export function isStandaloneFinanceAggregateQuery(text: string): boolean {
-  if (hasConversationalReference(text)) return false;
+  if (hasConversationalReference(text) || isObjectScopedReference(text)) {
+    return false;
+  }
   if (isResultSetScopedFollowUp(text)) return false;
   if (isActiveObjectAttributeQuery(text)) return false;
   if (isObjectComparisonQuery(text)) return false;
+  if (isFinanceInterpretationQuery(text) || isCausalQuery(text)) return false;
   if (isFinanceContextFilterQuery(text) || isFinanceFilterOnlyQuery(text)) {
     return false;
   }
@@ -1706,7 +1737,10 @@ export function isResultSetScopedFollowUp(text: string): boolean {
     ) ||
     /(dari yang tadi).*(status|active|aktif|berapa|realisasi|site|segment)/.test(
       m,
-    )
+    ) ||
+    /(yang pending tadi|pending tadi|semua yang pending|semua yang tadi)/.test(m) ||
+    /(yang tadi itu).*(project|nominal|pengaju)/.test(m) ||
+    /(project apa).*(nominal).*(pengaju)/.test(m)
   );
 }
 
@@ -1771,8 +1805,11 @@ export function isZeroRealizationPopulationQuery(text: string): boolean {
 export function isActiveObjectAttributeQuery(text: string): boolean {
   const m = normalizeId(primaryUtterance(text));
   if (isResultSetScopedFollowUp(text)) return false;
+  if (isPendingApprovalQuery(text)) return false;
+  if (detectAnalyticalRequest(text)) return false;
   if (isModuleDataRankingQuery(text)) return false;
   if (/(semua|seluruh|keseluruhan)\s+(project|proyek)/.test(m)) return false;
+  if (/(pengaju|persen|persentase|terhadap)/.test(m)) return false;
   return (
     /\byang ini\b/.test(m) ||
     /(berapa).*(budgetnya|statusnya|realisasinya|nominalnya)/.test(m) ||
@@ -2418,6 +2455,10 @@ export function extractProjectNeedle(text: string): string | null {
 
   const code = text.match(/\b((?:SITE|SEG|FIN)-\d{4}-\d+)\b/i);
   if (code) return code[1];
+  const activeTag = text.match(
+    /\[ACTIVE_OBJECT:((?:SITE|SEG|FIN)-\d{4}-\d+)\]/i,
+  );
+  if (activeTag) return activeTag[1];
 
   const quoted = text.match(/["“](.+?)["”]/);
   if (quoted?.[1]?.trim()) return quoted[1].trim();
@@ -2535,21 +2576,37 @@ export function detectFinanceMode(text: string): FinanceMode {
   if (isObjectComparisonQuery(text) || isIntraObjectPercentCompareQuery(text))
     return 'search';
   if (isStatusBreakdownQuery(text)) return 'status_breakdown';
+  const codes = extractFinanceCodes(text);
+  if (isCausalQuery(text) && codes.length >= 1) {
+    return 'search';
+  }
+  if (
+    (isObjectScopedReference(text) ||
+      isFinanceInterpretationQuery(text) ||
+      codes.length >= 2) &&
+    !isExplicitRankingUtterance(text) &&
+    !/(berdasarkan|dilihat dari|lihat dari)\s+(total\s+)?(realisasi|budget|anggaran|material|jasa|sisa)/.test(
+      m,
+    )
+  ) {
+    return 'search';
+  }
 
   // PAI-FNC-004: ranking with dynamic metric (before generic overbudget/summary)
   const wantsRank =
-    /(top\s*\d*|terbesar|terkecil|ranking|paling besar|paling kecil|paling tinggi|paling rendah|highest|lowest|largest|smallest)/.test(
+    (/(top\s*\d*|terbesar|terkecil|ranking|paling besar|paling kecil|paling tinggi|paling rendah|highest|lowest|largest|smallest)/.test(
       m,
     ) ||
-    /(berdasarkan|dilihat dari|lihat dari)\s+(total\s+|persentase\s+|persen\s+|rasio\s+)?(realisasi|budget|anggaran|material|jasa|sisa)/.test(
-      m,
-    ) ||
-    /(kalau|gimana|bagaimana).*(berdasarkan|dari)\s+(realisasi|budget|material|jasa|sisa|persen)/.test(
-      m,
-    ) ||
-    (/\burutkan\b/.test(m) &&
-      /(persen|realisasi|budget|anggaran|tadi|itu)/.test(m)) ||
-    isRankingPatchFollowUp(text);
+      /(berdasarkan|dilihat dari|lihat dari)\s+(total\s+|persentase\s+|persen\s+|rasio\s+)?(realisasi|budget|anggaran|material|jasa|sisa)/.test(
+        m,
+      ) ||
+      /(kalau|gimana|bagaimana).*(berdasarkan|dari)\s+(realisasi|budget|material|jasa|sisa|persen)/.test(
+        m,
+      ) ||
+      (/\burutkan\b/.test(m) &&
+        /(persen|realisasi|budget|anggaran|tadi|itu)/.test(m)) ||
+      isRankingPatchFollowUp(text)) &&
+    !/(bandingkan|selisih|kenapa|mengapa)/.test(m);
   if (wantsRank) {
     const dir = detectRankingDirection(text);
     if (dir === 'asc') return 'smallest';
@@ -2952,4 +3009,14 @@ export {
   buildRecoveryAnswer,
   buildRecoveryFailedAnswer,
 } from './ai-recovery';
+
+export {
+  extractFinanceCodes,
+  isCausalFollowUp,
+  isCausalQuery,
+  isFinanceInterpretationQuery,
+  isObjectScopedReference,
+  isPendingApprovalQuery,
+  detectAnalyticalRequest,
+} from './ai-analytics-ops';
 

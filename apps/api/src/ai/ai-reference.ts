@@ -354,7 +354,7 @@ export function isAttributeFollowUp(text: string): boolean {
   const m = normalizeId(text);
   // Never treat howto / new-request phrasing as attribute follow-up
   if (
-    /(ajuin|ajukan|cara|gimana|bagaimana|tambah|buat|tutorial|langkah)/.test(m)
+    /(ajuin|ajukan|cara |tutorial|langkah|tambah barang|buat request)/.test(m)
   ) {
     return false;
   }
@@ -364,6 +364,10 @@ export function isAttributeFollowUp(text: string): boolean {
       m,
     )
   ) {
+    return false;
+  }
+  // "bagaimana cara" is howto; "bagaimana kondisi budget" is live data
+  if (/(bagaimana|gimana).*(cara|tutorial|langkah|ajuin|ajukan)/.test(m)) {
     return false;
   }
   // Strict short attribute phrases
@@ -640,7 +644,9 @@ export function hasConversationalReference(text: string): boolean {
     ) ||
     /\b(barang|project|item|proyek)\s+(pertama|kedua|ketiga|keempat|terakhir|ke-?\d+)\b/.test(
       m,
-    )
+    ) ||
+    /\b(project|proyek|data)\s+(ini|itu)\b/.test(m) ||
+    /\bdari data\b/.test(m)
   );
 }
 
