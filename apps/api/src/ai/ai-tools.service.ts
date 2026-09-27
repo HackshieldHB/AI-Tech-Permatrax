@@ -32,6 +32,7 @@ import {
   isProjectCountQuery,
   meaningfulTokens,
   normalizeId,
+  isZeroRealizationPopulationQuery,
   type FinanceMetric,
   type FinanceRankingMetric,
 } from './ai-nlu';
@@ -802,7 +803,12 @@ export class AiToolsService {
     }
 
     if (mode === 'filtered_list') {
-      return this.financeFilteredList(baseWhere, hierarchyLevel, statusWhere);
+      return this.financeFilteredList(
+        baseWhere,
+        hierarchyLevel,
+        statusWhere,
+        isZeroRealizationPopulationQuery(bareMessage),
+      );
     }
 
     if (mode === 'search') {
@@ -1000,8 +1006,9 @@ export class AiToolsService {
     baseWhere: Prisma.FinanceProjectWhereInput,
     hierarchyLevel: 'SITE' | 'SEGMENT' | 'STANDALONE' | null,
     statusWhere: Prisma.FinanceProjectWhereInput['status'],
+    zeroRealization = false,
   ): Promise<ToolTrace> {
-    const rows = await this.prisma.financeProject.findMany({
+    let rows = await this.prisma.financeProject.findMany({
       where: baseWhere,
       select: {
         code: true,
@@ -1017,9 +1024,16 @@ export class AiToolsService {
         poCustomerNumber: true,
         parent: { select: { code: true, name: true } },
       },
-      take: 15,
+      take: zeroRealization || (baseWhere.code as { in?: string[] } | undefined)?.in
+        ? 80
+        : 15,
       orderBy: { updatedAt: 'desc' },
     });
+    if (zeroRealization) {
+      rows = rows.filter(
+        (r) => Number(r.materialSpent) + Number(r.jasaSpent) === 0,
+      );
+    }
     const statusLabel =
       statusWhere === 'ACTIVE'
         ? 'ACTIVE'
@@ -1028,7 +1042,13 @@ export class AiToolsService {
           : statusWhere === 'ARCHIVED'
             ? 'ARCHIVED'
             : 'non-ARCHIVED';
-    const filterBits = [statusLabel, hierarchyLevel].filter(Boolean).join(' + ');
+    const filterBits = [
+      statusLabel,
+      hierarchyLevel,
+      zeroRealization ? 'Realisasi Rp0' : null,
+    ]
+      .filter(Boolean)
+      .join(' + ');
     const ack = `Baik. Filter project sekarang: ${filterBits}.`;
     if (rows.length === 0) {
       return {
@@ -1472,6 +1492,9 @@ export class AiToolsService {
       else if (rankingMetric === 'materialBudget') sortValue = materialBudget;
       else if (rankingMetric === 'jasaBudget') sortValue = jasaBudget;
       else if (rankingMetric === 'overbudget') sortValue = overAmount;
+      else if (rankingMetric === 'realizationPct') {
+        sortValue = totalBudget > 0 ? realization / totalBudget : 0;
+      }
       return {
         r,
         sortValue,
@@ -1490,8 +1513,9 @@ export class AiToolsService {
     let top = scored.slice(0, n);
     if (tieAware && scored.length) {
       const extreme = scored[0].sortValue;
+      const eps = rankingMetric === 'realizationPct' ? 1e-6 : 0.5;
       const ties = scored.filter(
-        (s) => Math.abs(Number(s.sortValue) - Number(extreme)) < 0.5,
+        (s) => Math.abs(Number(s.sortValue) - Number(extreme)) < eps,
       );
       if (ties.length > 1) top = ties;
     }
@@ -1499,6 +1523,7 @@ export class AiToolsService {
     const metricLabel: Record<FinanceRankingMetric, string> = {
       totalBudget: 'Total Budget',
       realization: 'Realisasi',
+      realizationPct: 'Persentase Realisasi',
       remaining: 'Sisa Budget',
       materialBudget: 'Material Budget',
       jasaBudget: 'Jasa Budget',
@@ -1506,12 +1531,20 @@ export class AiToolsService {
     };
     const dirLabel = dir === 'desc' ? 'terbesar' : 'terkecil';
     const tied = tieAware && top.length > 1;
+    const titleValue =
+      rankingMetric === 'realizationPct'
+        ? formatPctId(top[0].sortValue * 100)
+        : fmtIdr(top[0].sortValue);
     const title = tied
-      ? `Ada ${top.length} project dengan ${metricLabel[rankingMetric]} paling ${dirLabel} yang sama, yaitu ${fmtIdr(top[0].sortValue)}${hierLabel}`
+      ? `Ada ${top.length} project dengan ${metricLabel[rankingMetric]} paling ${dirLabel} yang sama, yaitu ${titleValue}${hierLabel}`
       : n === 1
         ? `Finance Project dengan ${metricLabel[rankingMetric]} paling ${dirLabel}${hierLabel}`
         : `Top ${n} Finance Project — ${metricLabel[rankingMetric]} ${dirLabel}${hierLabel}`;
     const lines = top.map((item, i) => {
+      const pct =
+        item.totalBudget > 0
+          ? formatPctId((item.realization / item.totalBudget) * 100)
+          : 'n/a';
       const val =
         rankingMetric === 'realization'
           ? item.realization
@@ -1523,10 +1556,16 @@ export class AiToolsService {
                 ? item.jasaBudget
                 : rankingMetric === 'overbudget'
                   ? item.overAmount
-                  : item.totalBudget;
+                  : rankingMetric === 'realizationPct'
+                    ? item.sortValue
+                    : item.totalBudget;
+      const shown =
+        rankingMetric === 'realizationPct'
+          ? `${fmtIdr(item.realization)} / ${fmtIdr(item.totalBudget)} × 100% ≈ ${pct}`
+          : fmtIdr(val);
       // Include Realisasi + Status so Active Object attribute follow-ups
       // (CSM-002) resolve from the dataset without a live re-query.
-      return `${i + 1}. ${item.r.code} ${item.r.name} — ${fmtIdr(val)} (budget ${fmtIdr(item.totalBudget)}; realisasi ${fmtIdr(item.realization)}; status ${item.r.status}) [${item.r.hierarchyLevel}]`;
+      return `${i + 1}. ${item.r.code} ${item.r.name} — ${shown} (budget ${fmtIdr(item.totalBudget)}; realisasi ${fmtIdr(item.realization)}; status ${item.r.status}) [${item.r.hierarchyLevel}]`;
     });
     return {
       name: 'finance_analytics',

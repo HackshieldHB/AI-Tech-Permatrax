@@ -97,7 +97,12 @@ export function extractConstraintsFromText(text: string): ActiveConstraintSet {
     else if (/(sisa|remaining)/.test(m)) out.extra!.push('metric:remaining');
     else if (/(material)/.test(m)) out.extra!.push('metric:materialBudget');
     else if (/(jasa|service)/.test(m)) out.extra!.push('metric:jasaBudget');
-    else if (/(realisasi|spent)/.test(m)) out.extra!.push('metric:realization');
+    else if (
+      (/(persen|persentase|rasio)/.test(m) && /(realisasi)/.test(m)) ||
+      /(realisasi).*(terhadap)\s*(total\s+)?(budget|anggaran)/.test(m)
+    ) {
+      out.extra!.push('metric:realizationPct');
+    } else if (/(realisasi|spent)/.test(m)) out.extra!.push('metric:realization');
     else if (/(budget|anggaran)/.test(m)) out.extra!.push('metric:totalBudget');
     const topN = detectRequestedRankingN(text);
     if (topN) out.extra!.push(`limit:${topN}`);

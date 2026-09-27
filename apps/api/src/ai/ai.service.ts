@@ -62,6 +62,9 @@ import {
   isBusinessRoleResponsibilityQuery,
   isUnsupportedKnowledgeCausalQuery,
   isStockQuantityRankingQuery,
+  splitChainedRankingQuery,
+  isOperationalJudgmentFollowUp,
+  buildEvidenceLimitedOperationalNote,
   isResultSetScopedFollowUp,
   shouldReuseActiveResultSet,
   isActiveObjectAttributeQuery,
@@ -2003,17 +2006,64 @@ export class AiService {
         .join(',')}]`;
     }
 
-    const toolTraces =
+    const chained = splitChainedRankingQuery(text);
+    if (chained) {
+      const tags = toolMessage.match(/\[[^\]]+\]/g) ?? [];
+      toolMessage = [chained.head, ...tags].join(' ').trim();
+    }
+
+    let toolTraces =
       toolNames.length > 0
         ? await this.tools.runTools(toolNames, user, toolMessage)
         : [];
 
-    const hasUsefulTools = toolTraces.some(
+    let hasUsefulTools = toolTraces.some(
       (t) =>
         t.ok &&
         t.summary &&
         !/tidak ditemukan|tidak ada finance project berstatus/i.test(t.summary),
     );
+    if (
+      chained &&
+      hasUsefulTools &&
+      toolNames.includes('finance_analytics') &&
+      !isOperationalJudgmentFollowUp(chained.tail)
+    ) {
+      const first = toolTraces.find(
+        (t) => t.name === 'finance_analytics' && t.ok,
+      );
+      const fromData = Array.isArray(
+        (first?.data as { rows?: Array<{ code?: string }> } | undefined)?.rows,
+      )
+        ? ((first!.data as { rows: Array<{ code?: string }> }).rows
+            .map((r) => r.code)
+            .filter((c): c is string => Boolean(c)))
+        : [];
+      const fromSummary = extractRankedFinanceMembers(
+        first?.summary || '',
+      ).map((m) => m.code);
+      const codes = fromData.length ? fromData : fromSummary;
+      if (codes.length) {
+        const second = await this.tools.runTools(
+          ['finance_analytics'],
+          user,
+          `${chained.tail} [RESULT_SET:${codes.join(',')}]`,
+        );
+        if (
+          second.some(
+            (t) =>
+              t.ok &&
+              t.summary &&
+              !/tidak ditemukan|tidak ada finance project berstatus/i.test(
+                t.summary,
+              ),
+          )
+        ) {
+          toolTraces = second;
+          hasUsefulTools = true;
+        }
+      }
+    }
     const hasToolAttempt = toolTraces.some((t) => t.ok && t.summary);
     const wasSearchMode = detectFinanceMode(toolMessage) === 'search';
 
@@ -2220,7 +2270,7 @@ export class AiService {
       });
     }
 
-    const { answer, ollamaUsed } = await this.composeAnswer({
+    const composed = await this.composeAnswer({
       user,
       text: effectiveText,
       intent,
@@ -2228,6 +2278,10 @@ export class AiService {
       toolTraces: hasUsefulTools ? toolTraces : [],
       proposedAction,
     });
+    let { answer, ollamaUsed } = composed;
+    if (chained && isOperationalJudgmentFollowUp(chained.tail) && hasUsefulTools) {
+      answer = `${answer}\n\n${buildEvidenceLimitedOperationalNote()}`;
+    }
 
     const resolvedIntent: ActiveIntent =
       intent === 'analytics'
