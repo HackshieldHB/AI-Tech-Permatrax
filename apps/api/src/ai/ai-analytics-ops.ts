@@ -78,7 +78,7 @@ export function isObjectScopedReference(text: string): boolean {
 
 export function isExplicitRankingUtterance(text: string): boolean {
   const m = normalizeId(text);
-  return /(top\s*\d*|terbesar|terkecil|ranking|paling besar|paling kecil|paling tinggi|paling rendah)/.test(
+  return /(top\s*\d*|terbesar|terkecil|tertinggi|terendah|ranking|paling besar|paling kecil|paling tinggi|paling rendah|urutkan)/.test(
     m,
   );
 }
@@ -148,7 +148,7 @@ export function detectAnalyticalRequest(text: string): AnalyticalRequest | null 
 
 function detectAnalyticalRequestOn(text: string): AnalyticalRequest | null {
   const m = normalizeId(text);
-  if (isExplicitRankingUtterance(text) && !/(bandingkan|persentase|selisih)/.test(m)) {
+  if (isExplicitRankingUtterance(text) && !/\bbandingkan\b/.test(m)) {
     return null;
   }
 

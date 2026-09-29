@@ -99,7 +99,8 @@ export function extractConstraintsFromText(text: string): ActiveConstraintSet {
     else if (/(jasa|service)/.test(m)) out.extra!.push('metric:jasaBudget');
     else if (
       (/(persen|persentase|rasio)/.test(m) && /(realisasi)/.test(m)) ||
-      /(realisasi).*(terhadap)\s*(total\s+)?(budget|anggaran)/.test(m)
+      /(realisasi).*(terhadap)\s*(total\s+)?(budget|anggaran)/.test(m) ||
+      /(porsi|dana terpakai|terpakai).*(anggaran|budget)/.test(m)
     ) {
       out.extra!.push('metric:realizationPct');
     } else if (/(realisasi|spent)/.test(m)) out.extra!.push('metric:realization');
