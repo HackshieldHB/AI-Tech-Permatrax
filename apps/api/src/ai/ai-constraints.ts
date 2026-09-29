@@ -95,11 +95,18 @@ export function extractConstraintsFromText(text: string): ActiveConstraintSet {
   if (rankingTurn) {
     if (/(over\s*budget|overbudget)/.test(m)) out.extra!.push('metric:overbudget');
     else if (/(sisa|remaining)/.test(m)) out.extra!.push('metric:remaining');
-    else if (/(material)/.test(m)) out.extra!.push('metric:materialBudget');
+    else if (/(material)/.test(m) && /(persen|penggunaan|rasio|porsi)/.test(m)) {
+      out.extra!.push('metric:materialPct');
+    } else if (/(jasa|service)/.test(m) && /(persen|penggunaan|rasio|porsi)/.test(m)) {
+      out.extra!.push('metric:jasaPct');
+    } else if (/(material)/.test(m)) out.extra!.push('metric:materialBudget');
     else if (/(jasa|service)/.test(m)) out.extra!.push('metric:jasaBudget');
     else if (
       (/(persen|persentase|rasio)/.test(m) && /(realisasi)/.test(m)) ||
-      /(realisasi).*(terhadap)\s*(total\s+)?(budget|anggaran)/.test(m) ||
+      /(realisasi).*(terhadap|dibanding|dibandingkan)\s*(total\s+)?(budget|anggaran)/.test(
+        m,
+      ) ||
+      /(penggunaan|tingkat penggunaan)\s+(budget|anggaran).*(realisasi)/.test(m) ||
       /(porsi|dana terpakai|terpakai).*(anggaran|budget)/.test(m)
     ) {
       out.extra!.push('metric:realizationPct');

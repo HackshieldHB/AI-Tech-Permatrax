@@ -1072,7 +1072,10 @@ export function isModuleDataRankingQuery(text: string): boolean {
     ) ||
     (/\burutkan\b/.test(m) &&
       /(persen|realisasi|budget|anggaran|tadi|itu)/.test(m)) ||
+    /\bsusun ulang\b/.test(m) ||
     isRealizationPctRankingPhrase(m) ||
+    isMaterialPctRankingPhrase(m) ||
+    isJasaPctRankingPhrase(m) ||
     isRankingPatchFollowUp(text)
   );
 }
@@ -1580,6 +1583,7 @@ export function hasExplicitRankingMetric(text: string): boolean {
  */
 export function shouldApplySessionFinanceFilters(text: string): boolean {
   if (isFinanceFilterClearQuery(text)) return false;
+  if (isScopeResetQuery(text) || isAllMatchingPopulationQuery(text)) return false;
   if (hasConversationalReference(text)) return true;
   if (isStandaloneFinanceAggregateQuery(text)) return false;
   if (/(semua|seluruh|keseluruhan)\b/.test(normalizeId(primaryUtterance(text)))) {
@@ -1687,7 +1691,9 @@ export type FinanceRankingMetric =
   | 'realizationPct'
   | 'remaining'
   | 'materialBudget'
+  | 'materialPct'
   | 'jasaBudget'
+  | 'jasaPct'
   | 'overbudget';
 
 export type FinanceMode =
@@ -1709,6 +1715,8 @@ export type FinanceMode =
 export function shouldReuseActiveResultSet(text: string): boolean {
   const m = normalizeId(primaryUtterance(text));
   if (/(semua|seluruh)\s+(project|proyek)/.test(m)) return false;
+  if (isScopeResetQuery(text)) return false;
+  if (isAllMatchingPopulationQuery(text)) return false;
   if (isResultSetScopedFollowUp(text)) return true;
   if (
     detectExplicitTopN(text) != null &&
@@ -1738,8 +1746,11 @@ export function isResultSetScopedFollowUp(text: string): boolean {
     /(dari (ketiga(nya)?|tiga itu|tiga project itu|hasil tadi)|hasil tadi|dari ketiganya)/.test(
       m,
     ) ||
-    /(hasil yang tersisa|yang tersisa|dari yang tersisa)/.test(m) ||
-    /(urutkan).*(tadi|itu|lima|tiga)/.test(m) ||
+    /(hasil yang tersisa|yang tersisa|dari yang tersisa|dari hasil itu|hasil itu)/.test(
+      m,
+    ) ||
+    /(susun ulang|lima project tersebut|untuk ketiganya|ketiganya)/.test(m) ||
+    /(urutkan).*(tadi|itu|lima|tiga|hasil)/.test(m) ||
     /(dari project itu|dari proyek itu|project-project tadi|dari daftar( itu| tadi)?)/.test(
       m,
     ) ||
@@ -1756,11 +1767,15 @@ export function isResultSetScopedFollowUp(text: string): boolean {
 export function splitChainedRankingQuery(
   text: string,
 ): { head: string; tail: string } | null {
-  const raw = primaryUtterance(text);
-  let sentences = raw.split(/(?<=[.!?])\s+/).filter((s) => s.trim().length > 0);
+  const raw = text
+    .replace(/\s*\(konteks[^)]*\)/gi, ' ')
+    .replace(/\s*\[[^\]]+\]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  let sentences = raw.split(/(?<=[.!?])\s+|\n+/).filter((s) => s.trim().length > 0);
   if (sentences.length < 2) {
     const glued = raw.split(
-      /\s+(?:setelah itu|lalu|kemudian|setelahnya)\s+/i,
+      /\s+(?:setelah itu|lalu|kemudian|setelahnya|untuk ketiganya)\s+/i,
     );
     if (glued.length >= 2) {
       sentences = [glued[0].trim(), glued.slice(1).join(' ').trim()];
@@ -1781,7 +1796,9 @@ export function splitChainedRankingQuery(
     isResultSetScopedFollowUp(tail) ||
     isModuleDataRankingQuery(tail) ||
     isOperationalJudgmentFollowUp(tail) ||
-    /(dari (ketiga(nya)?|tiga|hasil|itu)|urutkan)/.test(tn)
+    /(dari (ketiga(nya)?|tiga|hasil|itu)|urutkan|susun ulang|untuk ketiganya)/.test(
+      tn,
+    )
   ) {
     return { head, tail };
   }
@@ -1806,7 +1823,9 @@ export function buildEvidenceLimitedOperationalNote(): string {
 /** ACTIVE/SITE (etc.) population whose Realisasi is still Rp0 (PAI-DIQ-014). */
 export function isZeroRealizationPopulationQuery(text: string): boolean {
   const m = normalizeId(primaryUtterance(text));
-  if (isModuleDataRankingQuery(text)) return false;
+  if (isModuleDataRankingQuery(text) && !isAllMatchingPopulationQuery(text)) {
+    return false;
+  }
   return (
     /(realisasi).*(rp\s*0|masih\s*(rp\s*)?0|nol|belum\s*(ada|terpakai)|0\b)/.test(
       m,
@@ -1814,6 +1833,26 @@ export function isZeroRealizationPopulationQuery(text: string): boolean {
     /(tampilkan|list|daftar|project|proyek|finance|active|aktif|site|segment)/.test(
       m,
     )
+  );
+}
+
+/** Drop previous result set / ranking frame and start a new population. */
+export function isScopeResetQuery(text: string): boolean {
+  const m = normalizeId(text);
+  return /(abaikan hasil (sebelumnya|tadi|itu)|jangan pakai (hasil|filter|tiga|lima).*(sebelumnya|tadi)|cari ulang dari seluruh|sekarang dari (semua|seluruh))/.test(
+    m,
+  );
+}
+
+/** Cardinality ALL — do not silently convert to Top-N ranking. */
+export function isAllMatchingPopulationQuery(text: string): boolean {
+  if (isFinanceFilterClearQuery(text)) return false;
+  const m = normalizeId(primaryUtterance(text));
+  if (detectExplicitTopN(text) != null) return false;
+  return (
+    /(tampilkan|list|daftar|ambil)\s+semua/.test(m) ||
+    /(semua|seluruh)\s+(finance\s+)?(project|proyek)/.test(m) ||
+    /(tampilkan|list|daftar).*(semua|seluruh).*(project|proyek)/.test(m)
   );
 }
 
@@ -1852,6 +1891,7 @@ export function isObjectComparisonQuery(text: string): boolean {
     extractExplicitEntityCodes(text).length < 2 &&
     (isExplicitRankingUtterance(text) ||
       detectExplicitTopN(text) != null ||
+      /(ketiganya|masing-masing|lima project|hasil itu|hasil tadi)/.test(m) ||
       /(dibandingkan|dibanding)\s+(dengan\s+)?(total\s+)?(anggaran|budget)/.test(
         m,
       ))
@@ -2368,17 +2408,37 @@ export function isRealizationPctRankingPhrase(text: string): boolean {
   if (/\bmaterial\b/.test(s) || /\b(jasa|service)\b/.test(s)) return false;
   return (
     (/(persen|persentase|rasio|%\b)/.test(s) && /(realisasi)/.test(s)) ||
-    /(realisasi).*(terhadap)\s*(total\s+)?(budget|anggaran)/.test(s) ||
+    /(realisasi).*(terhadap|dibanding|dibandingkan)\s*(total\s+)?(budget|anggaran)/.test(
+      s,
+    ) ||
     /(porsi|rasio).*(dana|realisasi|terpakai).*(dibanding|terhadap|dibandingkan)/.test(
       s,
     ) ||
     /(dana|anggaran|budget).*(terpakai|terpakainya).*(dibanding|terhadap|dibandingkan)/.test(
       s,
     ) ||
+    /(penggunaan|tingkat penggunaan)\s+(budget|anggaran).*(realisasi)/.test(s) ||
+    /(berdasarkan)\s+realisasi.*(dibanding|terhadap|dibandingkan)/.test(s) ||
     /(penggunaan).*(budget|anggaran).*(persen|porsi|rasio)/.test(s) ||
     /(terpakai).*(dibandingkan|dibanding|terhadap).*(total\s+)?(anggaran|budget)/.test(
       s,
     )
+  );
+}
+
+export function isMaterialPctRankingPhrase(text: string): boolean {
+  const s = normalizeId(text);
+  return (
+    /\bmaterial\b/.test(s) &&
+    /(persen|persentase|rasio|penggunaan|porsi|terpakai|utilization)/.test(s)
+  );
+}
+
+export function isJasaPctRankingPhrase(text: string): boolean {
+  const s = normalizeId(text);
+  return (
+    /\b(jasa|service)\b/.test(s) &&
+    /(persen|persentase|rasio|penggunaan|porsi|terpakai|utilization)/.test(s)
   );
 }
 
@@ -2393,6 +2453,8 @@ export function detectRankingMetric(text: string): FinanceRankingMetric {
     if (!tag) return null;
     const key = tag[1].toLowerCase();
     if (key === 'realizationpct') return 'realizationPct';
+    if (key === 'materialpct') return 'materialPct';
+    if (key === 'jasapct') return 'jasaPct';
     if (key === 'realization') return 'realization';
     if (key === 'remaining') return 'remaining';
     if (key === 'materialbudget') return 'materialBudget';
@@ -2417,6 +2479,8 @@ export function detectRankingMetric(text: string): FinanceRankingMetric {
   if (/(sisa\s*budget|remaining(\s*budget)?)/.test(m) || (/\bsisa\b/.test(m) && !/tersisa/.test(m))) {
     return 'remaining';
   }
+  if (isMaterialPctRankingPhrase(m)) return 'materialPct';
+  if (isJasaPctRankingPhrase(m)) return 'jasaPct';
   if (/\bmaterial\b/.test(m)) return 'materialBudget';
   if (/\b(jasa|service)\b/.test(m)) return 'jasaBudget';
   if (isRealizationPctRankingPhrase(m)) return 'realizationPct';
@@ -2429,6 +2493,8 @@ export function detectRankingMetric(text: string): FinanceRankingMetric {
   if (tagged) return tagged;
   if (/(over\s*budget|overbudget)/.test(src)) return 'overbudget';
   if (/(sisa\s*budget|remaining(\s*budget)?)/.test(src)) return 'remaining';
+  if (isMaterialPctRankingPhrase(src)) return 'materialPct';
+  if (isJasaPctRankingPhrase(src)) return 'jasaPct';
   if (/\bmaterial\b/.test(src)) return 'materialBudget';
   if (/\b(jasa|service)\b/.test(src)) return 'jasaBudget';
   if (isRealizationPctRankingPhrase(src)) {
@@ -2654,6 +2720,14 @@ export function detectFinanceMode(text: string): FinanceMode {
     return 'search';
   }
 
+  if (
+    (isAllMatchingPopulationQuery(text) || isScopeResetQuery(text)) &&
+    (isZeroRealizationPopulationQuery(text) ||
+      (extractHierarchyConstraint(text) && /\b(active|aktif)\b/.test(m)))
+  ) {
+    return 'filtered_list';
+  }
+
   // PAI-FNC-004: ranking with dynamic metric (before generic overbudget/summary)
   const wantsRank =
     (/(top\s*\d*|terbesar|terkecil|ranking|paling besar|paling kecil|paling tinggi|paling rendah|highest|lowest|largest|smallest)/.test(
@@ -2667,9 +2741,19 @@ export function detectFinanceMode(text: string): FinanceMode {
       ) ||
       (/\burutkan\b/.test(m) &&
         /(persen|realisasi|budget|anggaran|tadi|itu)/.test(m)) ||
+      /\bsusun ulang\b/.test(m) ||
       isRealizationPctRankingPhrase(m) ||
+      isMaterialPctRankingPhrase(m) ||
+      isJasaPctRankingPhrase(m) ||
       isRankingPatchFollowUp(text)) &&
-    !/(\bbandingkan\b|selisih|kenapa|mengapa)/.test(m);
+    !/(selisih|kenapa|mengapa)/.test(m) &&
+    !(
+      /\bbandingkan\b/.test(m) &&
+      !/(ketiganya|masing-masing|hasil itu|lima project)/.test(m) &&
+      !isJasaPctRankingPhrase(m) &&
+      !isMaterialPctRankingPhrase(m)
+    ) &&
+    !isAllMatchingPopulationQuery(text);
   if (wantsRank) {
     const dir = detectRankingDirection(text);
     if (dir === 'asc') return 'smallest';

@@ -1575,7 +1575,9 @@ export class AiToolsService {
       const totalBudget = Number(r.totalBudget);
       const materialBudget = Number(r.materialBudget ?? 0);
       const jasaBudget = Number(r.jasaBudget ?? 0);
-      const realization = Number(r.materialSpent) + Number(r.jasaSpent);
+      const materialSpent = Number(r.materialSpent);
+      const jasaSpent = Number(r.jasaSpent);
+      const realization = materialSpent + jasaSpent;
       const remaining = totalBudget - realization;
       const overAmount = Math.max(0, realization - totalBudget);
       let sortValue = totalBudget;
@@ -1586,6 +1588,10 @@ export class AiToolsService {
       else if (rankingMetric === 'overbudget') sortValue = overAmount;
       else if (rankingMetric === 'realizationPct') {
         sortValue = totalBudget > 0 ? realization / totalBudget : 0;
+      } else if (rankingMetric === 'materialPct') {
+        sortValue = materialBudget > 0 ? materialSpent / materialBudget : 0;
+      } else if (rankingMetric === 'jasaPct') {
+        sortValue = jasaBudget > 0 ? jasaSpent / jasaBudget : 0;
       }
       return {
         r,
@@ -1595,6 +1601,8 @@ export class AiToolsService {
         remaining,
         materialBudget,
         jasaBudget,
+        materialSpent,
+        jasaSpent,
         overAmount,
       };
     });
@@ -1605,7 +1613,12 @@ export class AiToolsService {
     let top = scored.slice(0, n);
     if (tieAware && scored.length) {
       const extreme = scored[0].sortValue;
-      const eps = rankingMetric === 'realizationPct' ? 1e-6 : 0.5;
+      const eps =
+        rankingMetric === 'realizationPct' ||
+        rankingMetric === 'materialPct' ||
+        rankingMetric === 'jasaPct'
+          ? 1e-6
+          : 0.5;
       const ties = scored.filter(
         (s) => Math.abs(Number(s.sortValue) - Number(extreme)) < eps,
       );
@@ -1618,15 +1631,20 @@ export class AiToolsService {
       realizationPct: 'Persentase Realisasi',
       remaining: 'Sisa Budget',
       materialBudget: 'Material Budget',
+      materialPct: 'Persentase Penggunaan Material Budget',
       jasaBudget: 'Jasa Budget',
+      jasaPct: 'Persentase Penggunaan Jasa Budget',
       overbudget: 'Over Budget',
     };
     const dirLabel = dir === 'desc' ? 'terbesar' : 'terkecil';
     const tied = tieAware && top.length > 1;
-    const titleValue =
-      rankingMetric === 'realizationPct'
-        ? formatPctId(top[0].sortValue * 100)
-        : fmtIdr(top[0].sortValue);
+    const isPct =
+      rankingMetric === 'realizationPct' ||
+      rankingMetric === 'materialPct' ||
+      rankingMetric === 'jasaPct';
+    const titleValue = isPct
+      ? formatPctId(top[0].sortValue * 100)
+      : fmtIdr(top[0].sortValue);
     const title = tied
       ? `Ada ${top.length} project dengan ${metricLabel[rankingMetric]} paling ${dirLabel} yang sama, yaitu ${titleValue}${hierLabel}`
       : n === 1
@@ -1636,6 +1654,14 @@ export class AiToolsService {
       const pct =
         item.totalBudget > 0
           ? formatPctId((item.realization / item.totalBudget) * 100)
+          : 'n/a';
+      const matPct =
+        item.materialBudget > 0
+          ? formatPctId((item.materialSpent / item.materialBudget) * 100)
+          : 'n/a';
+      const jasaPct =
+        item.jasaBudget > 0
+          ? formatPctId((item.jasaSpent / item.jasaBudget) * 100)
           : 'n/a';
       const val =
         rankingMetric === 'realization'
@@ -1648,13 +1674,19 @@ export class AiToolsService {
                 ? item.jasaBudget
                 : rankingMetric === 'overbudget'
                   ? item.overAmount
-                  : rankingMetric === 'realizationPct'
+                  : rankingMetric === 'realizationPct' ||
+                      rankingMetric === 'materialPct' ||
+                      rankingMetric === 'jasaPct'
                     ? item.sortValue
                     : item.totalBudget;
       const shown =
         rankingMetric === 'realizationPct'
           ? `${fmtIdr(item.realization)} / ${fmtIdr(item.totalBudget)} × 100% ≈ ${pct}`
-          : fmtIdr(val);
+          : rankingMetric === 'materialPct'
+            ? `${fmtIdr(item.materialSpent)} / ${fmtIdr(item.materialBudget)} × 100% ≈ ${matPct}`
+            : rankingMetric === 'jasaPct'
+              ? `${fmtIdr(item.jasaSpent)} / ${fmtIdr(item.jasaBudget)} × 100% ≈ ${jasaPct}`
+              : fmtIdr(val);
       // Include Realisasi + Status so Active Object attribute follow-ups
       // (CSM-002) resolve from the dataset without a live re-query.
       return `${i + 1}. ${item.r.code} ${item.r.name} — ${shown} (budget ${fmtIdr(item.totalBudget)}; realisasi ${fmtIdr(item.realization)}; status ${item.r.status}) [${item.r.hierarchyLevel}]`;

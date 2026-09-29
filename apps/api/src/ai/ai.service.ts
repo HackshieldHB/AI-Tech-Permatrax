@@ -67,6 +67,9 @@ import {
   buildEvidenceLimitedOperationalNote,
   isResultSetScopedFollowUp,
   shouldReuseActiveResultSet,
+  isScopeResetQuery,
+  isAllMatchingPopulationQuery,
+  isZeroRealizationPopulationQuery,
   isActiveObjectAttributeQuery,
   isObjectComparisonQuery,
   isIntraObjectPercentCompareQuery,
@@ -477,7 +480,10 @@ export class AiService {
       (stateFollowUp || (explicitCode && !/\bcari\b/i.test(text))) &&
       !isModuleDataRankingQuery(text) &&
       !isFinanceContextFilterQuery(text) &&
-      !isFinanceFilterOnlyQuery(text)
+      !isFinanceFilterOnlyQuery(text) &&
+      !isZeroRealizationPopulationQuery(text) &&
+      !isAllMatchingPopulationQuery(text) &&
+      !isScopeResetQuery(text)
     ) {
       const snapshot = session.activeDatasetAnswer || lastAssistant;
       const resolved = resolveActiveReference({
@@ -2040,6 +2046,8 @@ export class AiService {
       toolNames.includes('finance_analytics') &&
       hasUsableConstraint(session.constraints) &&
       (shouldApplySessionFinanceFilters(text) || applyRankingInherit) &&
+      !isScopeResetQuery(text) &&
+      !isAllMatchingPopulationQuery(text) &&
       !isFinanceInterpretationQuery(text) &&
       !isObjectScopedReference(text) &&
       !isCausalQuery(text)
