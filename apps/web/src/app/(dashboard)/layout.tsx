@@ -10,6 +10,7 @@ import {
   ShoppingCart, Truck, UserCircle2, Wallet, Building, PackageX, Store, Receipt, // Phase 3 nav
   ListChecks, // NEW: Integra V1 — Daily Activity nav icon
   Banknote, // Stable v1 — Approval Dana
+  RadioTower, // GIS FTTT — tower-to-tower planning
 } from 'lucide-react';
 import { io, Socket } from 'socket.io-client';
 import { Plus_Jakarta_Sans } from 'next/font/google';
@@ -91,6 +92,26 @@ const NAV_ITEMS: NavItem[] = [
       'GENERAL_MANAGER',
       'ADMIN',
       'MAP_VIEWER', // JLM / external read-only users
+    ],
+  },
+  {
+    href: '/map/fttt',
+    label: 'GIS FTTT',
+    icon: RadioTower,
+    section: 'OPERASIONAL',
+    roles: [
+      'SURVEYOR_FTTH',
+      'SURVEYOR_FTTB',
+      'SURVEYOR_FTTT',
+      'PM_FTTH',
+      'PM_FTTB',
+      'PM_FTTT',
+      'PM_SENIOR',
+      'DESIGNER',
+      'OPERATIONAL_MANAGER',
+      'GENERAL_MANAGER',
+      'ADMIN',
+      'MAP_VIEWER',
     ],
   },
   {
@@ -268,6 +289,7 @@ const ROLE_COLORS: Record<string, string> = {
 
 const BREADCRUMB_MAP: Record<string, string[]> = {
   '/map': ['Peta GIS'],
+  '/map/fttt': ['GIS FTTT'],
   '/permit-clusters': ['Pipeline Perizinan'],
   '/visit-requests': ['Visit Request'],
   '/visit-requests/new': ['Visit Request', 'Buat Baru'],
@@ -976,7 +998,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               </p>
             ) : null}
             {section.items.map((item) => {
-              const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
+              // /map/fttt is its own menu. A prefix match would also light up Peta GIS.
+              const active = item.href === '/map'
+                ? pathname === '/map'
+                : pathname === item.href || pathname.startsWith(`${item.href}/`);
               const badge =
                 item.badge === 'pr'
                   ? unreadPRCount

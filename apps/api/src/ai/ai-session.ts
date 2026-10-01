@@ -206,6 +206,9 @@ export type ActiveComparisonScope = {
   metric:
     | 'totalBudget'
     | 'realization'
+    | 'realizationPct'
+    | 'materialPct'
+    | 'jasaPct'
     | 'remaining'
     | 'materialBudget'
     | 'jasaBudget';

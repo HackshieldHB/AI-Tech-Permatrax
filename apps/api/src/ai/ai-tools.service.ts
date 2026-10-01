@@ -10,7 +10,14 @@ import {
   detectRankingDirection,
   detectRequestedRankingN,
   detectComparisonMetric,
+  detectPercentOperandPairs,
+  formatPctId,
+  formatPctPoints,
   hasActiveStatusNegation,
+  isIntraObjectPercentCompareQuery,
+  ratioForComparisonMetric,
+  wantsPercentDifference,
+  type RatioOperand,
   isStatusBreakdownQuery,
   isStockQuantityRankingQuery,
   hasExplicitRankingMetric,
@@ -25,6 +32,7 @@ import {
   isProjectCountQuery,
   meaningfulTokens,
   normalizeId,
+  isZeroRealizationPopulationQuery,
   type FinanceMetric,
   type FinanceRankingMetric,
 } from './ai-nlu';
@@ -499,7 +507,9 @@ export class AiToolsService {
       detectAnalyticalRequest(bareMessage) || detectAnalyticalRequest(message);
     if (
       compareCodes.length >= 2 &&
-      /(banding|dibanding|lebih besar|lebih kecil)/.test(normalizeId(bareMessage)) &&
+      /(banding|dibanding|lebih besar|lebih kecil|lebih tinggi|lebih rendah)/.test(
+        normalizeId(bareMessage),
+      ) &&
       analyticalAsk?.kind !== 'ratio_compare' &&
       analyticalAsk?.kind !== 'multi_metric_compare' &&
       analyticalAsk?.kind !== 'intra_compare'
@@ -509,6 +519,23 @@ export class AiToolsService {
         compareCodes[0],
         compareCodes[1],
         detectComparisonMetric(bareMessage) || 'totalBudget',
+        {
+          interpret:
+            /(disimpulkan|kesimpulan|interpretasi|apa yang bisa disimpulkan)/.test(
+              normalizeId(bareMessage),
+            ),
+          difference: wantsPercentDifference(bareMessage),
+        },
+      );
+    }
+    if (
+      compareCodes.length === 1 &&
+      isIntraObjectPercentCompareQuery(bareMessage)
+    ) {
+      return this.compareIntraObjectRatios(
+        user,
+        compareCodes[0],
+        detectPercentOperandPairs(bareMessage),
       );
     }
     if (
@@ -809,7 +836,12 @@ export class AiToolsService {
     }
 
     if (mode === 'filtered_list') {
-      return this.financeFilteredList(baseWhere, hierarchyLevel, statusWhere);
+      return this.financeFilteredList(
+        baseWhere,
+        hierarchyLevel,
+        statusWhere,
+        isZeroRealizationPopulationQuery(bareMessage),
+      );
     }
 
     if (mode === 'search') {
@@ -1066,8 +1098,9 @@ export class AiToolsService {
     baseWhere: Prisma.FinanceProjectWhereInput,
     hierarchyLevel: 'SITE' | 'SEGMENT' | 'STANDALONE' | null,
     statusWhere: Prisma.FinanceProjectWhereInput['status'],
+    zeroRealization = false,
   ): Promise<ToolTrace> {
-    const rows = await this.prisma.financeProject.findMany({
+    let rows = await this.prisma.financeProject.findMany({
       where: baseWhere,
       select: {
         code: true,
@@ -1083,9 +1116,16 @@ export class AiToolsService {
         poCustomerNumber: true,
         parent: { select: { code: true, name: true } },
       },
-      take: 15,
+      take: zeroRealization || (baseWhere.code as { in?: string[] } | undefined)?.in
+        ? 80
+        : 15,
       orderBy: { updatedAt: 'desc' },
     });
+    if (zeroRealization) {
+      rows = rows.filter(
+        (r) => Number(r.materialSpent) + Number(r.jasaSpent) === 0,
+      );
+    }
     const statusLabel =
       statusWhere === 'ACTIVE'
         ? 'ACTIVE'
@@ -1094,7 +1134,13 @@ export class AiToolsService {
           : statusWhere === 'ARCHIVED'
             ? 'ARCHIVED'
             : 'non-ARCHIVED';
-    const filterBits = [statusLabel, hierarchyLevel].filter(Boolean).join(' + ');
+    const filterBits = [
+      statusLabel,
+      hierarchyLevel,
+      zeroRealization ? 'Realisasi Rp0' : null,
+    ]
+      .filter(Boolean)
+      .join(' + ');
     const ack = `Baik. Filter project sekarang: ${filterBits}.`;
     if (rows.length === 0) {
       return {
@@ -1229,9 +1275,13 @@ export class AiToolsService {
     metric:
       | 'totalBudget'
       | 'realization'
+      | 'realizationPct'
+      | 'materialPct'
+      | 'jasaPct'
       | 'remaining'
       | 'materialBudget'
       | 'jasaBudget' = 'totalBudget',
+    opts: { interpret?: boolean; difference?: boolean } = {},
   ): Promise<ToolTrace> {
     const rows = await this.prisma.financeProject.findMany({
       where: {
@@ -1259,19 +1309,28 @@ export class AiToolsService {
         summary: `Tidak lengkap untuk membandingkan ${codeA} dan ${codeB}.`,
       };
     }
-    const valueOf = (
-      row: typeof a,
-    ): number => {
-      const realized =
-        Number(row.materialSpent) + Number(row.jasaSpent);
+    const realizedOf = (row: typeof a) =>
+      Number(row.materialSpent) + Number(row.jasaSpent);
+    const ratio = ratioForComparisonMetric(metric);
+    const valueOf = (row: typeof a): number => {
+      if (ratio) {
+        const den = this.ratioFieldValue(row, ratio.den);
+        return den ? this.ratioFieldValue(row, ratio.num) / den : 0;
+      }
+      const realized = realizedOf(row);
       if (metric === 'realization') return realized;
       if (metric === 'remaining') return Number(row.totalBudget) - realized;
       if (metric === 'materialBudget') return Number(row.materialBudget);
       if (metric === 'jasaBudget') return Number(row.jasaBudget);
       return Number(row.totalBudget);
     };
+    const fmtPct = (part: number, whole: number): string => {
+      if (!whole) return 'n/a';
+      return formatPctId((part / whole) * 100);
+    };
     const label =
-      metric === 'realization'
+      ratio?.label ||
+      (metric === 'realization'
         ? 'Realisasi'
         : metric === 'remaining'
           ? 'Sisa Budget'
@@ -1279,21 +1338,165 @@ export class AiToolsService {
             ? 'Material Budget'
             : metric === 'jasaBudget'
               ? 'Jasa Budget'
-              : 'budget';
+              : 'budget');
     const va = valueOf(a);
     const vb = valueOf(b);
     const winner = va === vb ? null : va > vb ? a : b;
     const loser = winner ? (winner === a ? b : a) : null;
-    const summary = winner
-      ? metric === 'totalBudget'
-        ? `${winner.code} memiliki ${label} lebih besar, yaitu ${fmtIdr(valueOf(winner))} dibandingkan ${loser!.code} sebesar ${fmtIdr(valueOf(loser!))}.`
-        : `${label} ${winner.code} lebih besar, yaitu ${fmtIdr(valueOf(winner))} dibandingkan ${loser!.code} sebesar ${fmtIdr(valueOf(loser!))}.`
-      : `${label} ${a.code} dan ${b.code} sama, yaitu ${fmtIdr(va)}.`;
+    const pctLine = (row: typeof a) => {
+      const num = ratio
+        ? this.ratioFieldValue(row, ratio.num)
+        : realizedOf(row);
+      const den = ratio
+        ? this.ratioFieldValue(row, ratio.den)
+        : Number(row.totalBudget);
+      return `${row.code}: ${fmtIdr(num)} / ${fmtIdr(den)} × 100% ${
+        den && num === 0 ? '= 0%' : `≈ ${fmtPct(num, den)}`
+      }`;
+    };
+    let summary: string;
+    if (ratio) {
+      const head = winner
+        ? `${winner.code} memiliki ${label} yang lebih besar.`
+        : `${a.code} dan ${b.code} memiliki ${label} yang sama.`;
+      summary = [pctLine(a), pctLine(b), '', head].join('\n');
+      if (opts.interpret && metric === 'realizationPct') {
+        const noteA = realizedOf(a)
+          ? `${a.code} sudah mencatat sebagian realisasi finansial`
+          : `${a.code} belum mencatat realisasi finansial`;
+        const noteB = realizedOf(b)
+          ? `${b.code} sudah mencatat sebagian realisasi finansial`
+          : `${b.code} belum mencatat realisasi finansial`;
+        summary = [
+          'Dengan data saat ini:',
+          pctLine(a),
+          pctLine(b),
+          '',
+          head,
+          `Berdasarkan data Finance Project yang tersedia, ${noteA}, sedangkan ${noteB}. Data tersebut saja tidak cukup untuk menyimpulkan progress atau performa operasional kedua project.`,
+        ].join('\n');
+      }
+      if (opts.difference) {
+        const pts = Math.abs(va - vb) * 100;
+        summary = [
+          summary,
+          `Selisih persentase ≈ ${formatPctPoints(pts)} percentage point.`,
+        ].join('\n');
+      }
+    } else {
+      summary = winner
+        ? metric === 'totalBudget'
+          ? `${winner.code} memiliki ${label} lebih besar, yaitu ${fmtIdr(valueOf(winner))} dibandingkan ${loser!.code} sebesar ${fmtIdr(valueOf(loser!))}.`
+          : `${label} ${winner.code} lebih besar, yaitu ${fmtIdr(valueOf(winner))} dibandingkan ${loser!.code} sebesar ${fmtIdr(valueOf(loser!))}.`
+        : `${label} ${a.code} dan ${b.code} sama, yaitu ${fmtIdr(va)}.`;
+    }
     return {
       name: 'finance_analytics',
       ok: true,
       summary: [summary, `Data per ${fmtDateId()}.`].join('\n'),
       data: { mode: 'compare', metric, a, b },
+    };
+  }
+
+  private ratioFieldValue(
+    row: {
+      totalBudget: unknown;
+      materialBudget: unknown;
+      jasaBudget: unknown;
+      materialSpent: unknown;
+      jasaSpent: unknown;
+    },
+    field: RatioOperand['num'] | RatioOperand['den'],
+  ): number {
+    if (field === 'realized') {
+      return Number(row.materialSpent) + Number(row.jasaSpent);
+    }
+    if (field === 'materialSpent') return Number(row.materialSpent);
+    if (field === 'jasaSpent') return Number(row.jasaSpent);
+    if (field === 'materialBudget') return Number(row.materialBudget);
+    if (field === 'jasaBudget') return Number(row.jasaBudget);
+    return Number(row.totalBudget);
+  }
+
+  private async compareIntraObjectRatios(
+    user: AuthUser,
+    code: string,
+    pairs: RatioOperand[],
+  ): Promise<ToolTrace> {
+    const ops =
+      pairs.length >= 2
+        ? pairs.slice(0, 2)
+        : ([
+            {
+              num: 'materialSpent',
+              den: 'materialBudget',
+              label: 'material spent terhadap material budget',
+            },
+            {
+              num: 'jasaSpent',
+              den: 'jasaBudget',
+              label: 'jasa spent terhadap jasa budget',
+            },
+          ] satisfies RatioOperand[]);
+    const rows = await this.prisma.financeProject.findMany({
+      where: {
+        status: { not: 'ARCHIVED' },
+        code,
+        ...(this.canSeeAllFinance(user.role) ? {} : { createdById: user.userId }),
+      },
+      select: {
+        code: true,
+        name: true,
+        totalBudget: true,
+        materialBudget: true,
+        jasaBudget: true,
+        materialSpent: true,
+        jasaSpent: true,
+      },
+      take: 1,
+    });
+    const row = rows[0];
+    if (!row) {
+      return {
+        name: 'finance_analytics',
+        ok: true,
+        summary: `Tidak lengkap untuk menghitung persentase ${code}.`,
+      };
+    }
+    const lines = ops.map((op) => {
+      const num = this.ratioFieldValue(row, op.num);
+      const den = this.ratioFieldValue(row, op.den);
+      const pct =
+        den === 0
+          ? 'n/a'
+          : num === 0
+            ? '= 0%'
+            : `≈ ${formatPctId((num / den) * 100)}`;
+      return `${op.label}: ${fmtIdr(num)} / ${fmtIdr(den)} × 100% ${pct}`;
+    });
+    const pcts = ops.map((op) => {
+      const num = this.ratioFieldValue(row, op.num);
+      const den = this.ratioFieldValue(row, op.den);
+      return den ? num / den : 0;
+    });
+    const winnerIdx = pcts[0] === pcts[1] ? -1 : pcts[0] > pcts[1] ? 0 : 1;
+    const head =
+      winnerIdx < 0
+        ? `Persentase ${ops[0].label} dan ${ops[1].label} sama.`
+        : `Persentase penggunaan ${
+            ops[winnerIdx].num === 'materialSpent' ? 'Material Budget' : 'Jasa Budget'
+          } lebih besar.`;
+    return {
+      name: 'finance_analytics',
+      ok: true,
+      summary: [
+        `${row.code} — ${row.name}`,
+        ...lines,
+        '',
+        head,
+        `Data per ${fmtDateId()}.`,
+      ].join('\n'),
+      data: { mode: 'intra_ratio', code: row.code, pairs: ops },
     };
   }
 
@@ -1372,7 +1575,9 @@ export class AiToolsService {
       const totalBudget = Number(r.totalBudget);
       const materialBudget = Number(r.materialBudget ?? 0);
       const jasaBudget = Number(r.jasaBudget ?? 0);
-      const realization = Number(r.materialSpent) + Number(r.jasaSpent);
+      const materialSpent = Number(r.materialSpent);
+      const jasaSpent = Number(r.jasaSpent);
+      const realization = materialSpent + jasaSpent;
       const remaining = totalBudget - realization;
       const overAmount = Math.max(0, realization - totalBudget);
       let sortValue = totalBudget;
@@ -1381,6 +1586,13 @@ export class AiToolsService {
       else if (rankingMetric === 'materialBudget') sortValue = materialBudget;
       else if (rankingMetric === 'jasaBudget') sortValue = jasaBudget;
       else if (rankingMetric === 'overbudget') sortValue = overAmount;
+      else if (rankingMetric === 'realizationPct') {
+        sortValue = totalBudget > 0 ? realization / totalBudget : 0;
+      } else if (rankingMetric === 'materialPct') {
+        sortValue = materialBudget > 0 ? materialSpent / materialBudget : 0;
+      } else if (rankingMetric === 'jasaPct') {
+        sortValue = jasaBudget > 0 ? jasaSpent / jasaBudget : 0;
+      }
       return {
         r,
         sortValue,
@@ -1389,6 +1601,8 @@ export class AiToolsService {
         remaining,
         materialBudget,
         jasaBudget,
+        materialSpent,
+        jasaSpent,
         overAmount,
       };
     });
@@ -1399,8 +1613,14 @@ export class AiToolsService {
     let top = scored.slice(0, n);
     if (tieAware && scored.length) {
       const extreme = scored[0].sortValue;
+      const eps =
+        rankingMetric === 'realizationPct' ||
+        rankingMetric === 'materialPct' ||
+        rankingMetric === 'jasaPct'
+          ? 1e-6
+          : 0.5;
       const ties = scored.filter(
-        (s) => Math.abs(Number(s.sortValue) - Number(extreme)) < 0.5,
+        (s) => Math.abs(Number(s.sortValue) - Number(extreme)) < eps,
       );
       if (ties.length > 1) top = ties;
     }
@@ -1408,19 +1628,41 @@ export class AiToolsService {
     const metricLabel: Record<FinanceRankingMetric, string> = {
       totalBudget: 'Total Budget',
       realization: 'Realisasi',
+      realizationPct: 'Persentase Realisasi',
       remaining: 'Sisa Budget',
       materialBudget: 'Material Budget',
+      materialPct: 'Persentase Penggunaan Material Budget',
       jasaBudget: 'Jasa Budget',
+      jasaPct: 'Persentase Penggunaan Jasa Budget',
       overbudget: 'Over Budget',
     };
     const dirLabel = dir === 'desc' ? 'terbesar' : 'terkecil';
     const tied = tieAware && top.length > 1;
+    const isPct =
+      rankingMetric === 'realizationPct' ||
+      rankingMetric === 'materialPct' ||
+      rankingMetric === 'jasaPct';
+    const titleValue = isPct
+      ? formatPctId(top[0].sortValue * 100)
+      : fmtIdr(top[0].sortValue);
     const title = tied
-      ? `Ada ${top.length} project dengan ${metricLabel[rankingMetric]} paling ${dirLabel} yang sama, yaitu ${fmtIdr(top[0].sortValue)}${hierLabel}`
+      ? `Ada ${top.length} project dengan ${metricLabel[rankingMetric]} paling ${dirLabel} yang sama, yaitu ${titleValue}${hierLabel}`
       : n === 1
         ? `Finance Project dengan ${metricLabel[rankingMetric]} paling ${dirLabel}${hierLabel}`
         : `Top ${n} Finance Project — ${metricLabel[rankingMetric]} ${dirLabel}${hierLabel}`;
     const lines = top.map((item, i) => {
+      const pct =
+        item.totalBudget > 0
+          ? formatPctId((item.realization / item.totalBudget) * 100)
+          : 'n/a';
+      const matPct =
+        item.materialBudget > 0
+          ? formatPctId((item.materialSpent / item.materialBudget) * 100)
+          : 'n/a';
+      const jasaPct =
+        item.jasaBudget > 0
+          ? formatPctId((item.jasaSpent / item.jasaBudget) * 100)
+          : 'n/a';
       const val =
         rankingMetric === 'realization'
           ? item.realization
@@ -1432,10 +1674,22 @@ export class AiToolsService {
                 ? item.jasaBudget
                 : rankingMetric === 'overbudget'
                   ? item.overAmount
-                  : item.totalBudget;
+                  : rankingMetric === 'realizationPct' ||
+                      rankingMetric === 'materialPct' ||
+                      rankingMetric === 'jasaPct'
+                    ? item.sortValue
+                    : item.totalBudget;
+      const shown =
+        rankingMetric === 'realizationPct'
+          ? `${fmtIdr(item.realization)} / ${fmtIdr(item.totalBudget)} × 100% ≈ ${pct}`
+          : rankingMetric === 'materialPct'
+            ? `${fmtIdr(item.materialSpent)} / ${fmtIdr(item.materialBudget)} × 100% ≈ ${matPct}`
+            : rankingMetric === 'jasaPct'
+              ? `${fmtIdr(item.jasaSpent)} / ${fmtIdr(item.jasaBudget)} × 100% ≈ ${jasaPct}`
+              : fmtIdr(val);
       // Include Realisasi + Status so Active Object attribute follow-ups
       // (CSM-002) resolve from the dataset without a live re-query.
-      return `${i + 1}. ${item.r.code} ${item.r.name} — ${fmtIdr(val)} (budget ${fmtIdr(item.totalBudget)}; realisasi ${fmtIdr(item.realization)}; status ${item.r.status}) [${item.r.hierarchyLevel}]`;
+      return `${i + 1}. ${item.r.code} ${item.r.name} — ${shown} (budget ${fmtIdr(item.totalBudget)}; realisasi ${fmtIdr(item.realization)}; status ${item.r.status}) [${item.r.hierarchyLevel}]`;
     });
     return {
       name: 'finance_analytics',

@@ -62,10 +62,18 @@ import {
   isBusinessRoleResponsibilityQuery,
   isUnsupportedKnowledgeCausalQuery,
   isStockQuantityRankingQuery,
+  splitChainedRankingQuery,
+  isOperationalJudgmentFollowUp,
+  buildEvidenceLimitedOperationalNote,
   isResultSetScopedFollowUp,
   shouldReuseActiveResultSet,
+  isScopeResetQuery,
+  isAllMatchingPopulationQuery,
+  isZeroRealizationPopulationQuery,
+  isRealizationPctRankingPhrase,
   isActiveObjectAttributeQuery,
   isObjectComparisonQuery,
+  isIntraObjectPercentCompareQuery,
   isComparisonMetricFollowUp,
   isShortComparisonMetricFollowUp,
   isExplicitGlobalFinancePopulation,
@@ -77,6 +85,8 @@ import {
   isUnsupportedDataQuery,
   detectFinanceMetrics,
   detectFinanceMode,
+  detectRankingMetric,
+  hasExplicitRankingMetric,
   normalizeId,
   detectAnalyticalRequest,
   shouldApplySessionFinanceFilters,
@@ -347,6 +357,12 @@ export class AiService {
     ) {
       intent = 'data';
     }
+    if (
+      (isModuleDataRankingQuery(text) || isRealizationPctRankingPhrase(text)) &&
+      (intent === 'faq' || intent === 'howto' || intent === 'capability')
+    ) {
+      intent = 'analytics';
+    }
 
     // PAI-CSM-002: Conversation State follow-ups are always data — never Guide
     const knowledgeTurn = isKnowledgeQaCandidate(text, session, lastAssistant);
@@ -443,17 +459,40 @@ export class AiService {
       !liveObjectLookup &&
       !analyticalNow &&
       !businessDiagnostic &&
+      isIntraObjectPercentCompareQuery(text)
+    ) {
+      const code =
+        extractExplicitEntityCode(text) || extractSessionProjectCode(session);
+      if (code) {
+        liveObjectLookup = `Bandingkan persentase material jasa project ${code}. ${text}`;
+        intent = 'comparison';
+        session = {
+          ...session,
+          activeObject: code,
+          activeReference: code,
+        };
+      }
+    }
+
+    if (
+      !liveObjectLookup &&
+      !analyticalNow &&
+      !businessDiagnostic &&
       !knowledgeTurn &&
       !isResultSetScopedFollowUp(text) &&
       !isPendingApprovalQuery(text) &&
       !isObjectComparisonQuery(text) &&
+      !isIntraObjectPercentCompareQuery(text) &&
       !isComparisonMetricFollowUp(text) &&
       !inheritCompare &&
       !/(visit|requestor|requester|pemohon|kunjungan)/.test(normalizeId(text)) &&
       (stateFollowUp || (explicitCode && !/\bcari\b/i.test(text))) &&
       !isModuleDataRankingQuery(text) &&
       !isFinanceContextFilterQuery(text) &&
-      !isFinanceFilterOnlyQuery(text)
+      !isFinanceFilterOnlyQuery(text) &&
+      !isZeroRealizationPopulationQuery(text) &&
+      !isAllMatchingPopulationQuery(text) &&
+      !isScopeResetQuery(text)
     ) {
       const snapshot = session.activeDatasetAnswer || lastAssistant;
       const resolved = resolveActiveReference({
@@ -561,7 +600,9 @@ export class AiService {
       (isObjectComparisonQuery(text) ||
         inheritCompare ||
         (extractExplicitEntityCodes(text).length >= 2 &&
-          /(bandingkan|dibandingkan|dibanding)/.test(normalizeId(text))))
+          /(bandingkan|dibandingkan|dibanding|lebih besar|lebih kecil|lebih tinggi|lebih rendah)/.test(
+            normalizeId(text),
+          )))
     ) {
       const codes = extractExplicitEntityCodes(text);
       const current =
@@ -588,7 +629,7 @@ export class AiService {
               ? { a: current, b: other }
               : null;
       if (pair) {
-        liveObjectLookup = `Bandingkan ${metricWord} ${pair.a} dengan ${pair.b}`;
+        liveObjectLookup = `Bandingkan ${metricWord} ${pair.a} dengan ${pair.b}. ${text}`;
         intent = 'comparison';
         session = {
           ...session,
@@ -1101,7 +1142,13 @@ export class AiService {
       session,
       lastAssistant,
     });
-    if (knowledgeHit) {
+    if (
+      knowledgeHit &&
+      !isModuleDataRankingQuery(text) &&
+      !isRealizationPctRankingPhrase(text) &&
+      !isFinanceFilterOnlyQuery(text) &&
+      !isZeroRealizationPopulationQuery(text)
+    ) {
       return reply(knowledgeHit.answer, {
         intent: 'faq',
         sticker: '📘',
@@ -2014,6 +2061,8 @@ export class AiService {
       toolNames.includes('finance_analytics') &&
       hasUsableConstraint(session.constraints) &&
       (shouldApplySessionFinanceFilters(text) || applyRankingInherit) &&
+      !isScopeResetQuery(text) &&
+      !isAllMatchingPopulationQuery(text) &&
       !isFinanceInterpretationQuery(text) &&
       !isObjectScopedReference(text) &&
       !isCausalQuery(text)
@@ -2024,7 +2073,7 @@ export class AiService {
           session.constraints,
         );
       }
-      if (applyRankingInherit) {
+      if (applyRankingInherit || shouldReuseActiveResultSet(text)) {
         if (!shouldReuseActiveResultSet(text)) {
           toolMessage = appendInheritedRankingLimitTag(
             toolMessage,
@@ -2032,11 +2081,16 @@ export class AiService {
             text,
           );
         }
-        toolMessage = appendInheritedRankingMetricTag(
-          toolMessage,
-          session.constraints,
-          text,
-        );
+        if (hasExplicitRankingMetric(text)) {
+          toolMessage = toolMessage.replace(/\s*\[METRIC_[A-Z_]+\]/gi, '');
+          toolMessage = `${toolMessage} [METRIC_${detectRankingMetric(text)}]`.trim();
+        } else {
+          toolMessage = appendInheritedRankingMetricTag(
+            toolMessage,
+            session.constraints,
+            text,
+          );
+        }
         toolMessage = appendInheritedRankingDirectionTag(
           toolMessage,
           session.constraints,
@@ -2069,17 +2123,64 @@ export class AiService {
         .join(',')}]`;
     }
 
-    const toolTraces =
+    const chained = splitChainedRankingQuery(text);
+    if (chained) {
+      const tags = toolMessage.match(/\[[^\]]+\]/g) ?? [];
+      toolMessage = [chained.head, ...tags].join(' ').trim();
+    }
+
+    let toolTraces =
       toolNames.length > 0
         ? await this.tools.runTools(toolNames, user, toolMessage)
         : [];
 
-    const hasUsefulTools = toolTraces.some(
+    let hasUsefulTools = toolTraces.some(
       (t) =>
         t.ok &&
         t.summary &&
         !/tidak ditemukan|tidak ada finance project berstatus/i.test(t.summary),
     );
+    if (
+      chained &&
+      hasUsefulTools &&
+      toolNames.includes('finance_analytics') &&
+      !isOperationalJudgmentFollowUp(chained.tail)
+    ) {
+      const first = toolTraces.find(
+        (t) => t.name === 'finance_analytics' && t.ok,
+      );
+      const fromData = Array.isArray(
+        (first?.data as { rows?: Array<{ code?: string }> } | undefined)?.rows,
+      )
+        ? ((first!.data as { rows: Array<{ code?: string }> }).rows
+            .map((r) => r.code)
+            .filter((c): c is string => Boolean(c)))
+        : [];
+      const fromSummary = extractRankedFinanceMembers(
+        first?.summary || '',
+      ).map((m) => m.code);
+      const codes = fromData.length ? fromData : fromSummary;
+      if (codes.length) {
+        const second = await this.tools.runTools(
+          ['finance_analytics'],
+          user,
+          `${chained.tail} [RESULT_SET:${codes.join(',')}]`,
+        );
+        if (
+          second.some(
+            (t) =>
+              t.ok &&
+              t.summary &&
+              !/tidak ditemukan|tidak ada finance project berstatus/i.test(
+                t.summary,
+              ),
+          )
+        ) {
+          toolTraces = second;
+          hasUsefulTools = true;
+        }
+      }
+    }
     const hasToolAttempt = toolTraces.some((t) => t.ok && t.summary);
     const wasSearchMode = detectFinanceMode(toolMessage) === 'search';
 
@@ -2288,7 +2389,7 @@ export class AiService {
       });
     }
 
-    const { answer, ollamaUsed } = await this.composeAnswer({
+    const composed = await this.composeAnswer({
       user,
       text: effectiveText,
       intent,
@@ -2296,6 +2397,10 @@ export class AiService {
       toolTraces: hasUsefulTools ? toolTraces : [],
       proposedAction,
     });
+    let { answer, ollamaUsed } = composed;
+    if (chained && isOperationalJudgmentFollowUp(chained.tail) && hasUsefulTools) {
+      answer = `${answer}\n\n${buildEvidenceLimitedOperationalNote()}`;
+    }
 
     const resolvedIntent: ActiveIntent =
       intent === 'analytics'
@@ -2315,30 +2420,30 @@ export class AiService {
           : '')
       : null;
 
-    const rankingToolData = (() => {
+    const analyticsData = (() => {
       const t = toolTraces.find((x) => x.name === 'finance_analytics' && x.ok);
       const d = t?.data;
-      if (
-        d &&
-        typeof d === 'object' &&
-        'rankingMetric' in (d as object) &&
-        'dir' in (d as object)
-      ) {
-        const rec = d as {
-          rankingMetric: string;
-          dir: 'asc' | 'desc';
-          limit?: number;
-          rows?: Array<{
-            code: string;
-            name?: string;
-            status?: string;
-            hierarchyLevel?: string;
-          }>;
-        };
-        return rec;
-      }
+      if (!d || typeof d !== 'object' || Array.isArray(d)) return null;
+      const rec = d as {
+        rankingMetric?: string;
+        dir?: 'asc' | 'desc';
+        limit?: number;
+        mode?: string;
+        rows?: Array<{
+          code: string;
+          name?: string;
+          status?: string;
+          hierarchyLevel?: string;
+        }>;
+      };
+      if (Array.isArray(rec.rows) && rec.rows.length) return rec;
+      if (rec.rankingMetric && rec.dir) return rec;
       return null;
     })();
+    const rankingToolData =
+      analyticsData?.rankingMetric && analyticsData?.dir
+        ? analyticsData
+        : null;
     const rankingConstraints = rankingToolData
       ? {
           ...session.constraints,
@@ -2381,7 +2486,7 @@ export class AiService {
             name: r.name || r.code,
             hierarchyLevel: r.hierarchyLevel || '',
           }))
-        : liveObjectLookup || rankingToolData
+        : liveObjectLookup || rankingToolData || analyticsData?.rows?.length
           ? null
           : session.pendingCandidates;
     const causalTrace = toolTraces.find(
@@ -2422,8 +2527,8 @@ export class AiService {
       patch: {
         activeTopic: session.activeTopic || sessionCtx.activeTopic,
         pendingCandidates: rankingToolData ? null : searchCandidates,
-        activeResultSet: rankingToolData?.rows?.length
-          ? rankingToolData.rows.map((r) => ({
+        activeResultSet: analyticsData?.rows?.length
+          ? analyticsData.rows.map((r) => ({
               code: r.code,
               name: r.name,
               status: r.status,
@@ -2480,6 +2585,9 @@ export class AiService {
                 metric?:
                   | 'totalBudget'
                   | 'realization'
+                  | 'realizationPct'
+                  | 'materialPct'
+                  | 'jasaPct'
                   | 'remaining'
                   | 'materialBudget'
                   | 'jasaBudget';
