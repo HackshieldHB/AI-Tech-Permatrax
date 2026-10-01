@@ -16,6 +16,8 @@ import { Role } from '@prisma/client'; // FIX: typed GIS roles
 import { Response } from 'express';
 import { ApiTags, ApiOperation, ApiParam } from '@nestjs/swagger';
 import { MapService } from './map.service';
+import { FtttGisService } from './fttt-gis.service';
+import { CalculateFtttDto, CreateGisTowerDto, UpsertGisTowerDto } from './fttt-gis.dto';
 import { parseMvtTilePathParams } from './map-tile-params';
 import { Public } from '../auth/decorators/public.decorator'; // FIX: MVT / MapViewer tanpa JWT
 import { Roles } from '../auth/decorators/roles.decorator'; // FIX: gate GIS endpoints
@@ -91,7 +93,10 @@ const GIS_ROLES = [
 @ApiTags('Map')
 @Controller('map')
 export class MapController {
-  constructor(private readonly mapService: MapService) {}
+  constructor(
+    private readonly mapService: MapService,
+    private readonly ftttGisService: FtttGisService,
+  ) {}
 
   @Public() // FIX: tile fetch from MapLibre tanpa Authorization
   @Get('tiles/:z/:x/:y.pbf')
@@ -324,5 +329,37 @@ export class MapController {
   @Roles(...GIS_ROLES)
   async calculate(@Body() body: CalculateFtthDto) {
     return this.mapService.calculateFtthNetwork(body);
+  }
+
+  // GIS FTTT — tower registry and tower-to-tower planning. FTTH calculate is unchanged.
+  @Get('fttt/towers')
+  @Roles(...GIS_ROLES)
+  listFtttTowers() {
+    return this.ftttGisService.listTowers();
+  }
+
+  @Post('fttt/towers')
+  @Roles(...GIS_ROLES)
+  createFtttTower(@Body() body: CreateGisTowerDto, @Req() req: { user: { userId: string } }) {
+    return this.ftttGisService.createTower(body, req.user.userId);
+  }
+
+  @Patch('fttt/towers/:id')
+  @Roles(...GIS_ROLES)
+  updateFtttTower(@Param('id') id: string, @Body() body: UpsertGisTowerDto) {
+    return this.ftttGisService.updateTower(id, body);
+  }
+
+  @Delete('fttt/towers/:id')
+  @Roles(...GIS_ROLES)
+  deleteFtttTower(@Param('id') id: string) {
+    return this.ftttGisService.deleteTower(id);
+  }
+
+  @Post('fttt/calculate')
+  @Roles(...GIS_ROLES)
+  @TimeoutMs(45000)
+  calculateFttt(@Body() body: CalculateFtttDto) {
+    return this.ftttGisService.calculate(body);
   }
 }

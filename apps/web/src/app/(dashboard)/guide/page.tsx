@@ -52,7 +52,10 @@ function getGuide(role?: string, fiberType?: string | null): GuideConfig { // NE
         'Monitor progress permit cluster',
         'Buat order barang untuk proyek',
       ],
-      starts: [{ label: 'Lihat Cluster Aktif', href: '/permit-clusters' }],
+      starts: [
+        { label: 'Lihat Cluster Aktif', href: '/permit-clusters' },
+        ...(role === 'PM_FTTT' ? [{ label: 'Buka GIS FTTT', href: '/map/fttt' }] : []),
+      ],
     };
   }
   if (role?.startsWith('SURVEYOR_')) {
@@ -65,7 +68,10 @@ function getGuide(role?: string, fiberType?: string | null): GuideConfig { // NE
         'Lakukan sosialisasi dan negosiasi kompensasi',
         'Upload tanda tangan RT/RW',
       ],
-      starts: [{ label: 'Pilih RW untuk Dikunjungi', href: '/clean-list' }],
+      starts: [
+        { label: 'Pilih RW untuk Dikunjungi', href: '/clean-list' },
+        ...(role === 'SURVEYOR_FTTT' ? [{ label: 'Buka GIS FTTT', href: '/map/fttt' }] : []),
+      ],
     };
   }
   if (role === 'ADMIN') {
