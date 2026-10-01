@@ -70,6 +70,7 @@ import {
   isScopeResetQuery,
   isAllMatchingPopulationQuery,
   isZeroRealizationPopulationQuery,
+  isRealizationPctRankingPhrase,
   isActiveObjectAttributeQuery,
   isObjectComparisonQuery,
   isIntraObjectPercentCompareQuery,
@@ -84,6 +85,8 @@ import {
   isUnsupportedDataQuery,
   detectFinanceMetrics,
   detectFinanceMode,
+  detectRankingMetric,
+  hasExplicitRankingMetric,
   normalizeId,
   detectAnalyticalRequest,
   shouldApplySessionFinanceFilters,
@@ -353,6 +356,12 @@ export class AiService {
       (intent === 'faq' || intent === 'howto' || intent === 'clarify')
     ) {
       intent = 'data';
+    }
+    if (
+      (isModuleDataRankingQuery(text) || isRealizationPctRankingPhrase(text)) &&
+      (intent === 'faq' || intent === 'howto' || intent === 'capability')
+    ) {
+      intent = 'analytics';
     }
 
     // PAI-CSM-002: Conversation State follow-ups are always data — never Guide
@@ -1133,7 +1142,13 @@ export class AiService {
       session,
       lastAssistant,
     });
-    if (knowledgeHit) {
+    if (
+      knowledgeHit &&
+      !isModuleDataRankingQuery(text) &&
+      !isRealizationPctRankingPhrase(text) &&
+      !isFinanceFilterOnlyQuery(text) &&
+      !isZeroRealizationPopulationQuery(text)
+    ) {
       return reply(knowledgeHit.answer, {
         intent: 'faq',
         sticker: '📘',
@@ -2058,7 +2073,7 @@ export class AiService {
           session.constraints,
         );
       }
-      if (applyRankingInherit) {
+      if (applyRankingInherit || shouldReuseActiveResultSet(text)) {
         if (!shouldReuseActiveResultSet(text)) {
           toolMessage = appendInheritedRankingLimitTag(
             toolMessage,
@@ -2066,11 +2081,16 @@ export class AiService {
             text,
           );
         }
-        toolMessage = appendInheritedRankingMetricTag(
-          toolMessage,
-          session.constraints,
-          text,
-        );
+        if (hasExplicitRankingMetric(text)) {
+          toolMessage = toolMessage.replace(/\s*\[METRIC_[A-Z_]+\]/gi, '');
+          toolMessage = `${toolMessage} [METRIC_${detectRankingMetric(text)}]`.trim();
+        } else {
+          toolMessage = appendInheritedRankingMetricTag(
+            toolMessage,
+            session.constraints,
+            text,
+          );
+        }
         toolMessage = appendInheritedRankingDirectionTag(
           toolMessage,
           session.constraints,
@@ -2400,30 +2420,30 @@ export class AiService {
           : '')
       : null;
 
-    const rankingToolData = (() => {
+    const analyticsData = (() => {
       const t = toolTraces.find((x) => x.name === 'finance_analytics' && x.ok);
       const d = t?.data;
-      if (
-        d &&
-        typeof d === 'object' &&
-        'rankingMetric' in (d as object) &&
-        'dir' in (d as object)
-      ) {
-        const rec = d as {
-          rankingMetric: string;
-          dir: 'asc' | 'desc';
-          limit?: number;
-          rows?: Array<{
-            code: string;
-            name?: string;
-            status?: string;
-            hierarchyLevel?: string;
-          }>;
-        };
-        return rec;
-      }
+      if (!d || typeof d !== 'object' || Array.isArray(d)) return null;
+      const rec = d as {
+        rankingMetric?: string;
+        dir?: 'asc' | 'desc';
+        limit?: number;
+        mode?: string;
+        rows?: Array<{
+          code: string;
+          name?: string;
+          status?: string;
+          hierarchyLevel?: string;
+        }>;
+      };
+      if (Array.isArray(rec.rows) && rec.rows.length) return rec;
+      if (rec.rankingMetric && rec.dir) return rec;
       return null;
     })();
+    const rankingToolData =
+      analyticsData?.rankingMetric && analyticsData?.dir
+        ? analyticsData
+        : null;
     const rankingConstraints = rankingToolData
       ? {
           ...session.constraints,
@@ -2466,7 +2486,7 @@ export class AiService {
             name: r.name || r.code,
             hierarchyLevel: r.hierarchyLevel || '',
           }))
-        : liveObjectLookup || rankingToolData
+        : liveObjectLookup || rankingToolData || analyticsData?.rows?.length
           ? null
           : session.pendingCandidates;
     const causalTrace = toolTraces.find(
@@ -2507,8 +2527,8 @@ export class AiService {
       patch: {
         activeTopic: session.activeTopic || sessionCtx.activeTopic,
         pendingCandidates: rankingToolData ? null : searchCandidates,
-        activeResultSet: rankingToolData?.rows?.length
-          ? rankingToolData.rows.map((r) => ({
+        activeResultSet: analyticsData?.rows?.length
+          ? analyticsData.rows.map((r) => ({
               code: r.code,
               name: r.name,
               status: r.status,

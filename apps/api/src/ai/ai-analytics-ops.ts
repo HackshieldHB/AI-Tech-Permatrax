@@ -78,7 +78,7 @@ export function isObjectScopedReference(text: string): boolean {
 
 export function isExplicitRankingUtterance(text: string): boolean {
   const m = normalizeId(text);
-  return /(top\s*\d*|terbesar|terkecil|tertinggi|terendah|ranking|paling besar|paling kecil|paling tinggi|paling rendah|urutkan|susun ulang|ketiganya|masing-masing)/.test(
+  return /(top\s*\d*|terbesar|terkecil|tertinggi|terendah|teratas|ranking|paling besar|paling kecil|paling tinggi|paling rendah|paling banyak|urutkan|susun ulang|ketiganya|masing-masing|proporsional)/.test(
     m,
   );
 }

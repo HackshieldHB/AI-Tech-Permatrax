@@ -240,7 +240,7 @@ export function extractRankedFinanceMembers(
   for (const raw of answer.split(/\n/)) {
     const line = raw.trim();
     const m = line.match(
-      /^\d+\.\s*((?:SITE|SEG|FIN)-\d{4}-\d+)\s+(.+?)(?:\s+[—-]\s+|$)/i,
+      /^(?:\d+\.\s*)?((?:SITE|SEG|FIN)-\d{4}-\d+)\s+(?:[—\-]\s*)?(.+?)(?:\s+[—-]\s+|$)/i,
     );
     if (!m) continue;
     const rest = line.slice(m[0].length);
@@ -642,6 +642,7 @@ export function hasConversationalReference(text: string): boolean {
     /\b(yang tadi|tadi|tersebut|yang sebelumnya|project itu|yang barusan|yang pertama|yang kedua|yang ketiga|yang keempat|yang kelima|yang terakhir|yang ke-?\d+)\b/.test(
       m,
     ) ||
+    /\b(dari (lima|tiga|5|3|hasil)|lima tadi|tiga itu|lima itu)\b/.test(m) ||
     /\b(barang|project|item|proyek)\s+(pertama|kedua|ketiga|keempat|terakhir|ke-?\d+)\b/.test(
       m,
     ) ||

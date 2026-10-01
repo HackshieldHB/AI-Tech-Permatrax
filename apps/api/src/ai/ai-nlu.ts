@@ -276,11 +276,17 @@ export function isCapabilityInquiry(text: string): boolean {
     return true;
   }
   if (
+    /\b(active|aktif|site|segment|standalone)\b/.test(m) &&
+    /(project|proyek|realisasi|terealisasi|filter|jenisnya|sekaligus)/.test(m)
+  ) {
+    return false;
+  }
+  if (
     /(ingin|mau|ingin bertanya|mau tanya|boleh tanya).*(seputar|tentang|mengenai)?/.test(
       m,
     ) &&
     /(finance|budget|cash|stok|stock|visit|permit|approval|project)/.test(m) &&
-    !/(berapa|brapa|jumlah|status|cari|tampilkan|cara|gimana|ajukan|ajuin|ngajuin|lewat)/.test(
+    !/(berapa|brapa|jumlah|status|cari|tampilkan|cara|gimana|ajukan|ajuin|ngajuin|lewat|active|aktif|site|realisasi|terealisasi|sekaligus)/.test(
       m,
     )
   ) {
@@ -675,7 +681,7 @@ export function resolveSessionContext(input: {
     const topic = historyTopic || msgTopic || 'finance';
     const norm = normalizeId(msg);
 
-    if (isResultSetScopedFollowUp(msg) || isObjectComparisonQuery(msg)) {
+    if (isResultSetScopedFollowUp(msg) || isObjectComparisonQuery(msg) || isResultSetRetainedFilterQuery(msg)) {
       return {
         effectiveText: msg,
         activeTopic: topic,
@@ -790,10 +796,11 @@ export function isProceduralGuidanceQuery(text: string): boolean {
   const m = normalizeId(primaryUtterance(text));
   if (!m) return false;
   if (
-    /(top[\s-]*\d+|terbesar|terkecil|paling besar|paling kecil|paling tinggi|paling rendah)/.test(
+    /(top[\s-]*\d+|terbesar|terkecil|paling besar|paling kecil|paling tinggi|paling rendah|paling banyak|teratas|proporsional)/.test(
       m,
     ) &&
-    !/(cara|ajukan|ajuin|ngajuin|pengajuan|langkah|lewat mana|step)/.test(m)
+    (!/(cara|ajukan|ajuin|ngajuin|pengajuan|langkah|lewat mana|step)/.test(m) ||
+      /(cara hitung|cara menghitung|tampilkan cara)/.test(m))
   ) {
     return false;
   }
@@ -1059,7 +1066,7 @@ export function isModuleDataRankingQuery(text: string): boolean {
     /(paling sedikit|paling kecil|terendah|terkecil|lowest|min stock|hampir habis)/.test(
       m,
     ) ||
-    /(paling banyak|paling besar|tertinggi|terbesar|top\s*\d*|highest|largest|maximum|\bmax\b)/.test(
+    /(paling banyak|paling besar|tertinggi|terbesar|teratas|top\s*\d*|highest|largest|maximum|\bmax\b)/.test(
       m,
     ) ||
     /(barang|stok|stock|item).*(sedikit|kecil|besar|banyak)/.test(m) ||
@@ -1160,6 +1167,9 @@ export function expandWithContext(
     recentUserMessages[0];
 
   if (isProceduralGuidanceQuery(m) || isKnowledgeDefinitionQuery(m)) {
+    return m;
+  }
+  if (isResultSetScopedFollowUp(m) || isResultSetRetainedFilterQuery(m)) {
     return m;
   }
 
@@ -1426,7 +1436,7 @@ export function isFinanceFilterOnlyQuery(text: string): boolean {
   if (!hasStatus && !hasHier) return false;
   const leftover = m
     .replace(
-      /\b(tampilkan|list|daftar|lihat|show|cari|project|proyek|finance|yang|dengan|berdasarkan|filter|hanya|sekarang|saja|hanya|active|aktif|closed|archived|arsip|ditutup|site|segment|standalone|hapus|buang|hilangkan|ganti|kembali|semua|seluruh|tipe|statusnya|realisasi|realisasinya|masih|rp0|rp|nol|dan)\b/g,
+      /\b(tampilkan|list|daftar|lihat|show|cari|project|proyek|finance|yang|dengan|berdasarkan|filter|hanya|sekarang|saja|hanya|active|aktif|closed|archived|arsip|ditutup|site|segment|standalone|hapus|buang|hilangkan|ganti|kembali|semua|seluruh|tipe|jenisnya|jenis|statusnya|realisasi|realisasinya|masih|rp0|rp|nol|dan|aku|cuma|mau|memenuhi|semuanya|sekaligus|belum|ada|dana|terealisasi|penggunaan|nol)\b/g,
       ' ',
     )
     .replace(/\b0+\b/g, ' ')
@@ -1452,6 +1462,7 @@ export function isFinanceContextFilterQuery(text: string): boolean {
     return false;
   }
   if (/(bahas|pindah|fokus|modul)/.test(m)) return false;
+  if (isResultSetRetainedFilterQuery(text)) return false;
   if (isFinanceFilterRemoveQuery(text) || isFinanceFilterClearQuery(text)) {
     return true;
   }
@@ -1571,7 +1582,7 @@ export function isStandaloneFinanceAggregateQuery(text: string): boolean {
 export function hasExplicitRankingMetric(text: string): boolean {
   const m = normalizeId(primaryUtterance(text));
   return (
-    /(over\s*budget|overbudget|realisasi|spent|terpakai|sisa|remaining|material|jasa|service|budget|anggaran|persen|persentase|rasio|%|porsi|dana terpakai)/.test(
+    /(over\s*budget|overbudget|realisasi|spent|terpakai|sisa|remaining|material|jasa|service|budget|anggaran|persen|persentase|rasio|%|porsi|dana terpakai|proporsional|menghabiskan|penggunaan|jatah|alokasi)/.test(
       m,
     )
   );
@@ -1714,10 +1725,16 @@ export type FinanceMode =
 /** Keep the previous ranked members unless the user starts a new population. */
 export function shouldReuseActiveResultSet(text: string): boolean {
   const m = normalizeId(primaryUtterance(text));
-  if (/(semua|seluruh)\s+(project|proyek)/.test(m)) return false;
+  if (/(semua|seluruh)\s+(project|proyek)/.test(m) && !isResultSetScopedFollowUp(text)) {
+    return false;
+  }
   if (isScopeResetQuery(text)) return false;
-  if (isAllMatchingPopulationQuery(text)) return false;
-  if (isResultSetScopedFollowUp(text)) return true;
+  if (isAllMatchingPopulationQuery(text) && !isResultSetScopedFollowUp(text)) {
+    return false;
+  }
+  if (isResultSetScopedFollowUp(text) || isResultSetRetainedFilterQuery(text)) {
+    return true;
+  }
   if (
     detectExplicitTopN(text) != null &&
     /(tampilkan|top)\b/.test(m) &&
@@ -1741,8 +1758,8 @@ export function isResultSetScopedFollowUp(text: string): boolean {
     return false;
   }
   return (
-    /(lima tadi|lima project tadi|lima proyek tadi|lima hasil tadi)/.test(m) ||
-    /(dari (lima|5|tiga|3) (project|proyek|hasil)?\s*(tadi|itu))/.test(m) ||
+    /(lima tadi|lima project tadi|lima proyek tadi|lima hasil tadi|lima tersebut|tiga tersebut)/.test(m) ||
+    /(dari (lima|5|tiga|3) (project|proyek|hasil)?\s*(tadi|itu|tersebut))/.test(m) ||
     /(dari (ketiga(nya)?|tiga itu|tiga project itu|hasil tadi)|hasil tadi|dari ketiganya)/.test(
       m,
     ) ||
@@ -1759,7 +1776,24 @@ export function isResultSetScopedFollowUp(text: string): boolean {
     ) ||
     /(yang pending tadi|pending tadi|semua yang pending|semua yang tadi)/.test(m) ||
     /(yang tadi itu).*(project|nominal|pengaju)/.test(m) ||
-    /(project apa).*(nominal).*(pengaju)/.test(m)
+    /(project apa).*(nominal).*(pengaju)/.test(m) ||
+    isResultSetRetainedFilterQuery(text)
+  );
+}
+
+/** Filter/sort the retained members — not a new global population. */
+export function isResultSetRetainedFilterQuery(text: string): boolean {
+  const m = normalizeId(primaryUtterance(text));
+  if (isScopeResetQuery(text)) return false;
+  if (isAllMatchingPopulationQuery(text) && !/(dari hasil|tadi|tersebut|itu)/.test(m)) {
+    return false;
+  }
+  return (
+    /(ambil|sisakan|saring).*(tipe|jenis(nya)?)\s*(site|segment|standalone)/.test(
+      m,
+    ) ||
+    /(ambil yang (tipe\s+|jenis(nya)?\s+)?)(site|segment|standalone)/.test(m) ||
+    /(sisakan yang).*(realisasi|nol|rp\s*0|terealisasi)/.test(m)
   );
 }
 
@@ -1794,8 +1828,13 @@ export function splitChainedRankingQuery(
   const tn = normalizeId(tail);
   if (
     isResultSetScopedFollowUp(tail) ||
-    isModuleDataRankingQuery(tail) ||
     isOperationalJudgmentFollowUp(tail) ||
+    (isModuleDataRankingQuery(tail) &&
+      (hasExplicitRankingMetric(tail) ||
+        isRealizationPctRankingPhrase(tail) ||
+        isMaterialPctRankingPhrase(tail) ||
+        isJasaPctRankingPhrase(tail) ||
+        /(urutkan|susun ulang|ketiganya)/.test(tn))) ||
     /(dari (ketiga(nya)?|tiga|hasil|itu)|urutkan|susun ulang|untuk ketiganya)/.test(
       tn,
     )
@@ -1827,10 +1866,13 @@ export function isZeroRealizationPopulationQuery(text: string): boolean {
     return false;
   }
   return (
-    /(realisasi).*(rp\s*0|masih\s*(rp\s*)?0|nol|belum\s*(ada|terpakai)|0\b)/.test(
+    (/(realisasi).*(rp\s*0|masih\s*(rp\s*)?0|nol|belum\s*(ada|terpakai)|0\b)/.test(
       m,
-    ) &&
-    /(tampilkan|list|daftar|project|proyek|finance|active|aktif|site|segment)/.test(
+    ) ||
+      /(belum ada (dana|realisasi|penggunaan)|belum.*terealisasi|tidak ada realisasi|tanpa realisasi|dana yang terealisasi)/.test(
+        m,
+      )) &&
+    /(tampilkan|list|daftar|project|proyek|finance|active|aktif|site|segment|sisakan|ambil|mau)/.test(
       m,
     )
   );
@@ -1849,6 +1891,13 @@ export function isAllMatchingPopulationQuery(text: string): boolean {
   if (isFinanceFilterClearQuery(text)) return false;
   const m = normalizeId(primaryUtterance(text));
   if (detectExplicitTopN(text) != null) return false;
+  if (
+    /(paling|teratas|ranking|top\s*\d*|mana yang|menghabiskan|proporsional)/.test(
+      m,
+    )
+  ) {
+    return false;
+  }
   return (
     /(tampilkan|list|daftar|ambil)\s+semua/.test(m) ||
     /(semua|seluruh)\s+(finance\s+)?(project|proyek)/.test(m) ||
@@ -2243,6 +2292,8 @@ export function detectExplicitTopN(text: string): number | null {
     /\b(\d{1,2})\s+(?:project\s+)?(?:dengan\s+)?(?:total\s+)?(?:budget|anggaran|realisasi|sisa|material|jasa)?\s*(terbesar|terkecil|teratas|terendah|paling)/,
     /\b(?:sekarang|tampilkan|ambil|lihat)\s+(\d{1,2})\s+(?:yang\s+)?(?:budget|anggaran|realisasi|sisa|material|jasa|finance|project|proyek)/,
     /\btampilkan\s+(\d{1,2})\b/,
+    /\b(\d{1,2})\s+teratas\b/,
+    /\bteratas\s+(\d{1,2})\b/,
     /\b(\d{1,2})\s+(?:finance\s+)?(?:project|proyek)\b/,
     /\b(?:jadikan|ambil|pakai|pake|limit)\s+(?:top[\s-]*)?(\d{1,2})\b/,
     /\b(?:sekarang|hanya)\s+(\d{1,2})\s*(?:saja)?$/,
@@ -2411,18 +2462,15 @@ export function isRealizationPctRankingPhrase(text: string): boolean {
     /(realisasi).*(terhadap|dibanding|dibandingkan)\s*(total\s+)?(budget|anggaran)/.test(
       s,
     ) ||
-    /(porsi|rasio).*(dana|realisasi|terpakai).*(dibanding|terhadap|dibandingkan)/.test(
-      s,
-    ) ||
-    /(dana|anggaran|budget).*(terpakai|terpakainya).*(dibanding|terhadap|dibandingkan)/.test(
-      s,
-    ) ||
-    /(penggunaan|tingkat penggunaan)\s+(budget|anggaran).*(realisasi)/.test(s) ||
+    /(porsi|rasio).*(dana|realisasi|terpakai|budget|anggaran)/.test(s) ||
+    /(dana|anggaran|budget).*(terpakai|terpakainya)/.test(s) ||
+    /(penggunaan|tingkat penggunaan)\s+(budget|anggaran)/.test(s) ||
     /(berdasarkan)\s+realisasi.*(dibanding|terhadap|dibandingkan)/.test(s) ||
-    /(penggunaan).*(budget|anggaran).*(persen|porsi|rasio)/.test(s) ||
-    /(terpakai).*(dibandingkan|dibanding|terhadap).*(total\s+)?(anggaran|budget)/.test(
-      s,
-    )
+    /(penggunaan).*(budget|anggaran|jatah|alokasi)/.test(s) ||
+    /(terpakai).*(dibandingkan|dibanding|terhadap|jatah|alokasi)/.test(s) ||
+    /(menghabiskan).*(budget|anggaran)/.test(s) ||
+    /(secara\s+)?proporsional/.test(s) ||
+    /(dibanding|dibandingkan|terhadap)\s+(jatah|alokasi)/.test(s)
   );
 }
 
@@ -2475,6 +2523,13 @@ export function detectRankingMetric(text: string): FinanceRankingMetric {
     );
   // This-turn wording on the primary utterance wins over inherited tags.
   // Do not scan METRIC/LIMIT tags as "budget" — "materialBudget" contains "budget".
+  // Konteks referensi is the live utterance when a prior ranking line was prepended.
+  if (ctx && (isMaterialPctRankingPhrase(ctx) || (/\bmaterial\b/.test(ctx) && !isMaterialPctRankingPhrase(m)))) {
+    return isMaterialPctRankingPhrase(ctx) ? 'materialPct' : 'materialBudget';
+  }
+  if (ctx && (isJasaPctRankingPhrase(ctx) || (/\b(jasa|service)\b/.test(ctx) && !isJasaPctRankingPhrase(m)))) {
+    return isJasaPctRankingPhrase(ctx) ? 'jasaPct' : 'jasaBudget';
+  }
   if (/(over\s*budget|overbudget)/.test(m)) return 'overbudget';
   if (/(sisa\s*budget|remaining(\s*budget)?)/.test(m) || (/\bsisa\b/.test(m) && !/tersisa/.test(m))) {
     return 'remaining';
@@ -2668,7 +2723,7 @@ export function extractHierarchyConstraint(
   if (/\[HIERARCHY_STANDALONE\]/i.test(text)) return 'STANDALONE';
   const m = normalizeId(text);
   const hierGlue =
-    /(berdasarkan|filter|hanya|level|hierarki|maksud|bukan|sekarang|saja|project|proyek|terbesar|terkecil|top\s*\d*|ranking|budget|active|aktif|closed|archived|list|daftar|tampilkan)/;
+    /(berdasarkan|filter|hanya|level|hierarki|maksud|bukan|sekarang|saja|project|proyek|terbesar|terkecil|top\s*\d*|ranking|budget|active|aktif|closed|archived|list|daftar|tampilkan|jenisnya|tipe)/;
   // PAI-FNC-001/005 V11: "Sekarang SEGMENT saja" is a type filter, not Guide
   if (
     /\b(segment)\b/.test(m) &&
@@ -2721,6 +2776,17 @@ export function detectFinanceMode(text: string): FinanceMode {
   }
 
   if (
+    isResultSetRetainedFilterQuery(text) ||
+    (isResultSetScopedFollowUp(text) &&
+      extractHierarchyConstraint(text) &&
+      !/(paling|terbesar|terkecil|top\s*\d*|urutkan|susun ulang|material|jasa|persen)/.test(
+        m,
+      ))
+  ) {
+    return 'filtered_list';
+  }
+
+  if (
     (isAllMatchingPopulationQuery(text) || isScopeResetQuery(text)) &&
     (isZeroRealizationPopulationQuery(text) ||
       (extractHierarchyConstraint(text) && /\b(active|aktif)\b/.test(m)))
@@ -2730,7 +2796,7 @@ export function detectFinanceMode(text: string): FinanceMode {
 
   // PAI-FNC-004: ranking with dynamic metric (before generic overbudget/summary)
   const wantsRank =
-    (/(top\s*\d*|terbesar|terkecil|ranking|paling besar|paling kecil|paling tinggi|paling rendah|highest|lowest|largest|smallest)/.test(
+    (/(top\s*\d*|terbesar|terkecil|teratas|ranking|paling besar|paling kecil|paling tinggi|paling rendah|paling banyak|highest|lowest|largest|smallest)/.test(
       m,
     ) ||
       /(berdasarkan|dilihat dari|lihat dari)\s+(total\s+|persentase\s+|persen\s+|rasio\s+)?(realisasi|budget|anggaran|material|jasa|sisa)/.test(
