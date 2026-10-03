@@ -33,6 +33,7 @@ import {
   meaningfulTokens,
   normalizeId,
   isZeroRealizationPopulationQuery,
+  isActiveStatusPhrase,
   type FinanceMetric,
   type FinanceRankingMetric,
 } from './ai-nlu';
@@ -447,7 +448,7 @@ export class AiToolsService {
         mode !== 'metric_aggregate' &&
         mode !== 'status_breakdown' &&
         !negatedActive) ||
-      (/\baktif\b|\bactive\b/.test(normalizeId(bareMessage)) &&
+      (isActiveStatusPhrase(bareMessage) &&
         !negatedActive &&
         !broaderScope &&
         !forceClosed &&

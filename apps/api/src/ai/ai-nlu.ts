@@ -282,11 +282,10 @@ export function isCapabilityInquiry(text: string): boolean {
     return false;
   }
   if (
-    /(ingin|mau|ingin bertanya|mau tanya|boleh tanya).*(seputar|tentang|mengenai)?/.test(
-      m,
-    ) &&
+    /\b(ingin|mau|boleh)\b/.test(m) &&
+    /(tanya|bertanya|seputar|tentang|mengenai|bahas)/.test(m) &&
     /(finance|budget|cash|stok|stock|visit|permit|approval|project)/.test(m) &&
-    !/(berapa|brapa|jumlah|status|cari|tampilkan|cara|gimana|ajukan|ajuin|ngajuin|lewat|active|aktif|site|realisasi|terealisasi|sekaligus)/.test(
+    !/(berapa|brapa|jumlah|status|cari|tampilkan|lihat|cara|gimana|ajukan|ajuin|ngajuin|lewat|active|aktif|site|realisasi|terealisasi|sekaligus|paling|jatah|alokasi|proporsional|jasa|material)/.test(
       m,
     )
   ) {
@@ -1375,7 +1374,7 @@ export function isFinanceFilterOrAggregateQuery(text: string): boolean {
   }
   // Multi-filter: ACTIVE SITE / CLOSED SEGMENT / ACTIVE + SEGMENT
   if (
-    /\b(active|aktif|closed|archived)\b/.test(m) &&
+    isActiveStatusPhrase(text) &&
     /\b(site|segment|standalone)\b/.test(m)
   ) {
     return true;
@@ -1430,13 +1429,14 @@ export function isFinanceFilterOnlyQuery(text: string): boolean {
     return false;
   }
   if (/\b((?:SITE|SEG|FIN)-\d{4}-\d+)\b/i.test(text)) return false;
-  const hasStatus = /\b(active|aktif|closed|archived|arsip)\b/.test(m);
+  const hasStatus =
+    isActiveStatusPhrase(text) || /\b(closed|archived|arsip)\b/.test(m);
   const hasHier =
     /\b(site|segment|standalone)\b/.test(m) && !/(site-\d|website)/.test(m);
   if (!hasStatus && !hasHier) return false;
   const leftover = m
     .replace(
-      /\b(tampilkan|list|daftar|lihat|show|cari|project|proyek|finance|yang|dengan|berdasarkan|filter|hanya|sekarang|saja|hanya|active|aktif|closed|archived|arsip|ditutup|site|segment|standalone|hapus|buang|hilangkan|ganti|kembali|semua|seluruh|tipe|jenisnya|jenis|statusnya|realisasi|realisasinya|masih|rp0|rp|nol|dan|aku|cuma|mau|memenuhi|semuanya|sekaligus|belum|ada|dana|terealisasi|penggunaan|nol)\b/g,
+      /\b(tampilkan|list|daftar|lihat|show|cari|project|proyek|finance|yang|dengan|berdasarkan|filter|hanya|sekarang|saja|hanya|active|aktif|closed|archived|arsip|ditutup|site|segment|standalone|hapus|buang|hilangkan|ganti|kembali|semua|seluruh|tipe|jenisnya|jenis|statusnya|realisasi|realisasinya|masih|rp0|rp|nol|dan|aku|cuma|mau|memenuhi|semuanya|sekaligus|belum|ada|dana|terealisasi|penggunaan|nol|berjalan|anggaran|budget|terpakai|mencatat|pengeluaran|sekali|sampai|projectnya|tersedia|sama|dari|untuk)\b/g,
       ' ',
     )
     .replace(/\b0+\b/g, ' ')
@@ -1471,7 +1471,8 @@ export function isFinanceContextFilterQuery(text: string): boolean {
   ) {
     return false;
   }
-  const hasStatus = /\b(active|aktif|closed|archived|arsip)\b/.test(m);
+  const hasStatus =
+    isActiveStatusPhrase(text) || /\b(closed|archived|arsip)\b/.test(m);
   const hasHier =
     /\b(site|segment|standalone)\b/.test(m) && !/(site-\d|website)/.test(m);
   if (!hasStatus && !hasHier) return false;
@@ -1582,7 +1583,7 @@ export function isStandaloneFinanceAggregateQuery(text: string): boolean {
 export function hasExplicitRankingMetric(text: string): boolean {
   const m = normalizeId(primaryUtterance(text));
   return (
-    /(over\s*budget|overbudget|realisasi|spent|terpakai|sisa|remaining|material|jasa|service|budget|anggaran|persen|persentase|rasio|%|porsi|dana terpakai|proporsional|menghabiskan|penggunaan|jatah|alokasi)/.test(
+    /(over\s*budget|overbudget|realisasi|spent|terpakai|sisa|remaining|material|jasa|service|budget|anggaran|persen|persentase|rasio|%|porsi|dana terpakai|proporsional|menghabiskan|penggunaan|jatah|alokasi|bagian|tersedia)/.test(
       m,
     )
   );
@@ -1744,7 +1745,7 @@ export function shouldReuseActiveResultSet(text: string): boolean {
   }
   if (
     isModuleDataRankingQuery(text) &&
-    /(tadi|itu|dari project|paling kecil|paling besar|paling rendah|mana yang|cuma satu|hanya satu)/.test(
+    /(tadi|itu|dari project|cuma satu|hanya satu)/.test(
       m,
     )
   ) {
@@ -1834,8 +1835,8 @@ export function splitChainedRankingQuery(
         isRealizationPctRankingPhrase(tail) ||
         isMaterialPctRankingPhrase(tail) ||
         isJasaPctRankingPhrase(tail) ||
-        /(urutkan|susun ulang|ketiganya)/.test(tn))) ||
-    /(dari (ketiga(nya)?|tiga|hasil|itu)|urutkan|susun ulang|untuk ketiganya)/.test(
+        /(susun ulang|ketiganya)/.test(tn))) ||
+    /(dari (ketiga(nya)?|tiga|hasil|itu)|susun ulang|untuk ketiganya)/.test(
       tn,
     )
   ) {
@@ -1859,6 +1860,36 @@ export function buildEvidenceLimitedOperationalNote(): string {
   ].join(' ');
 }
 
+/** Live / still-open status, including non-English ACTIVE synonyms. */
+export function isActiveStatusPhrase(text: string): boolean {
+  const m = normalizeId(text);
+  return (
+    /\b(active|aktif)\b/.test(m) ||
+    /(masih\s+berjalan|yang\s+masih\s+berjalan|project yang masih berjalan)/.test(
+      m,
+    )
+  );
+}
+
+/** Realisasi still zero — spend/usage paraphrases, not only the word realisasi. */
+export function isZeroSpendPhrase(text: string): boolean {
+  const m = normalizeId(text);
+  return (
+    /(realisasi).*(rp\s*0|masih\s*(rp\s*)?0|nol|belum\s*(ada|terpakai)|0\b)/.test(
+      m,
+    ) ||
+    /(belum ada (dana|realisasi|penggunaan|anggaran)|belum.*terealisasi|tidak ada realisasi|tanpa realisasi|dana yang terealisasi)/.test(
+      m,
+    ) ||
+    /(belum (ada )?(anggaran|dana|budget).*(terpakai|penggunaan))/.test(m) ||
+    /(belum mencatat (pengeluaran|realisasi)|belum ada pengeluaran|tanpa pengeluaran|pengeluaran sama sekali)/.test(
+      m,
+    ) ||
+    (/(belum ada anggaran yang terpakai|anggaran yang terpakai)/.test(m) &&
+      /belum/.test(m))
+  );
+}
+
 /** ACTIVE/SITE (etc.) population whose Realisasi is still Rp0 (PAI-DIQ-014). */
 export function isZeroRealizationPopulationQuery(text: string): boolean {
   const m = normalizeId(primaryUtterance(text));
@@ -1866,16 +1897,39 @@ export function isZeroRealizationPopulationQuery(text: string): boolean {
     return false;
   }
   return (
-    (/(realisasi).*(rp\s*0|masih\s*(rp\s*)?0|nol|belum\s*(ada|terpakai)|0\b)/.test(
-      m,
-    ) ||
-      /(belum ada (dana|realisasi|penggunaan)|belum.*terealisasi|tidak ada realisasi|tanpa realisasi|dana yang terealisasi)/.test(
-        m,
-      )) &&
-    /(tampilkan|list|daftar|project|proyek|finance|active|aktif|site|segment|sisakan|ambil|mau)/.test(
+    isZeroSpendPhrase(text) &&
+    /(tampilkan|list|daftar|lihat|cari|project|proyek|finance|active|aktif|site|segment|sisakan|ambil|mau)/.test(
       m,
     )
   );
+}
+
+/**
+ * "cari/lihat project yang …" with status/type/zero filters is a collection,
+ * not a named-object lookup (PAI-DIQ-015).
+ */
+export function isCollectionPopulationQuery(text: string): boolean {
+  if (/\b((?:SITE|SEG|FIN)-\d{4}-\d+)\b/i.test(text)) return false;
+  if (detectExplicitTopN(text) != null) return false;
+  const m = normalizeId(primaryUtterance(text));
+  if (
+    /(paling|teratas|ranking|top\s*\d*|urutkan|menghabiskan|proporsional)/.test(
+      m,
+    ) &&
+    !/(mana saja)/.test(m)
+  ) {
+    return false;
+  }
+  const collectionCue =
+    isAllMatchingPopulationQuery(text) ||
+    /(mana saja)/.test(m) ||
+    /(cari|tampilkan|list|daftar|lihat)\s+(semua\s+)?(finance\s+)?(project|proyek)/.test(
+      m,
+    );
+  if (!collectionCue) return false;
+  const hasHier =
+    /\b(site|segment|standalone)\b/.test(m) && !/(site-\d|website)/.test(m);
+  return isActiveStatusPhrase(text) || isZeroSpendPhrase(text) || hasHier;
 }
 
 /** Drop previous result set / ranking frame and start a new population. */
@@ -1899,9 +1953,9 @@ export function isAllMatchingPopulationQuery(text: string): boolean {
     return false;
   }
   return (
-    /(tampilkan|list|daftar|ambil)\s+semua/.test(m) ||
+    /(tampilkan|list|daftar|ambil|lihat)\s+semua/.test(m) ||
     /(semua|seluruh)\s+(finance\s+)?(project|proyek)/.test(m) ||
-    /(tampilkan|list|daftar).*(semua|seluruh).*(project|proyek)/.test(m)
+    /(tampilkan|list|daftar|lihat|cari).*(semua|seluruh).*(project|proyek)/.test(m)
   );
 }
 
@@ -2453,41 +2507,67 @@ export function detectFinanceMetric(text: string): FinanceMetric | null {
   return all[0] ?? null;
 }
 
-/** Ranking/sort key: Realisasi / Total Budget (paraphrases allowed). */
+function mentionsMaterial(text: string): boolean {
+  return /\bmaterial(nya)?\b/.test(normalizeId(text));
+}
+
+function mentionsJasa(text: string): boolean {
+  return /\b(jasa|service)(nya)?\b/.test(normalizeId(text));
+}
+
+/** Ranking/sort key: spent / budget (paraphrases; keyword "persen" is not required). */
+function hasUsageRatioIntent(text: string): boolean {
+  const s = normalizeId(text);
+  if (/(persen|persentase|rasio|%\b|proporsional)/.test(s)) return true;
+  if (
+    /(dibanding|dibandingkan|terhadap)\s+(jatah|alokasi|anggaran|budget)/.test(s)
+  ) {
+    return true;
+  }
+  if (
+    /(bagian|porsi)/.test(s) &&
+    /(anggaran|budget|jatah|alokasi|tersedia)/.test(s)
+  ) {
+    return true;
+  }
+  if (
+    /(memakai|terpakai|menghabiskan|penggunaan|dipakai).*(jatah|alokasi|anggaran|budget|yang tersedia)/.test(
+      s,
+    )
+  ) {
+    return true;
+  }
+  if (/(anggaran|budget|jatah|alokasi).*(terpakai|terpakainya)/.test(s)) {
+    return true;
+  }
+  if (
+    /(masing-masing)/.test(s) &&
+    /(anggaran|budget|jatah|alokasi|tersedia)/.test(s)
+  ) {
+    return true;
+  }
+  return false;
+}
+
 export function isRealizationPctRankingPhrase(text: string): boolean {
   const s = normalizeId(text);
-  if (/\bmaterial\b/.test(s) || /\b(jasa|service)\b/.test(s)) return false;
+  if (mentionsMaterial(s) || mentionsJasa(s)) return false;
   return (
+    hasUsageRatioIntent(s) ||
     (/(persen|persentase|rasio|%\b)/.test(s) && /(realisasi)/.test(s)) ||
     /(realisasi).*(terhadap|dibanding|dibandingkan)\s*(total\s+)?(budget|anggaran)/.test(
       s,
     ) ||
-    /(porsi|rasio).*(dana|realisasi|terpakai|budget|anggaran)/.test(s) ||
-    /(dana|anggaran|budget).*(terpakai|terpakainya)/.test(s) ||
-    /(penggunaan|tingkat penggunaan)\s+(budget|anggaran)/.test(s) ||
-    /(berdasarkan)\s+realisasi.*(dibanding|terhadap|dibandingkan)/.test(s) ||
-    /(penggunaan).*(budget|anggaran|jatah|alokasi)/.test(s) ||
-    /(terpakai).*(dibandingkan|dibanding|terhadap|jatah|alokasi)/.test(s) ||
-    /(menghabiskan).*(budget|anggaran)/.test(s) ||
-    /(secara\s+)?proporsional/.test(s) ||
-    /(dibanding|dibandingkan|terhadap)\s+(jatah|alokasi)/.test(s)
+    /(berdasarkan)\s+realisasi.*(dibanding|terhadap|dibandingkan)/.test(s)
   );
 }
 
 export function isMaterialPctRankingPhrase(text: string): boolean {
-  const s = normalizeId(text);
-  return (
-    /\bmaterial\b/.test(s) &&
-    /(persen|persentase|rasio|penggunaan|porsi|terpakai|utilization)/.test(s)
-  );
+  return mentionsMaterial(text) && hasUsageRatioIntent(text);
 }
 
 export function isJasaPctRankingPhrase(text: string): boolean {
-  const s = normalizeId(text);
-  return (
-    /\b(jasa|service)\b/.test(s) &&
-    /(persen|persentase|rasio|penggunaan|porsi|terpakai|utilization)/.test(s)
-  );
+  return mentionsJasa(text) && hasUsageRatioIntent(text);
 }
 
 export function detectRankingMetric(text: string): FinanceRankingMetric {
@@ -2524,10 +2604,10 @@ export function detectRankingMetric(text: string): FinanceRankingMetric {
   // This-turn wording on the primary utterance wins over inherited tags.
   // Do not scan METRIC/LIMIT tags as "budget" — "materialBudget" contains "budget".
   // Konteks referensi is the live utterance when a prior ranking line was prepended.
-  if (ctx && (isMaterialPctRankingPhrase(ctx) || (/\bmaterial\b/.test(ctx) && !isMaterialPctRankingPhrase(m)))) {
+  if (ctx && (isMaterialPctRankingPhrase(ctx) || (mentionsMaterial(ctx) && !isMaterialPctRankingPhrase(m)))) {
     return isMaterialPctRankingPhrase(ctx) ? 'materialPct' : 'materialBudget';
   }
-  if (ctx && (isJasaPctRankingPhrase(ctx) || (/\b(jasa|service)\b/.test(ctx) && !isJasaPctRankingPhrase(m)))) {
+  if (ctx && (isJasaPctRankingPhrase(ctx) || (mentionsJasa(ctx) && !isJasaPctRankingPhrase(m)))) {
     return isJasaPctRankingPhrase(ctx) ? 'jasaPct' : 'jasaBudget';
   }
   if (/(over\s*budget|overbudget)/.test(m)) return 'overbudget';
@@ -2536,8 +2616,8 @@ export function detectRankingMetric(text: string): FinanceRankingMetric {
   }
   if (isMaterialPctRankingPhrase(m)) return 'materialPct';
   if (isJasaPctRankingPhrase(m)) return 'jasaPct';
-  if (/\bmaterial\b/.test(m)) return 'materialBudget';
-  if (/\b(jasa|service)\b/.test(m)) return 'jasaBudget';
+  if (mentionsMaterial(m)) return 'materialBudget';
+  if (mentionsJasa(m)) return 'jasaBudget';
   if (isRealizationPctRankingPhrase(m)) return 'realizationPct';
   if (namedTotalBudget(m) || namedTotalBudget(ctx)) return 'totalBudget';
   if (/(realisasi|spent|terpakai)/.test(m)) return 'realization';
@@ -2550,8 +2630,8 @@ export function detectRankingMetric(text: string): FinanceRankingMetric {
   if (/(sisa\s*budget|remaining(\s*budget)?)/.test(src)) return 'remaining';
   if (isMaterialPctRankingPhrase(src)) return 'materialPct';
   if (isJasaPctRankingPhrase(src)) return 'jasaPct';
-  if (/\bmaterial\b/.test(src)) return 'materialBudget';
-  if (/\b(jasa|service)\b/.test(src)) return 'jasaBudget';
+  if (mentionsMaterial(src)) return 'materialBudget';
+  if (mentionsJasa(src)) return 'jasaBudget';
   if (isRealizationPctRankingPhrase(src)) {
     return 'realizationPct';
   }
@@ -2787,9 +2867,12 @@ export function detectFinanceMode(text: string): FinanceMode {
   }
 
   if (
-    (isAllMatchingPopulationQuery(text) || isScopeResetQuery(text)) &&
+    (isAllMatchingPopulationQuery(text) ||
+      isCollectionPopulationQuery(text) ||
+      isScopeResetQuery(text)) &&
     (isZeroRealizationPopulationQuery(text) ||
-      (extractHierarchyConstraint(text) && /\b(active|aktif)\b/.test(m)))
+      extractHierarchyConstraint(text) ||
+      isActiveStatusPhrase(text))
   ) {
     return 'filtered_list';
   }
@@ -2846,6 +2929,9 @@ export function detectFinanceMode(text: string): FinanceMode {
     earlyNeedle &&
     !WEAK_NEEDLES.has(earlyNeedle.toLowerCase()) &&
     !FINANCE_FILTER_TOKENS.has(earlyNeedle.toLowerCase()) &&
+    !isAllMatchingPopulationQuery(text) &&
+    !isCollectionPopulationQuery(text) &&
+    !isZeroRealizationPopulationQuery(text) &&
     (/\bcari\b/.test(m) ||
       /(?:project|proyek|segment|site)\s+(?!aktif\b|active\b|closed\b|archived\b)/i.test(
         text,
@@ -2930,6 +3016,10 @@ export function extractOwnerName(text: string): string | null {
 }
 
 export function extractSearchNeedle(text: string): string | null {
+  if (isAllMatchingPopulationQuery(text) || isCollectionPopulationQuery(text)) {
+    return null;
+  }
+  if (isZeroRealizationPopulationQuery(text)) return null;
   if (
     /\b(seg|fin|site|segment)\b/.test(normalizeId(text)) &&
     /(tadi|sebelumnya|barusan)/.test(normalizeId(text)) &&
@@ -2947,7 +3037,7 @@ export function extractSearchNeedle(text: string): string | null {
   if (afterCari) {
     const cleaned = afterCari[1]
       .replace(
-        /\b(project|proyek|finance|dong|yah|ya|bernama|atas nama|client|pelanggan|yang|active|aktif|closed|archived|arsip|ditutup|site|segment|standalone)\b/gi,
+        /\b(project|proyek|finance|dong|yah|ya|bernama|atas nama|client|pelanggan|yang|active|aktif|closed|archived|arsip|ditutup|site|segment|standalone|masih|berjalan|belum|mencatat|pengeluaran|sekali|anggaran|terpakai|jenis|tipe|semua|seluruh)\b/gi,
         ' ',
       )
       .replace(/\s+/g, ' ')

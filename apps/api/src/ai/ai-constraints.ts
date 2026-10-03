@@ -13,6 +13,7 @@ import {
   isModuleDataRankingQuery,
   isRankingPatchFollowUp,
   hasActiveStatusNegation,
+  isActiveStatusPhrase,
 } from './ai-nlu';
 import type { ActiveConstraintSet } from './ai-session';
 import { EMPTY_CONSTRAINTS } from './ai-session';
@@ -40,8 +41,8 @@ export function extractConstraintsFromText(text: string): ActiveConstraintSet {
   if (hasActiveStatusNegation(text)) {
     out.extra!.push('status:not_active');
   } else if (
-    /\b(aktif|active)\b/.test(m) &&
-    !/(non.?arsip|seluruh|semua|closed|archived)/.test(m)
+    isActiveStatusPhrase(text) &&
+    !/(non.?arsip|closed|archived)/.test(m)
   ) {
     out.status = 'ACTIVE';
   } else if (/(non.?arsip|non.?archived|active\s*\+\s*closed)/.test(m)) {

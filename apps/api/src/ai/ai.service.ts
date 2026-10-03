@@ -71,6 +71,9 @@ import {
   isAllMatchingPopulationQuery,
   isZeroRealizationPopulationQuery,
   isRealizationPctRankingPhrase,
+  isMaterialPctRankingPhrase,
+  isJasaPctRankingPhrase,
+  isCollectionPopulationQuery,
   isActiveObjectAttributeQuery,
   isObjectComparisonQuery,
   isIntraObjectPercentCompareQuery,
@@ -358,10 +361,15 @@ export class AiService {
       intent = 'data';
     }
     if (
-      (isModuleDataRankingQuery(text) || isRealizationPctRankingPhrase(text)) &&
+      (isModuleDataRankingQuery(text) ||
+        isRealizationPctRankingPhrase(text) ||
+        isMaterialPctRankingPhrase(text) ||
+        isJasaPctRankingPhrase(text) ||
+        isCollectionPopulationQuery(text) ||
+        isZeroRealizationPopulationQuery(text)) &&
       (intent === 'faq' || intent === 'howto' || intent === 'capability')
     ) {
-      intent = 'analytics';
+      intent = isCollectionPopulationQuery(text) ? 'data' : 'analytics';
     }
 
     // PAI-CSM-002: Conversation State follow-ups are always data — never Guide
@@ -1146,8 +1154,11 @@ export class AiService {
       knowledgeHit &&
       !isModuleDataRankingQuery(text) &&
       !isRealizationPctRankingPhrase(text) &&
+      !isMaterialPctRankingPhrase(text) &&
+      !isJasaPctRankingPhrase(text) &&
       !isFinanceFilterOnlyQuery(text) &&
-      !isZeroRealizationPopulationQuery(text)
+      !isZeroRealizationPopulationQuery(text) &&
+      !isCollectionPopulationQuery(text)
     ) {
       return reply(knowledgeHit.answer, {
         intent: 'faq',
