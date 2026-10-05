@@ -1004,6 +1004,13 @@ export function isRankingPatchFollowUp(text: string): boolean {
   if (isFinanceFilterClearQuery(text) || isFinanceFilterRemoveQuery(text)) {
     return false;
   }
+  if (/\b(sisakan|saring)\b/.test(m)) return false;
+  if (
+    isZeroSpendPhrase(text) &&
+    !/(paling|terbesar|terkecil|top\s*\d*|teratas|ranking)/.test(m)
+  ) {
+    return false;
+  }
   if (
     /\b(berapa|jumlah|count|ada berapa)\b/.test(m) &&
     !/(terbesar|terkecil|top\s*\d*)/.test(m)
@@ -1764,6 +1771,10 @@ export function isResultSetScopedFollowUp(text: string): boolean {
     /(dari (ketiga(nya)?|tiga itu|tiga project itu|hasil tadi)|hasil tadi|dari ketiganya)/.test(
       m,
     ) ||
+    ((/(tiga|3|lima|5) project yang sama|untuk (tiga|3) project yang sama|\bproject yang sama\b/).test(
+      m,
+    ) &&
+      !/(hal yang sama)/.test(m)) ||
     /(hasil yang tersisa|yang tersisa|dari yang tersisa|dari hasil itu|hasil itu)/.test(
       m,
     ) ||
@@ -1794,7 +1805,9 @@ export function isResultSetRetainedFilterQuery(text: string): boolean {
       m,
     ) ||
     /(ambil yang (tipe\s+|jenis(nya)?\s+)?)(site|segment|standalone)/.test(m) ||
-    /(sisakan yang).*(realisasi|nol|rp\s*0|terealisasi)/.test(m)
+    /(sisakan(\s+lagi)?(\s+yang)?).*(realisasi|nol|rp\s*0|terealisasi|terpakai)/.test(
+      m,
+    )
   );
 }
 
@@ -1883,6 +1896,9 @@ export function isZeroSpendPhrase(text: string): boolean {
     ) ||
     /(belum (ada )?(anggaran|dana|budget).*(terpakai|penggunaan))/.test(m) ||
     /(belum mencatat (pengeluaran|realisasi)|belum ada pengeluaran|tanpa pengeluaran|pengeluaran sama sekali)/.test(
+      m,
+    ) ||
+    /(belum menggunakan (budget|anggaran)|belum memakai (budget|anggaran)|tidak menggunakan budget)/.test(
       m,
     ) ||
     (/(belum ada anggaran yang terpakai|anggaran yang terpakai)/.test(m) &&
@@ -2872,7 +2888,12 @@ export function detectFinanceMode(text: string): FinanceMode {
       isScopeResetQuery(text)) &&
     (isZeroRealizationPopulationQuery(text) ||
       extractHierarchyConstraint(text) ||
-      isActiveStatusPhrase(text))
+      isActiveStatusPhrase(text)) &&
+    detectExplicitTopN(text) == null &&
+    !isRealizationPctRankingPhrase(text) &&
+    !isMaterialPctRankingPhrase(text) &&
+    !isJasaPctRankingPhrase(text) &&
+    !/(paling|terbesar|terkecil|teratas|ranking|top\s*\d*)/.test(m)
   ) {
     return 'filtered_list';
   }

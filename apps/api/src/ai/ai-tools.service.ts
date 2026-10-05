@@ -1591,12 +1591,21 @@ export class AiToolsService {
         sortValue = totalBudget > 0 ? realization / totalBudget : 0;
       } else if (rankingMetric === 'materialPct') {
         sortValue = materialBudget > 0 ? materialSpent / materialBudget : 0;
-      } else if (rankingMetric === 'jasaPct') {
-        sortValue = jasaBudget > 0 ? jasaSpent / jasaBudget : 0;
+      }       else if (rankingMetric === 'jasaPct') {
+        sortValue = jasaBudget > 0 ? jasaSpent / jasaBudget : Number.NaN;
       }
+      const pctEligible =
+        rankingMetric === 'realizationPct'
+          ? totalBudget > 0
+          : rankingMetric === 'materialPct'
+            ? materialBudget > 0
+            : rankingMetric === 'jasaPct'
+              ? jasaBudget > 0
+              : true;
       return {
         r,
         sortValue,
+        pctEligible,
         totalBudget,
         realization,
         remaining,
@@ -1607,23 +1616,42 @@ export class AiToolsService {
         overAmount,
       };
     });
-    scored.sort((a, b) =>
+    const constrainedSet = Array.isArray(
+      (where.code as { in?: string[] } | undefined)?.in,
+    );
+    const comparable = scored.filter((s) => s.pctEligible);
+    const undefinedPct = scored.filter((s) => !s.pctEligible);
+    comparable.sort((a, b) =>
       dir === 'desc' ? b.sortValue - a.sortValue : a.sortValue - b.sortValue,
     );
     const n = Math.max(1, Math.min(50, limit || 10));
-    let top = scored.slice(0, n);
-    if (tieAware && scored.length) {
-      const extreme = scored[0].sortValue;
+    let top = comparable.slice(0, n);
+    if (constrainedSet) {
+      top = [...comparable.slice(0, n), ...undefinedPct];
+    }
+    if (tieAware && comparable.length) {
+      const extreme = comparable[0].sortValue;
       const eps =
         rankingMetric === 'realizationPct' ||
         rankingMetric === 'materialPct' ||
         rankingMetric === 'jasaPct'
           ? 1e-6
           : 0.5;
-      const ties = scored.filter(
+      const ties = comparable.filter(
         (s) => Math.abs(Number(s.sortValue) - Number(extreme)) < eps,
       );
-      if (ties.length > 1) top = ties;
+      if (ties.length > 1 && !constrainedSet) top = ties;
+      else if (ties.length > 1 && constrainedSet) {
+        top = [...ties, ...undefinedPct];
+      }
+    }
+    if (top.length === 0) {
+      return {
+        name: 'finance_analytics',
+        ok: true,
+        summary:
+          'Belum ada Finance Project dengan penyebut budget yang valid untuk ranking persentase.',
+      };
     }
     const hierLabel = hierarchyLevel ? ` (${hierarchyLevel} saja)` : '';
     const metricLabel: Record<FinanceRankingMetric, string> = {
@@ -1638,16 +1666,25 @@ export class AiToolsService {
       overbudget: 'Over Budget',
     };
     const dirLabel = dir === 'desc' ? 'terbesar' : 'terkecil';
-    const tied = tieAware && top.length > 1;
+    const comparableTop = top.filter((s) => s.pctEligible);
     const isPct =
       rankingMetric === 'realizationPct' ||
       rankingMetric === 'materialPct' ||
       rankingMetric === 'jasaPct';
+    const tieRows = isPct ? comparableTop : top;
+    const tieEps = isPct ? 1e-6 : 0.5;
+    const tied =
+      tieRows.length > 1 &&
+      tieRows.every(
+        (s) => Math.abs(Number(s.sortValue) - Number(tieRows[0].sortValue)) < tieEps,
+      );
     const titleValue = isPct
-      ? formatPctId(top[0].sortValue * 100)
+      ? comparableTop.length
+        ? formatPctId(comparableTop[0].sortValue * 100)
+        : 'n/a'
       : fmtIdr(top[0].sortValue);
     const title = tied
-      ? `Ada ${top.length} project dengan ${metricLabel[rankingMetric]} paling ${dirLabel} yang sama, yaitu ${titleValue}${hierLabel}`
+      ? `Ada ${tieRows.length} project dengan ${metricLabel[rankingMetric]} paling ${dirLabel} yang sama, yaitu ${titleValue}${hierLabel}`
       : n === 1
         ? `Finance Project dengan ${metricLabel[rankingMetric]} paling ${dirLabel}${hierLabel}`
         : `Top ${n} Finance Project — ${metricLabel[rankingMetric]} ${dirLabel}${hierLabel}`;
