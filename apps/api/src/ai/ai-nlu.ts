@@ -1797,6 +1797,9 @@ export function isResultSetScopedFollowUp(text: string): boolean {
     /(yang pending tadi|pending tadi|semua yang pending|semua yang tadi)/.test(m) ||
     /(yang tadi itu).*(project|nominal|pengaju)/.test(m) ||
     /(project apa).*(nominal).*(pengaju)/.test(m) ||
+    /(daftar yang sama|tiga project tadi|untuk mereka|dari project tersebut)/.test(
+      m,
+    ) ||
     isResultSetRetainedFilterQuery(text)
   );
 }
@@ -2927,7 +2930,9 @@ export function detectFinanceMode(text: string): FinanceMode {
     !/(selisih|kenapa|mengapa)/.test(m) &&
     !(
       /\bbandingkan\b/.test(m) &&
-      !/(ketiganya|masing-masing|hasil itu|lima project)/.test(m) &&
+      !/(ketiganya|masing-masing|hasil itu|hasil tadi|lima project|project yang sama|daftar yang sama)/.test(
+        m,
+      ) &&
       !isJasaPctRankingPhrase(m) &&
       !isMaterialPctRankingPhrase(m)
     ) &&

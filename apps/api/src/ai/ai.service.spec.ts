@@ -7409,4 +7409,85 @@ describe('PermaTrax AI chatbot (logic)', () => {
     expect(r.answer).not.toMatch(/Berdasarkan data SITE-2026-041 — Site D/i);
     expect(r.answer).not.toMatch(/SEG-2026-041/);
   });
+
+  it('PAI-DIQ-013 RT-119: same-set jasa % switch must not ask for two codes', async () => {
+    const materialQ =
+      'Dari seluruh Finance Project ACTIVE, cari 3 project dengan persentase penggunaan material budget paling tinggi. Tampilkan material spent, material budget, dan perhitungannya. Project dengan material budget Rp0 tidak boleh digunakan sebagai nilai persentase dalam ranking.';
+    const jasaSame =
+      'Untuk project yang sama persis dari hasil tadi, bandingkan persentase penggunaan jasa budget masing-masing. Jangan menambah atau mengganti project.';
+    expect(isResultSetScopedFollowUp(jasaSame)).toBe(true);
+    expect(isJasaPctRankingPhrase(jasaSame)).toBe(true);
+    expect(detectFinanceMode(jasaSame)).toBe('top_budget');
+    expect(detectRankingMetric(jasaSame)).toBe('jasaPct');
+    const prisma = makePrisma();
+    const rows = [
+      {
+        code: 'FIN-2026-001',
+        name: 'A',
+        totalBudget: 100,
+        materialBudget: 90,
+        jasaBudget: 10,
+        materialSpent: 1,
+        jasaSpent: 2,
+        status: 'ACTIVE',
+        hierarchyLevel: 'SITE',
+        isOverbudget: false,
+      },
+      {
+        code: 'FIN-2026-002',
+        name: 'B',
+        totalBudget: 100,
+        materialBudget: 80,
+        jasaBudget: 20,
+        materialSpent: 0,
+        jasaSpent: 1,
+        status: 'ACTIVE',
+        hierarchyLevel: 'SITE',
+        isOverbudget: false,
+      },
+      {
+        code: 'FIN-2026-003',
+        name: 'C',
+        totalBudget: 100,
+        materialBudget: 70,
+        jasaBudget: 30,
+        materialSpent: 0,
+        jasaSpent: 0,
+        status: 'ACTIVE',
+        hierarchyLevel: 'SITE',
+        isOverbudget: false,
+      },
+      {
+        code: 'SEG-2026-099',
+        name: 'Outsider',
+        totalBudget: 100,
+        materialBudget: 0,
+        jasaBudget: 1,
+        materialSpent: 9,
+        jasaSpent: 1,
+        status: 'ACTIVE',
+        hierarchyLevel: 'SEGMENT',
+        isOverbudget: false,
+      },
+    ];
+    (prisma as any).financeProject.findMany = jest.fn(async (args: any) => {
+      const inn = args?.where?.code?.in;
+      if (inn) return rows.filter((r) => inn.includes(r.code));
+      return rows;
+    });
+    const { ai } = makeServices(prisma);
+    const start = await ai.chat(user, 'Aku mau bahas Finance Project.');
+    const mat = await ai.chat(user, materialQ, start.conversationId);
+    expect(mat.answer).toMatch(/Top 3.*Material/i);
+    expect(mat.answer).toMatch(/FIN-2026-001/);
+    expect(mat.answer).not.toMatch(/SEG-2026-099/);
+    const follow = await ai.chat(user, jasaSame, start.conversationId);
+    expect(follow.answer).not.toMatch(/Tidak lengkap untuk membandingkan/i);
+    expect(follow.answer).not.toMatch(/Sebutkan kedua kode project/i);
+    expect(follow.answer).toMatch(/Jasa/i);
+    expect(follow.answer).toMatch(/FIN-2026-001/);
+    expect(follow.answer).toMatch(/FIN-2026-002/);
+    expect(follow.answer).toMatch(/FIN-2026-003/);
+    expect(follow.answer).not.toMatch(/SEG-2026-099/);
+  });
 });

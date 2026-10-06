@@ -34,6 +34,10 @@ import {
   normalizeId,
   isZeroRealizationPopulationQuery,
   isActiveStatusPhrase,
+  isResultSetScopedFollowUp,
+  isJasaPctRankingPhrase,
+  isMaterialPctRankingPhrase,
+  isRealizationPctRankingPhrase,
   type FinanceMetric,
   type FinanceRankingMetric,
 } from './ai-nlu';
@@ -539,10 +543,22 @@ export class AiToolsService {
         detectPercentOperandPairs(bareMessage),
       );
     }
+    const sameSetMetricSwitch =
+      isResultSetScopedFollowUp(bareMessage) ||
+      isJasaPctRankingPhrase(bareMessage) ||
+      isMaterialPctRankingPhrase(bareMessage) ||
+      isRealizationPctRankingPhrase(bareMessage) ||
+      /(masing-masing|ketiganya|project yang sama|daftar yang sama)/.test(
+        normalizeId(bareMessage),
+      );
     if (
       compareCodes.length < 2 &&
       /(banding|dibanding)/.test(normalizeId(bareMessage)) &&
-      /(tadi|sebelumnya|barusan|yang ini)/.test(normalizeId(bareMessage))
+      /(tadi|sebelumnya|barusan|yang ini)/.test(normalizeId(bareMessage)) &&
+      !sameSetMetricSwitch &&
+      mode !== 'top_budget' &&
+      mode !== 'smallest' &&
+      mode !== 'ranking'
     ) {
       return {
         name: 'finance_analytics',
