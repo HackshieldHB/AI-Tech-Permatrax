@@ -271,19 +271,19 @@ export function extractReferenceOrdinal(
   lastAssistant?: string | null,
 ): number {
   const m = normalizeId(text);
-  if (/\b(yang )?terakhir\b|\bterakhir\b/.test(m)) {
+  if (/\byang\s+terakhir\b|\bterakhir\b/.test(m) && !/(hasil sebelumnya)/.test(m)) {
     const n = countRankedItems(lastAssistant);
     return Math.max(1, n || 1);
   }
-  if (/\b(yang )?pertama\b|\bke-?1\b|\b#1\b|\b(barang|project|item|proyek)\s+pertama\b/.test(m))
+  if (/\byang\s+pertama\b|\bke-?1\b|\b#1\b|\b(barang|project|item|proyek)\s+pertama\b/.test(m))
     return 1;
-  if (/\b(yang )?kedua\b|\bke-?2\b|\b#2\b|\b(barang|project|item|proyek)\s+kedua\b/.test(m))
+  if (/\byang\s+kedua\b|\bke-?2\b|\b#2\b|\b(barang|project|item|proyek)\s+kedua\b/.test(m))
     return 2;
-  if (/\b(yang )?ketiga\b|\bke-?3\b|\b#3\b|\b(barang|project|item|proyek)\s+ketiga\b/.test(m))
+  if (/\byang\s+ketiga\b|\bke-?3\b|\b#3\b|\b(barang|project|item|proyek)\s+ketiga\b/.test(m))
     return 3;
-  if (/\b(yang )?keempat\b|\bke-?4\b|\b(barang|project|item|proyek)\s+keempat\b/.test(m))
+  if (/\byang\s+keempat\b|\bke-?4\b|\b(barang|project|item|proyek)\s+keempat\b/.test(m))
     return 4;
-  if (/\b(yang )?kelima\b|\bke-?5\b/.test(m)) return 5;
+  if (/\byang\s+kelima\b|\bke-?5\b/.test(m)) return 5;
   const num = m.match(/\b(?:yang\s+)?ke-?(\d+)\b/);
   if (num) return Math.max(1, parseInt(num[1], 10));
   const barangN = m.match(/\b(?:barang|project|item|proyek)\s+(?:ke-?)?(\d+)\b/);
@@ -337,9 +337,7 @@ export function detectRequestedAttribute(text: string): ConversationAttribute {
 export function isOrdinalReference(text: string): boolean {
   const m = normalizeId(text);
   return (
-    /\b(yang )?(pertama|kedua|ketiga|keempat|kelima|terakhir|ke-?\d+)\b/.test(
-      m,
-    ) ||
+    /\byang\s+(pertama|kedua|ketiga|keempat|kelima|terakhir|ke-?\d+)\b/.test(m) ||
     /\b(barang|project|item|proyek)\s+(pertama|kedua|ketiga|keempat|terakhir|ke-?\d+)\b/.test(
       m,
     ) ||

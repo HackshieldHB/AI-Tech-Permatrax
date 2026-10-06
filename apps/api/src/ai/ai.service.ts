@@ -500,6 +500,7 @@ export class AiService {
       !isFinanceFilterOnlyQuery(text) &&
       !isZeroRealizationPopulationQuery(text) &&
       !isAllMatchingPopulationQuery(text) &&
+      !isCollectionPopulationQuery(text) &&
       !isScopeResetQuery(text)
     ) {
       const snapshot = session.activeDatasetAnswer || lastAssistant;

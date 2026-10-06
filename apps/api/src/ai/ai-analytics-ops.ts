@@ -95,9 +95,9 @@ export function isFinanceInterpretationQuery(text: string): boolean {
       m,
     );
   const asksCondition =
-    /(bagaimana|gimana|kondisi|hubungan|interpretasi|bandingkan|dibanding|mana yang|lebih besar|selisih|berapa persen|terhadap)/.test(
+    /(bagaimana|gimana|hubungan|interpretasi|bandingkan|dibanding|mana yang|lebih besar|selisih|berapa persen|terhadap)/.test(
       m,
-    );
+    ) || /\bkondisi\s+(budget|realisasi)\b/.test(m);
   return hasMetric && (asksCondition || isObjectScopedReference(text));
 }
 

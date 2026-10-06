@@ -833,6 +833,9 @@ export class AiToolsService {
         !(
           /satu saja|ambil satu|hanya satu/.test(normalizeId(bareMessage))
         ) && (topN === 1 || /mana yang/.test(normalizeId(bareMessage))),
+        /(project yang sama|yang sama persis|tiga project yang sama|ketiganya)/.test(
+          normalizeId(bareMessage),
+        ),
       );
     }
 
@@ -1509,6 +1512,7 @@ export class AiToolsService {
     hierarchyLevel: 'SITE' | 'SEGMENT' | 'STANDALONE' | null,
     limit = 10,
     tieAware = false,
+    keepSameSet = false,
   ): Promise<ToolTrace> {
     const where: Prisma.FinanceProjectWhereInput = {
       ...baseWhere,
@@ -1625,11 +1629,19 @@ export class AiToolsService {
       dir === 'desc' ? b.sortValue - a.sortValue : a.sortValue - b.sortValue,
     );
     const n = Math.max(1, Math.min(50, limit || 10));
+    const isPctMetric =
+      rankingMetric === 'realizationPct' ||
+      rankingMetric === 'materialPct' ||
+      rankingMetric === 'jasaPct';
     let top = comparable.slice(0, n);
-    if (constrainedSet) {
-      top = [...comparable.slice(0, n), ...undefinedPct];
+    if (keepSameSet && constrainedSet) {
+      top = [...comparable, ...undefinedPct];
+    } else if (isPctMetric) {
+      top = comparable.slice(0, n);
+    } else if (constrainedSet) {
+      top = comparable.slice(0, n);
     }
-    if (tieAware && comparable.length) {
+    if (tieAware && comparable.length && !keepSameSet) {
       const extreme = comparable[0].sortValue;
       const eps =
         rankingMetric === 'realizationPct' ||
@@ -1640,10 +1652,7 @@ export class AiToolsService {
       const ties = comparable.filter(
         (s) => Math.abs(Number(s.sortValue) - Number(extreme)) < eps,
       );
-      if (ties.length > 1 && !constrainedSet) top = ties;
-      else if (ties.length > 1 && constrainedSet) {
-        top = [...ties, ...undefinedPct];
-      }
+      if (ties.length > 1) top = ties;
     }
     if (top.length === 0) {
       return {
@@ -1732,7 +1741,16 @@ export class AiToolsService {
     return {
       name: 'finance_analytics',
       ok: true,
-      summary: [title, ...lines, `Data per ${fmtDateId()}.`].join('\n'),
+      summary: [
+        title,
+        ...lines,
+        isPct && !keepSameSet && comparable.length < n
+          ? `Catatan: hanya ${comparable.length} project punya penyebut budget > Rp0, jadi ranking persentase dibatasi ke project yang bisa dibanding. Project dengan budget Rp0 tidak diisi ke Top-${n} sebagai n/a.`
+          : '',
+        `Data per ${fmtDateId()}.`,
+      ]
+        .filter(Boolean)
+        .join('\n'),
       data: { rankingMetric, dir, limit: n, rows: top.map((t) => t.r) },
     };
   }

@@ -1733,11 +1733,19 @@ export type FinanceMode =
 /** Keep the previous ranked members unless the user starts a new population. */
 export function shouldReuseActiveResultSet(text: string): boolean {
   const m = normalizeId(primaryUtterance(text));
-  if (/(semua|seluruh)\s+(project|proyek)/.test(m) && !isResultSetScopedFollowUp(text)) {
+  if (/(semua|seluruh)\s+(finance\s+)?(project|proyek)/.test(m) && !isResultSetScopedFollowUp(text)) {
     return false;
   }
   if (isScopeResetQuery(text)) return false;
   if (isAllMatchingPopulationQuery(text) && !isResultSetScopedFollowUp(text)) {
+    return false;
+  }
+  if (
+    detectExplicitTopN(text) != null &&
+    /(seluruh|semua)/.test(m) &&
+    /(finance|project|proyek)/.test(m) &&
+    !isResultSetScopedFollowUp(text)
+  ) {
     return false;
   }
   if (isResultSetScopedFollowUp(text) || isResultSetRetainedFilterQuery(text)) {
@@ -1771,7 +1779,7 @@ export function isResultSetScopedFollowUp(text: string): boolean {
     /(dari (ketiga(nya)?|tiga itu|tiga project itu|hasil tadi)|hasil tadi|dari ketiganya)/.test(
       m,
     ) ||
-    ((/(tiga|3|lima|5) project yang sama|untuk (tiga|3) project yang sama|\bproject yang sama\b/).test(
+    ((/(tiga|3|lima|5) project yang sama|untuk (tiga|3) project yang sama|\bproject yang sama\b|yang sama persis/).test(
       m,
     ) &&
       !/(hal yang sama)/.test(m)) ||
@@ -1951,7 +1959,7 @@ export function isCollectionPopulationQuery(text: string): boolean {
 /** Drop previous result set / ranking frame and start a new population. */
 export function isScopeResetQuery(text: string): boolean {
   const m = normalizeId(text);
-  return /(abaikan hasil (sebelumnya|tadi|itu)|jangan pakai (hasil|filter|tiga|lima).*(sebelumnya|tadi)|cari ulang dari seluruh|sekarang dari (semua|seluruh))/.test(
+  return /(abaikan(\s+(seluruh|semua))?\s+hasil(\s+(sebelumnya|tadi|itu))?|jangan pakai (hasil|filter|tiga|lima).*(sebelumnya|tadi)|cari ulang dari seluruh|sekarang dari (semua|seluruh))/.test(
     m,
   );
 }
