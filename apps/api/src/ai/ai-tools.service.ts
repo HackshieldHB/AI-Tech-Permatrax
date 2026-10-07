@@ -849,7 +849,7 @@ export class AiToolsService {
         !(
           /satu saja|ambil satu|hanya satu/.test(normalizeId(bareMessage))
         ) && (topN === 1 || /mana yang/.test(normalizeId(bareMessage))),
-        /(project yang sama|yang sama persis|tiga project yang sama|ketiganya)/.test(
+        /(project yang sama|yang sama persis|tiga project yang sama|ketiganya|project tersebut|daftar yang sama|tiga project tadi)/.test(
           normalizeId(bareMessage),
         ),
       );

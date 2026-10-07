@@ -39,6 +39,7 @@ import {
   isResultSetScopedFollowUp,
   isResultSetRetainedFilterQuery,
   splitChainedRankingQuery,
+  isPopulationRetentionOnly,
   isOperationalJudgmentFollowUp,
   isZeroRealizationPopulationQuery,
   isScopeResetQuery,
@@ -7489,5 +7490,102 @@ describe('PermaTrax AI chatbot (logic)', () => {
     expect(follow.answer).toMatch(/FIN-2026-002/);
     expect(follow.answer).toMatch(/FIN-2026-003/);
     expect(follow.answer).not.toMatch(/SEG-2026-099/);
+  });
+
+  it('PAI-DIQ-013 RT-127/128: same-set jasa % then realization % ranking, not ratio-search', async () => {
+    const materialQ =
+      'Dari seluruh Finance Project ACTIVE, cari 3 project dengan persentase penggunaan material budget paling tinggi. Tampilkan material spent, material budget, dan persentasenya.';
+    const jasaQ =
+      'Sekarang untuk tiga project yang sama tadi, bandingkan persentase penggunaan jasa budgetnya. Gunakan project yang sama, jangan cari project lain.';
+    const realQ =
+      'Dari project tersebut, sekarang urutkan berdasarkan persentase realisasi terhadap total budget dari yang paling tinggi. Tetap gunakan tiga project yang sama.';
+    expect(isObjectComparisonQuery(jasaQ)).toBe(false);
+    expect(isJasaPctRankingPhrase(jasaQ)).toBe(true);
+    expect(detectFinanceMode(jasaQ)).toBe('top_budget');
+    expect(detectRankingMetric(jasaQ)).toBe('jasaPct');
+    expect(isPopulationRetentionOnly('Gunakan project yang sama, jangan cari project lain.')).toBe(
+      true,
+    );
+    expect(splitChainedRankingQuery(jasaQ)).toBeNull();
+    expect(detectAnalyticalRequest(jasaQ)).toBeNull();
+    expect(isRealizationPctRankingPhrase(realQ)).toBe(true);
+    expect(detectFinanceMode(realQ)).toBe('top_budget');
+    expect(detectRankingMetric(realQ)).toBe('realizationPct');
+    expect(splitChainedRankingQuery(realQ)).toBeNull();
+    const prisma = makePrisma();
+    const rows = [
+      {
+        code: 'FIN-2026-001',
+        name: 'A',
+        totalBudget: 1000,
+        materialBudget: 500,
+        jasaBudget: 100,
+        materialSpent: 5.55,
+        jasaSpent: 20,
+        status: 'ACTIVE',
+        hierarchyLevel: 'SITE',
+        isOverbudget: false,
+      },
+      {
+        code: 'FIN-2026-002',
+        name: 'B',
+        totalBudget: 5100,
+        materialBudget: 2000,
+        jasaBudget: 200,
+        materialSpent: 0,
+        jasaSpent: 10,
+        status: 'ACTIVE',
+        hierarchyLevel: 'SITE',
+        isOverbudget: false,
+      },
+      {
+        code: 'FIN-2026-003',
+        name: 'C',
+        totalBudget: 255,
+        materialBudget: 100,
+        jasaBudget: 50,
+        materialSpent: 0,
+        jasaSpent: 0,
+        status: 'ACTIVE',
+        hierarchyLevel: 'SITE',
+        isOverbudget: false,
+      },
+      {
+        code: 'SEG-2026-099',
+        name: 'Outsider',
+        totalBudget: 10,
+        materialBudget: 0,
+        jasaBudget: 1,
+        materialSpent: 9,
+        jasaSpent: 1,
+        status: 'ACTIVE',
+        hierarchyLevel: 'SEGMENT',
+        isOverbudget: false,
+      },
+    ];
+    (prisma as any).financeProject.findMany = jest.fn(async (args: any) => {
+      const inn = args?.where?.code?.in;
+      if (inn) return rows.filter((r) => inn.includes(r.code));
+      return rows;
+    });
+    const { ai } = makeServices(prisma);
+    const start = await ai.chat(user, 'Aku mau bahas Finance Project.');
+    const mat = await ai.chat(user, materialQ, start.conversationId);
+    expect(mat.answer).toMatch(/Material/i);
+    expect(mat.answer).toMatch(/FIN-2026-001/);
+    expect(mat.answer).not.toMatch(/SEG-2026-099/);
+    const jasa = await ai.chat(user, jasaQ, start.conversationId);
+    expect(jasa.answer).not.toMatch(/operasi: Realisasi \/ Total Budget/i);
+    expect(jasa.answer).not.toMatch(/pilih salah satu/i);
+    expect(jasa.answer).toMatch(/Jasa/i);
+    expect(jasa.answer).toMatch(/FIN-2026-001/);
+    expect(jasa.answer).toMatch(/FIN-2026-002/);
+    expect(jasa.answer).toMatch(/FIN-2026-003/);
+    expect(jasa.answer).not.toMatch(/SEG-2026-099/);
+    const real = await ai.chat(user, realQ, start.conversationId);
+    expect(real.answer).not.toMatch(/pilih salah satu/i);
+    expect(real.answer).toMatch(/Realisasi/i);
+    expect(real.answer).toMatch(/FIN-2026-001/);
+    expect(real.answer).not.toMatch(/SEG-2026-099/);
   });
 });

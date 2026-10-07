@@ -63,6 +63,7 @@ import {
   isUnsupportedKnowledgeCausalQuery,
   isStockQuantityRankingQuery,
   splitChainedRankingQuery,
+  isPopulationRetentionOnly,
   isOperationalJudgmentFollowUp,
   buildEvidenceLimitedOperationalNote,
   isResultSetScopedFollowUp,
@@ -2156,6 +2157,7 @@ export class AiService {
       chained &&
       hasUsefulTools &&
       toolNames.includes('finance_analytics') &&
+      !isPopulationRetentionOnly(chained.tail) &&
       !isOperationalJudgmentFollowUp(chained.tail)
     ) {
       const first = toolTraces.find(

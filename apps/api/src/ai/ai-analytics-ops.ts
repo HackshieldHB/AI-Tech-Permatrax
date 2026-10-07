@@ -78,8 +78,13 @@ export function isObjectScopedReference(text: string): boolean {
 
 export function isExplicitRankingUtterance(text: string): boolean {
   const m = normalizeId(text);
-  return /(top\s*\d*|terbesar|terkecil|tertinggi|terendah|teratas|ranking|paling besar|paling kecil|paling tinggi|paling rendah|paling banyak|urutkan|susun ulang|ketiganya|masing-masing|proporsional)/.test(
-    m,
+  return (
+    /(top\s*\d*|terbesar|terkecil|tertinggi|terendah|teratas|ranking|paling besar|paling kecil|paling tinggi|paling rendah|paling banyak|urutkan|susun ulang|ketiganya|masing-masing|proporsional)/.test(
+      m,
+    ) ||
+    /(bandingkan|dibanding).*(persen|persentase|rasio|penggunaan|jasa|material|realisasi)/.test(
+      m,
+    )
   );
 }
 
@@ -152,7 +157,9 @@ function detectAnalyticalRequestOn(text: string): AnalyticalRequest | null {
     extractFinanceCodes(text).length < 2 &&
     (isExplicitRankingUtterance(text) ||
       /\bsusun ulang\b/.test(m) ||
-      /(ketiganya|masing-masing|lima project tersebut)/.test(m) ||
+      /(ketiganya|masing-masing|lima project tersebut|project yang sama|tiga project|daftar yang sama|project tersebut)/.test(
+        m,
+      ) ||
       /\b(cari|tampilkan)\s+\d+/.test(m))
   ) {
     return null;
